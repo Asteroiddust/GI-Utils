@@ -7,6 +7,7 @@
 //! TSC frequency is calibrated automatically at startup (20 × 100ms samples).
 //! Falls back to a hardcoded default (9800X3D base clock) if calibration is skipped.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 // ── Safe TSC wrapper ──────────────────────────────────────────
@@ -58,6 +59,36 @@ pub fn delay_ms(ms: f64) {
     let freq = tsc_freq();
     let target = read_tsc() + (ms * freq / 1000.0) as u64;
     while read_tsc() < target {
+        cpu_relax();
+    }
+}
+
+/// Like [`delay_ms`], but returns early if `running` becomes false.
+///
+/// Checks the flag every ~100μs — imperceptible latency for human
+/// input, negligible overhead for the hot path.
+///
+/// Precision is identical to [`delay_ms`]: the TSC target is fixed,
+/// and neither the extra `RDTSC` nor the flag check changes the
+/// exit moment.
+pub fn delay_ms_interruptible(ms: f64, running: &AtomicBool) {
+    if ms <= 0.0 {
+        return;
+    }
+    let freq = tsc_freq();
+    let target = read_tsc() + (ms * freq / 1000.0) as u64;
+
+    // Check interval: 100μs in TSC cycles — balances responsiveness vs. overhead.
+    let check_interval = (freq / 10_000.0) as u64;
+    let mut next_check = read_tsc().wrapping_add(check_interval);
+
+    while read_tsc() < target {
+        if read_tsc() >= next_check {
+            if !running.load(Ordering::Acquire) {
+                return;
+            }
+            next_check = read_tsc().wrapping_add(check_interval);
+        }
         cpu_relax();
     }
 }

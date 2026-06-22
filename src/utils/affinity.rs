@@ -66,7 +66,7 @@ impl std::error::Error for Error {}
 struct OwnedHandle(HANDLE);
 
 impl OwnedHandle {
-    unsafe fn raw(&self) -> HANDLE {
+    fn raw(&self) -> HANDLE {
         self.0
     }
 }
@@ -142,9 +142,9 @@ impl ProcessEntry {
 
     /// Best-effort process name (truncated at first null).
     pub fn name(&self) -> &str {
-        let bytes = &self.inner.szExeFile;
+        let bytes = &self.inner.szExeFile; // [i8; 260] in windows-rs
         let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        // szExeFile is [i8] (C char) but UTF-8 wants [u8]; same layout, safe to transmute
+        // szExeFile is [i8] (C char), str::from_utf8 wants [u8]; same layout
         let chars: &[u8] = unsafe { &*(&bytes[..len] as *const [i8] as *const [u8]) };
         std::str::from_utf8(chars).unwrap_or("<invalid utf8>")
     }
@@ -160,15 +160,15 @@ fn open_process(pid: u32) -> Result<OwnedHandle, Error> {
 }
 
 /// Set CPU affinity for a process.
-fn set_affinity(h: &OwnedHandle, mask: usize) -> Result<(), Error> {
+fn set_affinity(h: &OwnedHandle, pid: u32, mask: usize) -> Result<(), Error> {
     unsafe { SetProcessAffinityMask(h.raw(), mask) }
-        .map_err(|e| Error::SetAffinity { pid: 0, source: e })
+        .map_err(|e| Error::SetAffinity { pid, source: e })
 }
 
 /// Set priority class for a process.
-fn set_priority(h: &OwnedHandle, prio: PROCESS_CREATION_FLAGS) -> Result<(), Error> {
+fn set_priority(h: &OwnedHandle, pid: u32, prio: PROCESS_CREATION_FLAGS) -> Result<(), Error> {
     unsafe { SetPriorityClass(h.raw(), prio) }
-        .map_err(|e| Error::SetPriority { pid: 0, source: e })
+        .map_err(|e| Error::SetPriority { pid, source: e })
 }
 
 // ── Public API ────────────────────────────────────────────────
@@ -176,8 +176,8 @@ fn set_priority(h: &OwnedHandle, prio: PROCESS_CREATION_FLAGS) -> Result<(), Err
 /// Set CPU affinity and priority for a specific process by PID.
 pub fn configure_process(pid: u32, mask: usize, prio: u32) -> Result<(), Error> {
     let h = open_process(pid)?;
-    set_affinity(&h, mask)?;
-    set_priority(&h, PROCESS_CREATION_FLAGS(prio))?;
+    set_affinity(&h, pid, mask)?;
+    set_priority(&h, pid, PROCESS_CREATION_FLAGS(prio))?;
     Ok(())
 }
 
@@ -200,7 +200,7 @@ pub fn isolate_game_cores(game_pid: u32) -> Result<(), Error> {
         let pid = entry.pid();
         if pid != game_pid && pid != self_pid && pid != 0 {
             if let Ok(h) = open_process(pid) {
-                let _ = set_affinity(&h, OTHER_CORES_MASK);
+                let _ = set_affinity(&h, pid, OTHER_CORES_MASK);
             }
         }
         Ok(())
@@ -211,9 +211,10 @@ pub fn isolate_game_cores(game_pid: u32) -> Result<(), Error> {
 pub fn restore_all_affinity() -> Result<(), Error> {
     let self_pid = process::id();
     for_each_process(|entry| {
-        if entry.pid() != self_pid {
-            if let Ok(h) = open_process(entry.pid()) {
-                let _ = set_affinity(&h, 0xFFFF);
+        let pid = entry.pid();
+        if pid != self_pid {
+            if let Ok(h) = open_process(pid) {
+                let _ = set_affinity(&h, pid, 0xFFFF);
             }
         }
         Ok(())
@@ -225,7 +226,7 @@ pub fn restore_all_affinity() -> Result<(), Error> {
 pub fn init_tool_affinity() -> Result<(), Error> {
     let self_pid = process::id();
     let h = open_process(self_pid)?;
-    set_affinity(&h, TOOL_CORES_MASK)?;
-    set_priority(&h, REALTIME_PRIORITY_CLASS)?;
+    set_affinity(&h, self_pid, TOOL_CORES_MASK)?;
+    set_priority(&h, self_pid, REALTIME_PRIORITY_CLASS)?;
     Ok(())
 }

@@ -68,16 +68,22 @@ impl InterceptionContext {
         }
     }
 
-    /// Send an [`InputEvent`] to a device. Sleep events are no-ops.
+    /// Send an [`InputEvent`], routing to the correct device automatically.
+    /// Keyboard events → keyboard 0, Mouse events → mouse 0. Sleep is a no-op.
     ///
     /// This is the primary send API for function threads. It encapsulates
     /// all `unsafe` FFI — callers don't need to touch raw pointers.
-    pub fn send_event(&self, device: ffi::InterceptionDevice, event: &InputEvent) {
+    pub fn send_event(&self, event: &InputEvent) {
         match event {
             InputEvent::Sleep { .. } => {}
             _ => {
                 let mut buf: InterceptionStroke = [0u8; STROKE_SIZE];
                 event.write_to_buffer(&mut buf);
+                let device = match event {
+                    InputEvent::Keyboard { .. } => interception_keyboard(0),
+                    InputEvent::Mouse { .. } => interception_mouse(0),
+                    InputEvent::Sleep { .. } => unreachable!(),
+                };
                 unsafe {
                     interception_send(self.raw, device, &buf as *const InterceptionStroke, 1);
                 }

@@ -13,7 +13,11 @@ mod utils;
 
 use engine::{KeyMonitor, TriggerMode};
 use engine::bindings::KeyId;
-use functions::auto_clicker::AutoClicker;
+use functions::auto_clicker::连点器;
+use functions::ganyu_aim_cancel::甘雨走A;
+use functions::ghost_walk::鬼畜走路;
+use functions::mavuika_jump::火神跳喷;
+use functions::quick_pickup::快速拾取;
 use scan_code::ScanCode;
 use std::sync::Arc;
 
@@ -54,17 +58,36 @@ fn main() {
 
     // ── Register functions ──────────────────────────────────
 
-    // F13: Auto clicker
-    let auto_clicker = Arc::new(AutoClicker::new(send_ctx.clone()));
+    // F13: 连点器
+    let auto_clicker = Arc::new(连点器::new(send_ctx.clone()));
     bindings.register(KeyId::new(ScanCode::F13, false), TriggerMode::WhileHeld, auto_clicker);
 
-    // TODO: Register more functions as they are ported
-    // bindings.register(KeyId::new(SC_F14, false), quick_pickup);
-    // bindings.register(KeyId::new(SC_F15, false), dragon_spin);
+    // F14: 快速拾取 (F + 滚轮下拉)
+    let quick_pickup = Arc::new(快速拾取::new(send_ctx.clone()));
+    bindings.register(KeyId::new(ScanCode::F14, false), TriggerMode::WhileHeld, quick_pickup);
+
+    // F15: 鬼畜走路 (WASD 交错按键)
+    let ghost_walk = Arc::new(鬼畜走路::new(send_ctx.clone()));
+    bindings.register(KeyId::new(ScanCode::F15, false), TriggerMode::WhileHeld, ghost_walk);
+
+    // F16: 火神跳喷 (初始跳 + 循环连跳)
+    let fire_jump = Arc::new(火神跳喷::new(send_ctx.clone()));
+    bindings.register(KeyId::new(ScanCode::F16, false), TriggerMode::WhileHeld, fire_jump);
+
+    // F17: 甘雨走A (射箭后摇取消)
+    let ganyu_aim = Arc::new(甘雨走A::new(send_ctx.clone()));
+    bindings.register(KeyId::new(ScanCode::F17, false), TriggerMode::Once, ganyu_aim);
+
+    // TODO: 继续注册移植的功能
+    // bindings.register(KeyId::new(ScanCode::F18, false), 双玛头);
     // ...
 
     println!("Registered functions:");
-    println!("  F13 = Auto Clicker (hold to activate)");
+    println!("  F13 = 连点器  (按住循环)");
+    println!("  F14 = 快速拾取  (按住循环)");
+    println!("  F15 = 鬼畜走路  (按住循环)");
+    println!("  F16 = 火神跳喷  (按住循环)");
+    println!("  F17 = 甘雨走A  (单次执行)");
     println!();
     println!("Monitoring started. Press F12 to exit.");
     println!();
@@ -72,7 +95,8 @@ fn main() {
     // Run the main event loop (blocks until F12)
     monitor.run();
 
-    println!();
+    // Exit beep: 375 Hz, 300 ms (same as original C++)
+    utils::beep::beep(375, 300);
 
     // Restore all processes to full CPU affinity on exit
     if let Err(e) = utils::affinity::restore_all_affinity() {

@@ -214,6 +214,12 @@ impl EventSequence {
         self.press(sc).sleep(duration_ms).release(sc)
     }
 
+    /// Tap a key: press then immediately release (no delay between).
+    pub fn tap(&mut self, code: impl Into<ScanCode>) -> &mut Self {
+        let sc = code.into();
+        self.press(sc).release(sc)
+    }
+
     // ── Mouse button primitives ────────────────────────────
 
     pub fn left_down(&mut self) -> &mut Self {
