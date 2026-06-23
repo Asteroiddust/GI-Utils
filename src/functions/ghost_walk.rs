@@ -27,10 +27,14 @@ impl 鬼畜走路 {
         let mut sequence = EventSequence::new();
         // W: 1ms press → release → 49ms gap → next key
         sequence
-            .hold(Key::W, 1.0).sleep(49.0)
-            .hold(Key::A, 1.0).sleep(49.0)
-            .hold(Key::S, 1.0).sleep(49.0)
-            .hold(Key::D, 1.0).sleep(49.0);
+            .hold(Key::W, 1.0)
+            .sleep(49.0)
+            .hold(Key::A, 1.0)
+            .sleep(49.0)
+            .hold(Key::S, 1.0)
+            .sleep(49.0)
+            .hold(Key::D, 1.0)
+            .sleep(49.0);
         Self { sequence, send_ctx }
     }
 }

@@ -21,13 +21,17 @@ const _: () = assert!(size_of::<InterceptionMouseStroke>() <= STROKE_SIZE);
 /// 将键盘 stroke 写入原始缓冲区。
 pub fn write_key_stroke(buffer: &mut InterceptionStroke, ks: &InterceptionKeyStroke) {
     let ptr = buffer.as_mut_ptr() as *mut InterceptionKeyStroke;
-    unsafe { ptr::write_unaligned(ptr, *ks); }
+    unsafe {
+        ptr::write_unaligned(ptr, *ks);
+    }
 }
 
 /// 将鼠标 stroke 写入原始缓冲区。
 pub fn write_mouse_stroke(buffer: &mut InterceptionStroke, ms: &InterceptionMouseStroke) {
     let ptr = buffer.as_mut_ptr() as *mut InterceptionMouseStroke;
-    unsafe { ptr::write_unaligned(ptr, *ms); }
+    unsafe {
+        ptr::write_unaligned(ptr, *ms);
+    }
 }
 
 /// 从原始缓冲区读取键盘 stroke。
@@ -40,13 +44,24 @@ pub fn read_key_stroke(buffer: &InterceptionStroke) -> InterceptionKeyStroke {
 impl InterceptionKeyStroke {
     /// 构造键盘 stroke，`information` 自动清零。
     pub fn new(code: u16, state: u16) -> Self {
-        Self { code, state, information: 0 }
+        Self {
+            code,
+            state,
+            information: 0,
+        }
     }
 }
 
 impl InterceptionMouseStroke {
     /// 构造鼠标 stroke，`information` 自动清零。
     pub fn new(state: u16, flags: u16, rolling: i16, x: i32, y: i32) -> Self {
-        Self { state, flags, rolling, x, y, information: 0 }
+        Self {
+            state,
+            flags,
+            rolling,
+            x,
+            y,
+            information: 0,
+        }
     }
 }

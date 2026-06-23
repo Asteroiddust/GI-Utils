@@ -10,11 +10,11 @@ pub mod function;
 
 pub use bindings::TriggerMode;
 
-use bindings::KeyBindings;
 use crate::interception::ffi::*;
 use crate::interception::{InterceptionContext, SendContext};
 use crate::key::Key;
 use crate::scan_code::ScanCode;
+use bindings::KeyBindings;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -96,10 +96,13 @@ impl Engine {
                 let ks = crate::interception::strokes::read_key_stroke(&stroke_buf);
 
                 // 3. 消除歧义 — Resolve E0 prefix and press/release into a unified Key
-                let is_e0      = (ks.state & INTERCEPTION_KEY_E0) != 0;
+                let is_e0 = (ks.state & INTERCEPTION_KEY_E0) != 0;
                 let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
-                let is_e1      = (ks.state & INTERCEPTION_KEY_E1) != 0;
-                let key = Key { code: ScanCode(ks.code), is_e0 };
+                let is_e1 = (ks.state & INTERCEPTION_KEY_E1) != 0;
+                let key = Key {
+                    code: ScanCode(ks.code),
+                    is_e0,
+                };
 
                 // 4. 调试输出 — Print verbose keystroke info if enabled
                 if self.verbose {
@@ -124,14 +127,24 @@ fn print_keystroke(device: i32, key: Key, state: u16, e1: bool, info: u32) {
     let dir = if pressing { "\u{2193}" } else { "\u{2191}" };
     let tags = match (key.is_e0, e1) {
         (false, false) => "",
-        (true,  false) => " E0",
-        (false, true)  => " E1",
-        (true,  true)  => " E0 E1",
+        (true, false) => " E0",
+        (false, true) => " E1",
+        (true, true) => " E0 E1",
     };
-    let dev_type = if device <= INTERCEPTION_MAX_KEYBOARD { "KBD" } else { "MSE" };
+    let dev_type = if device <= INTERCEPTION_MAX_KEYBOARD {
+        "KBD"
+    } else {
+        "MSE"
+    };
     println!(
         "[{}] {:<3} #{:<2} {:<16} {:>4}  code={:#04X}  state={:#04X}  info={:#08X}",
-        dir, dev_type, device, tags, key.name(), key.code.raw(),
-        state, info
+        dir,
+        dev_type,
+        device,
+        tags,
+        key.name(),
+        key.code.raw(),
+        state,
+        info
     );
 }

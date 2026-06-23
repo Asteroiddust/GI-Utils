@@ -7,8 +7,8 @@
 //! - [`context`]: `InterceptionContext`（接收）和 `SendContext`（发送）的安全 RAII 封装
 //! - [`strokes`]: 扁平缓冲区与类型化结构体之间的安全转换
 
-pub mod ffi;
 pub mod context;
+pub mod ffi;
 pub mod strokes;
 
 /// 重新导出上下文类型，方便从 `interception::` 直接使用。

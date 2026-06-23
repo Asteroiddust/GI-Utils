@@ -86,15 +86,13 @@ impl InterceptionContext {
 
     /// 设置设备过滤器。
     pub fn set_filter(&self, predicate: InterceptionPredicate, filter: InterceptionFilter) {
-        unsafe { interception_set_filter(self.raw, predicate, filter); }
+        unsafe {
+            interception_set_filter(self.raw, predicate, filter);
+        }
     }
 
     /// 从设备接收一个原始输入数据包。
-    pub fn receive(
-        &self,
-        device: ffi::InterceptionDevice,
-        stroke: &mut InterceptionStroke,
-    ) -> i32 {
+    pub fn receive(&self, device: ffi::InterceptionDevice, stroke: &mut InterceptionStroke) -> i32 {
         unsafe { interception_receive(self.raw, device, stroke as *mut InterceptionStroke, 1) }
     }
 
@@ -114,7 +112,9 @@ impl InterceptionContext {
 impl Drop for InterceptionContext {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            unsafe { interception_destroy_context(self.raw); }
+            unsafe {
+                interception_destroy_context(self.raw);
+            }
         }
     }
 }
@@ -160,7 +160,9 @@ impl SendContext {
 impl Drop for SendContext {
     fn drop(&mut self) {
         if !self.raw.is_null() {
-            unsafe { interception_destroy_context(self.raw); }
+            unsafe {
+                interception_destroy_context(self.raw);
+            }
         }
     }
 }

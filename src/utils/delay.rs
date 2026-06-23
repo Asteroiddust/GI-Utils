@@ -57,9 +57,7 @@ fn tsc_freq() -> f64 {
 static CHECK_INTERVAL: OnceLock<u64> = OnceLock::new();
 
 fn check_interval() -> u64 {
-    *CHECK_INTERVAL.get_or_init(|| {
-        (tsc_freq() / 10_000.0) as u64
-    })
+    *CHECK_INTERVAL.get_or_init(|| (tsc_freq() / 10_000.0) as u64)
 }
 
 // ── Public API ────────────────────────────────────────────────
@@ -152,7 +150,11 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
             io::stdout().flush().ok();
             rates.push(rate);
         } else {
-            eprintln!("\r  sample {:>2}/{}: invalid — skipping", i + 1, sample_count);
+            eprintln!(
+                "\r  sample {:>2}/{}: invalid — skipping",
+                i + 1,
+                sample_count
+            );
         }
     }
     println!(); // final newline after \r overwrites

@@ -47,7 +47,7 @@ pub fn beep_async(frequency: u32, duration_ms: u32) {
         );
         return;
     }
-    thread::spawn(move || {
-        unsafe { Beep(frequency, duration_ms); }
+    thread::spawn(move || unsafe {
+        Beep(frequency, duration_ms);
     });
 }

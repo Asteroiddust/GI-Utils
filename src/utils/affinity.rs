@@ -12,11 +12,10 @@ use std::fmt;
 use std::process;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32,
-    TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, SetProcessAffinityMask, SetPriorityClass, PROCESS_CREATION_FLAGS,
+    OpenProcess, SetPriorityClass, SetProcessAffinityMask, PROCESS_CREATION_FLAGS,
     PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
 };
 
@@ -37,11 +36,20 @@ pub const OTHER_CORES_MASK: usize = TOOL_CORES_MASK;
 #[derive(Debug)]
 pub enum Error {
     /// 无法打开进程 — Failed to open process by PID.
-    OpenProcess { pid: u32, source: windows::core::Error },
+    OpenProcess {
+        pid: u32,
+        source: windows::core::Error,
+    },
     /// 设置 CPU 亲和性失败 — Failed to set CPU affinity mask.
-    SetAffinity { pid: u32, source: windows::core::Error },
+    SetAffinity {
+        pid: u32,
+        source: windows::core::Error,
+    },
     /// 设置优先级失败 — Failed to set priority class.
-    SetPriority { pid: u32, source: windows::core::Error },
+    SetPriority {
+        pid: u32,
+        source: windows::core::Error,
+    },
     /// 创建进程快照失败 — Failed to create toolhelp snapshot.
     Snapshot { source: windows::core::Error },
 }
@@ -81,7 +89,9 @@ impl OwnedHandle {
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
-            unsafe { let _ = CloseHandle(self.0); }
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
         }
     }
 }
@@ -100,9 +110,9 @@ impl Drop for OwnedHandle {
 /// ```
 struct ProcessIterator {
     _snapshot: OwnedHandle, // RAII: snapshot is closed when iterator is dropped
-    handle:    HANDLE,
-    entry:     PROCESSENTRY32,
-    started:   bool,
+    handle: HANDLE,
+    entry: PROCESSENTRY32,
+    started: bool,
 }
 
 impl ProcessIterator {
@@ -184,8 +194,7 @@ fn set_affinity(h: &OwnedHandle, pid: u32, mask: usize) -> Result<(), Error> {
 
 /// 设置进程优先级 — Set priority class for a process.
 fn set_priority(h: &OwnedHandle, pid: u32, prio: PROCESS_CREATION_FLAGS) -> Result<(), Error> {
-    unsafe { SetPriorityClass(h.raw(), prio) }
-        .map_err(|e| Error::SetPriority { pid, source: e })
+    unsafe { SetPriorityClass(h.raw(), prio) }.map_err(|e| Error::SetPriority { pid, source: e })
 }
 
 // ── Public API ────────────────────────────────────────────────

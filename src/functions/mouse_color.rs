@@ -38,7 +38,8 @@ impl KeyFunction for 坐标颜色 {
             if let Some(pos) = screen::get_cursor_pos() {
                 let cr = unsafe {
                     windows::Win32::Graphics::Gdi::GetPixel(self.reader.raw_dc(), pos.x, pos.y)
-                }.0;
+                }
+                .0;
                 if cr != 0xFFFF_FFFF {
                     let color = screen::PixelColor::from_colorref(cr);
                     print!(

@@ -57,10 +57,7 @@ impl ScrollDir {
 #[derive(Debug, Clone, Copy)]
 pub enum InputEvent {
     /// 按下或释放按键 (Key press or release).
-    Keyboard {
-        code: ScanCode,
-        state: u16,
-    },
+    Keyboard { code: ScanCode, state: u16 },
     /// 鼠标按键、滚轮或光标移动 (Mouse button, wheel, or cursor).
     Mouse {
         state: u16,
@@ -70,9 +67,7 @@ pub enum InputEvent {
         y: i32,
     },
     /// 纯延时 — 暂停序列 `ms` 毫秒 (Pure delay).
-    Sleep {
-        ms: f64,
-    },
+    Sleep { ms: f64 },
 }
 
 // ── 构造器 — Constructors ─────────────────────────────────────
@@ -81,20 +76,29 @@ impl InputEvent {
     /// 创建按键按下事件 (Create a key-down event).
     pub fn press(key: impl Into<Key>) -> Self {
         let key = key.into();
-        InputEvent::Keyboard { code: key.code, state: key.down_state() }
+        InputEvent::Keyboard {
+            code: key.code,
+            state: key.down_state(),
+        }
     }
 
     /// 创建按键释放事件 (Create a key-up event).
     pub fn release(key: impl Into<Key>) -> Self {
         let key = key.into();
-        InputEvent::Keyboard { code: key.code, state: key.up_state() }
+        InputEvent::Keyboard {
+            code: key.code,
+            state: key.up_state(),
+        }
     }
 
     /// 创建鼠标左键按下事件 (Left button down).
     pub fn left_down() -> Self {
         InputEvent::Mouse {
             state: INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
-            flags: 0, rolling: 0, x: 0, y: 0,
+            flags: 0,
+            rolling: 0,
+            x: 0,
+            y: 0,
         }
     }
 
@@ -102,7 +106,10 @@ impl InputEvent {
     pub fn left_up() -> Self {
         InputEvent::Mouse {
             state: INTERCEPTION_MOUSE_LEFT_BUTTON_UP,
-            flags: 0, rolling: 0, x: 0, y: 0,
+            flags: 0,
+            rolling: 0,
+            x: 0,
+            y: 0,
         }
     }
 
@@ -110,7 +117,10 @@ impl InputEvent {
     pub fn right_down() -> Self {
         InputEvent::Mouse {
             state: INTERCEPTION_MOUSE_RIGHT_BUTTON_DOWN,
-            flags: 0, rolling: 0, x: 0, y: 0,
+            flags: 0,
+            rolling: 0,
+            x: 0,
+            y: 0,
         }
     }
 
@@ -118,7 +128,10 @@ impl InputEvent {
     pub fn right_up() -> Self {
         InputEvent::Mouse {
             state: INTERCEPTION_MOUSE_RIGHT_BUTTON_UP,
-            flags: 0, rolling: 0, x: 0, y: 0,
+            flags: 0,
+            rolling: 0,
+            x: 0,
+            y: 0,
         }
     }
 
@@ -127,7 +140,10 @@ impl InputEvent {
     pub fn wheel(delta: i16) -> Self {
         InputEvent::Mouse {
             state: INTERCEPTION_MOUSE_WHEEL,
-            flags: 0, rolling: delta, x: 0, y: 0,
+            flags: 0,
+            rolling: delta,
+            x: 0,
+            y: 0,
         }
     }
 
@@ -136,7 +152,9 @@ impl InputEvent {
         InputEvent::Mouse {
             state: 0,
             flags: INTERCEPTION_MOUSE_MOVE_RELATIVE,
-            rolling: 0, x: dx, y: dy,
+            rolling: 0,
+            x: dx,
+            y: dy,
         }
     }
 
@@ -145,7 +163,9 @@ impl InputEvent {
         InputEvent::Mouse {
             state: 0,
             flags: INTERCEPTION_MOUSE_MOVE_ABSOLUTE,
-            rolling: 0, x, y,
+            rolling: 0,
+            x,
+            y,
         }
     }
 
@@ -162,7 +182,13 @@ impl InputEvent {
                 let ks = InterceptionKeyStroke::new(code.raw(), *state);
                 crate::interception::strokes::write_key_stroke(buffer, &ks);
             }
-            InputEvent::Mouse { state, flags, rolling, x, y } => {
+            InputEvent::Mouse {
+                state,
+                flags,
+                rolling,
+                x,
+                y,
+            } => {
                 let ms = InterceptionMouseStroke::new(*state, *flags, *rolling, *x, *y);
                 crate::interception::strokes::write_mouse_stroke(buffer, &ms);
             }
@@ -208,13 +234,21 @@ impl EventSequence {
     // ── 访问器 — Accessors ────────────────────────────────
 
     /// 序列中的事件数量 (Number of events in the sequence).
-    pub fn len(&self) -> usize { self.events.len() }
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
     /// 序列是否为空 (Whether the sequence is empty).
-    pub fn is_empty(&self) -> bool { self.events.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
     /// 获取事件切片引用 (Get a slice reference to the events).
-    pub fn events(&self) -> &[InputEvent] { &self.events }
+    pub fn events(&self) -> &[InputEvent] {
+        &self.events
+    }
     /// 清空序列 (Clear all events from the sequence).
-    pub fn clear(&mut self) { self.events.clear(); }
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
 
     // ── 原始推送 — Raw push ─────────────────────────────────
 

@@ -25,17 +25,17 @@ fn main() {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    // ── Load config ─────────────────────────────────────────
-    // 配置必须最先加载——配置损坏时快速失败，无需等待 TSC 校准。
-    // Must come first — fail-fast if config is broken, no need to
-    // wait through TSC calibration.
-    let config = config::load().expect("Failed to load config");
-
     println!("══════════════════════════════════════════");
     println!("  GI-Utils v1.0.0");
     println!("  Game Input Automation Utility (Rust)");
     println!("══════════════════════════════════════════");
     println!();
+
+    // ── Load config ─────────────────────────────────────────
+    // 配置必须最先加载——配置损坏时快速失败，无需等待 TSC 校准。
+    // Must come first — fail-fast if config is broken, no need to
+    // wait through TSC calibration.
+    let config = config::load().expect("Failed to load config");
 
     // 系统初始化：DPI → 优先级/亲和性 → TSC 校准
     // System init: DPI → priority/affinity → TSC calibration
@@ -46,23 +46,24 @@ fn main() {
     let bindings = engine.bindings();
 
     // ── Register bindings ───────────────────────────────────
-
     // 停止功能需要引擎的 stop_flag，特殊处理
     // Stop function — needs engine's stop_flag, special-cased
     let stop_func = Arc::new(functions::stop::停止退出::new(engine.stop_flag()));
 
     println!("Registered functions:");
     for binding in &config {
-        let func: Arc<dyn engine::function::KeyFunction> =
-            if binding.func == "停止退出" {
-                stop_func.clone()
-            } else {
-                config::create_function(&binding.func, send_ctx.clone())
-                    .unwrap_or_else(|e| panic!(
-                        "config error: binding '{}' -> '{}': {}",
-                        binding.key.name(), binding.func, e
-                    ))
-            };
+        let func: Arc<dyn engine::function::KeyFunction> = if binding.func == "停止退出" {
+            stop_func.clone()
+        } else {
+            config::create_function(&binding.func, send_ctx.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "config error: binding '{}' -> '{}': {}",
+                    binding.key.name(),
+                    binding.func,
+                    e
+                )
+            })
+        };
         bindings.register(binding.key, binding.mode, func);
         println!(
             "  {} = {}  ({:?})",

@@ -3,8 +3,10 @@
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
-use crate::interception::ffi::{INTERCEPTION_KEY_DOWN, INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
-    INTERCEPTION_MOUSE_LEFT_BUTTON_UP, INTERCEPTION_KEY_UP};
+use crate::interception::ffi::{
+    INTERCEPTION_KEY_DOWN, INTERCEPTION_KEY_UP, INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
+    INTERCEPTION_MOUSE_LEFT_BUTTON_UP,
+};
 use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
@@ -37,24 +39,28 @@ impl 双玛头 {
         // 序列是静态的，在构造时展开为 5 份，执行时就是单层 for。
         for _ in 0..5 {
             main_loop
-                .left_down()              //  1: L↓
-                .sleep(180.0)             //     hold L 180ms
-                .right_click()            //  2-3: R↓R↑
-                .sleep(160.0)             //
-                .left_up()                //  4: L↑
-                .sleep(40.0)              //
-                .left_down()              //  5: L↓
-                .sleep(180.0)             //     hold L 180ms
-                .right_click()            //  6-7: R↓R↑
-                .press(Key::S)       //  8: S↓
-                .sleep(750.0)             //     hold S 750ms
-                .release(Key::S)     //  9: S↑
-                .sleep(350.0)             //
-                .left_up()                // 10: L↑
+                .left_down() //  1: L↓
+                .sleep(180.0) //     hold L 180ms
+                .right_click() //  2-3: R↓R↑
+                .sleep(160.0) //
+                .left_up() //  4: L↑
+                .sleep(40.0) //
+                .left_down() //  5: L↓
+                .sleep(180.0) //     hold L 180ms
+                .right_click() //  6-7: R↓R↑
+                .press(Key::S) //  8: S↓
+                .sleep(750.0) //     hold S 750ms
+                .release(Key::S) //  9: S↑
+                .sleep(350.0) //
+                .left_up() // 10: L↑
                 .sleep(540.0);
         }
 
-        Self { click_once, main_loop, send_ctx }
+        Self {
+            click_once,
+            main_loop,
+            send_ctx,
+        }
     }
 }
 
@@ -82,12 +88,18 @@ impl KeyFunction for 双玛头 {
                 // Track held state for cleanup on early exit
                 match event {
                     InputEvent::Mouse { state, .. } => {
-                        if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN { lbtn_held = true; }
-                        else if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_UP { lbtn_held = false; }
+                        if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN {
+                            lbtn_held = true;
+                        } else if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_UP {
+                            lbtn_held = false;
+                        }
                     }
                     InputEvent::Keyboard { state, .. } => {
-                        if *state == INTERCEPTION_KEY_DOWN { s_held = true; }
-                        else if *state == INTERCEPTION_KEY_UP { s_held = false; }
+                        if *state == INTERCEPTION_KEY_DOWN {
+                            s_held = true;
+                        } else if *state == INTERCEPTION_KEY_UP {
+                            s_held = false;
+                        }
                     }
                     _ => {}
                 }
@@ -97,8 +109,12 @@ impl KeyFunction for 双玛头 {
                 if let InputEvent::Sleep { ms } = event {
                     delay::delay_ms_interruptible(*ms, &stop_requested);
                     if stop_requested.load(Ordering::Acquire) {
-                        if lbtn_held { self.send_ctx.send_event(&InputEvent::left_up()); }
-                        if s_held { self.send_ctx.send_event(&InputEvent::release(Key::S)); }
+                        if lbtn_held {
+                            self.send_ctx.send_event(&InputEvent::left_up());
+                        }
+                        if s_held {
+                            self.send_ctx.send_event(&InputEvent::release(Key::S));
+                        }
                         return;
                     }
                 }

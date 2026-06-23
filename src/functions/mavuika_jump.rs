@@ -32,7 +32,11 @@ impl 火神跳喷 {
         let mut loop_seq = EventSequence::new();
         loop_seq.tap(Key::SPACE).sleep(10.0);
 
-        Self { initial_jump, loop_seq, send_ctx }
+        Self {
+            initial_jump,
+            loop_seq,
+            send_ctx,
+        }
     }
 }
 

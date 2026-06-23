@@ -34,7 +34,9 @@ impl ScreenDC {
 
 impl Drop for ScreenDC {
     fn drop(&mut self) {
-        unsafe { ReleaseDC(None, self.hdc); }
+        unsafe {
+            ReleaseDC(None, self.hdc);
+        }
     }
 }
 
@@ -132,7 +134,9 @@ impl PixelReader {
     /// 获取失败则返回 `None`。
     /// Returns `None` if the DC cannot be acquired.
     pub fn new() -> Option<Self> {
-        Some(Self { dc: ScreenDC::new()? })
+        Some(Self {
+            dc: ScreenDC::new()?,
+        })
     }
 
     /// 原始 DC 句柄 — Raw DC handle for direct GDI calls.
