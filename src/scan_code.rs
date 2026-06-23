@@ -1,26 +1,31 @@
-//! PS/2 Scan Code Set 1 — raw value newtype for FFI use.
+//! PS/2 扫描码第一套 — 用于 FFI 的原始值新类型 (newtype)
 //!
-//! `ScanCode` is the low-level type for Interception FFI. It carries
-//! only the raw scan code value, without E0/E1 disambiguation.
+//! `ScanCode` 是 Interception FFI 的底层类型，仅携带原始扫描码值，
+//! 不包含 E0/E1 消歧上下文。A raw scan-code newtype for Interception FFI,
+//! without E0/E1 disambiguation.
 //!
-//! For register/event-construction use the high-level [`Key`](crate::key::Key)
+//! 注册热键或构造事件时请使用高阶 [`Key`](crate::key::Key) 类型，
+//! 它组合了 ScanCode 和 E0 标志。
+//! For keybinding registration use the high-level [`Key`](crate::key::Key)
 //! type which combines ScanCode + E0 flag.
 
 // ── Newtype ─────────────────────────────────────────────────
 
-/// A raw PS/2 Scan Code Set 1 value (no E0/E1 context).
+/// 原始 PS/2 扫描码第一套数值（不含 E0/E1 上下文）。
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct ScanCode(pub u16);
 
 impl ScanCode {
-    /// The raw u16 scan code value for FFI / Interception.
+    /// 返回原始 u16 值供 FFI / Interception 使用。
     #[inline(always)]
     pub fn raw(self) -> u16 {
         self.0
     }
 
-    /// Human-readable name for this raw scan code.
+    /// 返回此扫描码的人类可读名称。
+    ///
+    /// **不**考虑 E0/E1 标志 — 重复值默认显示非扩展名称。
     /// Does **not** consider E0/E1 flags — duplicate values
     /// will show the non-extended name by default.
     pub fn name(self) -> &'static str {
@@ -71,17 +76,24 @@ impl ScanCode {
 
 // ── Conversions ─────────────────────────────────────────────
 
+/// 将 `ScanCode` 转换为原始 `u16` 值。
 impl From<ScanCode> for u16 {
     fn from(sc: ScanCode) -> u16 { sc.0 }
 }
+
+/// 从原始 `u16` 值构造 `ScanCode`。
 impl From<u16> for ScanCode {
     fn from(raw: u16) -> ScanCode { ScanCode(raw) }
 }
+
+/// 显示扫描码的人类可读名称（调用 `name()`）。
 impl std::fmt::Display for ScanCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
 }
+
+/// 调试输出：`ScanCode(0x1D, "Ctrl")`，带原始值和名称。
 impl std::fmt::Debug for ScanCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ScanCode({:#04X}, \"{}\")", self.0, self.name())

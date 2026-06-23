@@ -1,5 +1,6 @@
-//! Engine — the main event loop.
+//! Engine — 主事件循环 (Main Event Loop).
 //!
+//! 创建 Interception 上下文，设置过滤器，运行阻塞式事件循环以接收、转发和分发输入事件。
 //! Creates Interception contexts, sets up filters, and runs the
 //! blocking event loop that receives, forwards, and dispatches input events.
 
@@ -17,24 +18,25 @@ use crate::scan_code::ScanCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// The application engine. Separate recv context for receiving,
-/// shared send context for forwarding events.
+/// 应用程序引擎 (Application Engine)。
+/// 分离的 recv 上下文用于接收，共享的 send 上下文用于转发事件。
+/// Separate recv context for receiving, shared send context for forwarding events.
 pub struct Engine {
     recv_ctx: InterceptionContext,
     send_ctx: Arc<SendContext>,
     bindings: KeyBindings,
     stop_requested: Arc<AtomicBool>,
-    /// When true, prints every keystroke to stdout.
+    /// 为 true 时将所有按键输出到 stdout。
     verbose: bool,
 }
 
 impl Engine {
-    /// Create a new engine with separate recv/send contexts.
+    /// 创建引擎，含独立的 recv/send 上下文。
     pub fn new() -> Self {
         Self::with_verbose(false)
     }
 
-    /// Create an engine that prints every keystroke to stdout.
+    /// 创建引擎，将所有按键输出到 stdout 用于调试。
     pub fn verbose() -> Self {
         Self::with_verbose(true)
     }
@@ -58,27 +60,27 @@ impl Engine {
         }
     }
 
-    /// Get a reference to the key bindings (for registering functions).
+    /// 获取按键绑定引用（用于注册函数）。
     pub fn bindings(&self) -> &KeyBindings {
         &self.bindings
     }
 
-    /// Get the shared send context (for functions that need to send input).
+    /// 获取共享的 send 上下文（供需要发送输入的函数使用）。
     pub fn send_context(&self) -> Arc<SendContext> {
         self.send_ctx.clone()
     }
 
-    /// Request the engine to stop from another thread.
+    /// 从其他线程请求引擎停止。
     pub fn stop(&self) {
         self.stop_requested.store(true, Ordering::Release);
     }
 
-    /// Get a clone of the stop flag for use by the stop function.
+    /// 获取 stop 标志的 Arc 克隆，供 stop 函数使用。
     pub fn stop_flag(&self) -> Arc<AtomicBool> {
         self.stop_requested.clone()
     }
 
-    /// Run the main event loop. Blocks until [`stop`] is called.
+    /// 运行主事件循环。阻塞直到调用 [`stop`]。
     pub fn run(&self) {
         let send_ctx = &self.send_ctx;
 
@@ -87,24 +89,24 @@ impl Engine {
             let mut stroke_buf: InterceptionStroke = [0u8; STROKE_SIZE];
 
             while self.recv_ctx.receive(device, &mut stroke_buf) > 0 {
-                // 1. Forward raw event
+                // 1. 转发原始事件 — Forward raw event to the system
                 send_ctx.send_stroke(device, &stroke_buf);
 
-                // 2. Parse the key stroke
+                // 2. 解析按键 stroke — Deserialize the raw buffer into a key stroke struct
                 let ks = crate::interception::strokes::read_key_stroke(&stroke_buf);
 
-                // 3. Parse into a fully disambiguated Key
+                // 3. 消除歧义 — Resolve E0 prefix and press/release into a unified Key
                 let is_e0      = (ks.state & INTERCEPTION_KEY_E0) != 0;
                 let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
                 let is_e1      = (ks.state & INTERCEPTION_KEY_E1) != 0;
                 let key = Key { code: ScanCode(ks.code), is_e0 };
 
-                // 4. Verbose display
+                // 4. 调试输出 — Print verbose keystroke info if enabled
                 if self.verbose {
                     print_keystroke(device, key, ks.state, is_e1, ks.information);
                 }
 
-                // 5. Dispatch
+                // 5. 分发 — Route press/release to the binding manager
                 if is_pressing {
                     self.bindings.process_key_down(key);
                 } else {
@@ -115,7 +117,7 @@ impl Engine {
     }
 }
 
-// ── Keystroke display ────────────────────────────────────────
+// ── 按键调试显示 — Keystroke debug display ────────────────────
 
 fn print_keystroke(device: i32, key: Key, state: u16, e1: bool, info: u32) {
     let pressing = (state & INTERCEPTION_KEY_UP) == 0;

@@ -1,8 +1,11 @@
-//! Physical key identifier — PS/2 Scan Code Set 1 + E0 flag.
+//! 物理按键标识符 — PS/2 Scan Code Set 1 + E0 标志
 //!
-//! ## Why this exists
+//! 将 PS/2 扫描码和 E0 扩展标志组合为单一 [`Key`] 类型，消除歧义。
+//! Combines PS/2 scan code and E0 extension flag into a single unambiguous type.
 //!
-//! PS/2 Set 1 has duplicate scan code values disambiguated by the E0 flag:
+//! ## 为什么需要这个类型 (Why This Type)
+//!
+//! PS/2 Set 1 中存在多个按键共享相同扫描码值，仅靠 E0 标志区分：
 //!
 //! | Code | is_e0=false | is_e0=true |
 //! |------|-------------|------------|
@@ -10,9 +13,7 @@
 //! | 0x1D | Ctrl        | RCtrl      |
 //! | 0x47 | Numpad7     | Home       |
 //!
-//! `Key` combines both fields so you can't accidentally forget the E0 flag
-//! when registering hotkeys or constructing input events.
-//!
+//! `Key` 将两个字段捆绑在一起，在注册热键或构造输入事件时不会遗漏 E0 标志。
 //! For the raw scan code value without E0 context, see [`ScanCode`].
 
 #![allow(dead_code)]
@@ -24,7 +25,7 @@ use crate::scan_code::ScanCode;
 // Key
 // ═══════════════════════════════════════════════════════════════════
 
-/// A fully disambiguated physical key.
+/// 完全消歧的物理按键，包含原始扫描码和 E0 标志。
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
     pub code: ScanCode,
@@ -32,7 +33,7 @@ pub struct Key {
 }
 
 impl Key {
-    /// Build a key-down state value with E0 flag set if needed.
+    /// 构造按键按下状态值，E0 标志自动设置。
     #[inline(always)]
     pub fn down_state(self) -> u16 {
         if self.is_e0 {
@@ -42,7 +43,7 @@ impl Key {
         }
     }
 
-    /// Build a key-up state value with E0 flag set if needed.
+    /// 构造按键松开状态值，E0 标志自动设置。
     #[inline(always)]
     pub fn up_state(self) -> u16 {
         if self.is_e0 {
@@ -52,7 +53,7 @@ impl Key {
         }
     }
 
-    /// Human-readable name, taking E0 flag into account.
+    /// 返回按键的人类可读名称，考虑 E0 标志。
     pub fn name(self) -> &'static str {
         if self.is_e0 {
             match self.code.0 {
@@ -118,18 +119,21 @@ impl Key {
     }
 }
 
+/// 从原始 [`ScanCode`] 转换为 `Key`，E0 标志默认为 `false`。
 impl From<ScanCode> for Key {
     fn from(code: ScanCode) -> Self {
         Key { code, is_e0: false }
     }
 }
 
+/// 显示按键的人类可读名称（调用 `name()`）。
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
 }
 
+/// 调试输出：`Key(0x1D, "RCtrl")`，带原始值和名称。
 impl std::fmt::Debug for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -146,6 +150,7 @@ impl std::fmt::Debug for Key {
 // Constants
 // ═══════════════════════════════════════════════════════════════════
 
+/// 预定义的按键常量，按键盘物理布局分组。
 impl Key {
     // ── Row 1 ──────────────────────────────────────────────
     pub const ESCAPE:       Self = Self { code: ScanCode(0x01), is_e0: false };
@@ -175,8 +180,9 @@ impl Key {
     pub const F24:          Self = Self { code: ScanCode(0x6F), is_e0: false };
     pub const PRINT_SCREEN: Self = Self { code: ScanCode(0x37), is_e0: true  }; // E0.2A E0.37
     pub const SCROLL_LOCK:  Self = Self { code: ScanCode(0x46), is_e0: false };
+    /// 暂停键使用 E1 前缀（E1.1D.45），无法用标准 Key 表示。此常量仅为占位。
     #[deprecated(note = "PAUSE uses E1 prefix (E1.1D.45), not representable as Key. Use with E1-aware parsing.")]
-    pub const PAUSE:        Self = Self { code: ScanCode(0x45), is_e0: false }; // E1.1D.45 — same raw value as NUM_LOCK
+    pub const PAUSE:        Self = Self { code: ScanCode(0x45), is_e0: false };
 
     // ── Row 2 ──────────────────────────────────────────────
     pub const GRAVE: Self = Self { code: ScanCode(0x29), is_e0: false };

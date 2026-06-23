@@ -1,10 +1,12 @@
-//! High-precision delay using x86_64 TSC (Time Stamp Counter).
+//! 高精度延时 — High-precision delay using x86_64 TSC (Time Stamp Counter).
 //!
-//! Replicates the TSC-based delay from the original C++ Utils::delay().
+//! Replicates the TSC-based delay from the original C++ `Utils::delay()`.
+//! 在现代 x86_64 CPU 上使用恒定 TSC，无需 syscall 即可达到亚微秒级精度。
 //! On modern x86_64 CPUs with invariant TSC, this provides sub-microsecond
 //! precision without syscall overhead.
 //!
 //! TSC frequency is calibrated automatically at startup (20 × 100ms samples).
+//! 若校准被跳过，将回退到硬编码默认值（9800X3D 基础频率）。
 //! Falls back to a hardcoded default (9800X3D base clock) if calibration is skipped.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,14 +14,14 @@ use std::sync::OnceLock;
 
 // ── Safe TSC wrapper ──────────────────────────────────────────
 
-/// Read the CPU's Time Stamp Counter.
+/// 读取 CPU 时间戳计数器 — Read the CPU's Time Stamp Counter.
 /// Safe wrapper around the `RDTSC` instruction.
 #[inline(always)]
 fn read_tsc() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
-/// Hint to the CPU that we are in a spin-wait loop.
+/// 自旋等待提示 — Hint to the CPU that we are in a spin-wait loop.
 #[inline(always)]
 fn cpu_relax() {
     core::arch::x86_64::_mm_pause();
@@ -27,11 +29,14 @@ fn cpu_relax() {
 
 // ── Frequency storage ─────────────────────────────────────────
 
-/// TSC frequency in Hz. Set by `calibrate_tsc_frequency()` at startup.
+/// TSC 频率（Hz）— TSC frequency in Hertz.
+/// Set by `calibrate_tsc_frequency()` at startup.
+/// 若校准被跳过，回退到 9800X3D 基础频率。
 /// Falls back to 9800X3D base clock if calibration was somehow skipped.
 static TSC_FREQ: OnceLock<f64> = OnceLock::new();
 
-/// Set the TSC frequency (called once by calibration).
+/// 写入校准后的 TSC 频率 — Store the calibrated TSC frequency.
+/// Called once by calibration at startup. 重复调用会被静默忽略。
 pub(crate) fn init_tsc_freq(freq_hz: f64) {
     if TSC_FREQ.set(freq_hz).is_err() {
         // Already calibrated — ignore repeat call.
@@ -39,7 +44,7 @@ pub(crate) fn init_tsc_freq(freq_hz: f64) {
     }
 }
 
-/// Get the current TSC frequency.
+/// 获取当前 TSC 频率 — Get the current TSC frequency.
 fn tsc_freq() -> f64 {
     *TSC_FREQ.get_or_init(|| {
         // Safe default: 9800X3D base clock (spread spectrum off)
@@ -47,7 +52,7 @@ fn tsc_freq() -> f64 {
     })
 }
 
-/// Check interval in TSC cycles (~100μs for interruptible delay).
+/// 中断检查间隔（TSC 周期数）— Check interval for interruptible delay (~100us).
 /// Computed once from the calibrated frequency.
 static CHECK_INTERVAL: OnceLock<u64> = OnceLock::new();
 
@@ -59,11 +64,13 @@ fn check_interval() -> u64 {
 
 // ── Public API ────────────────────────────────────────────────
 
-/// High-precision busy-wait delay in milliseconds.
+/// 高精度忙等待延时（毫秒）— High-precision busy-wait delay in milliseconds.
 ///
+/// 使用 `RDTSC` + `PAUSE` 实现最低延迟。在恒定 TSC CPU 上精度可达数纳秒。
 /// Uses `RDTSC` + `PAUSE` for minimal latency. On invariant TSC CPUs,
 /// accuracy is within a few nanoseconds.
 ///
+/// 当 `ms <= 0.0` 时立即返回。
 /// Returns immediately if `ms <= 0.0`.
 pub fn delay_ms(ms: f64) {
     if ms <= 0.0 {
@@ -76,11 +83,13 @@ pub fn delay_ms(ms: f64) {
     }
 }
 
-/// Like [`delay_ms`], but returns early if `running` becomes false.
+/// 可中断的高精度延时 — Like [`delay_ms`], but returns early if `running` becomes false.
 ///
-/// Checks the flag every ~100μs — imperceptible latency for human
+/// 每 ~100us 检查一次标志位——对人机输入延迟无感知，对热路径开销可忽略。
+/// Checks the flag every ~100us — imperceptible latency for human
 /// input, negligible overhead for the hot path.
 ///
+/// 精度与 [`delay_ms`] 相同：TSC 目标固定，额外的 `RDTSC` 和标志检查不改变退出时刻。
 /// Precision is identical to [`delay_ms`]: the TSC target is fixed,
 /// and neither the extra `RDTSC` nor the flag check changes the
 /// exit moment.
@@ -107,14 +116,17 @@ pub fn delay_ms_interruptible(ms: f64, stop_requested: &AtomicBool) {
 
 // ── Calibration ──────────────────────────────────────────────
 
-/// Calibrate TSC frequency with default parameters: 20 samples × 100ms.
-/// Returns the calibrated frequency in Hz.
+/// 校准 TSC 频率 — Calibrate TSC frequency with default parameters.
+///
+/// 20 samples x 100ms，总计约 2 秒。返回校准后的频率（Hz）。启动时自动执行。
+/// 20 samples x 100ms. Returns the calibrated frequency in Hz.
 /// Called automatically at startup. Takes ~2 seconds total.
 pub fn calibrate_tsc_frequency() -> f64 {
     calibrate(20, 100.0)
 }
 
-/// Measure TSC frequency using `sample_count` samples of `duration_ms` each.
+/// 测量 TSC 频率 — Measure TSC frequency using `sample_count` samples of `duration_ms` each.
+/// 返回中位频率（Hz）。
 /// Returns the median frequency in Hz.
 fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
     use std::time::Instant;
@@ -147,6 +159,7 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
 
     let n = rates.len();
     if n == 0 {
+        // 所有样本无效 — 使用硬编码回退。
         // All samples invalid — use hardcoded fallback.
         // Should never happen on modern invariant-TSC CPUs.
         eprintln!("  -> all samples invalid, using default frequency");

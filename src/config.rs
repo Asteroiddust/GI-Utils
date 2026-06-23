@@ -1,5 +1,6 @@
-//! TOML-based key binding configuration.
+//! 热键绑定配置 — TOML-based key binding configuration.
 //!
+//! 启动时从 exe 目录读取 `config.toml`。如果文件不存在，自动生成默认配置。
 //! Reads `config.toml` from the exe directory at startup.
 //! If the file is missing, a default config is generated.
 
@@ -29,7 +30,7 @@ struct RawBinding {
     mode: String,
 }
 
-/// A parsed binding: ready to register.
+/// 解析后的绑定项 — A parsed binding ready to register.
 pub struct Binding {
     pub key: Key,
     pub func: String,
@@ -134,7 +135,7 @@ fn parse_mode(name: &str) -> Result<TriggerMode, String> {
 // Public API
 // ═══════════════════════════════════════════════════════════════════
 
-/// Path to the config file (next to the exe).
+/// 配置文件路径（与 exe 同目录）— Path to the config file (next to the exe).
 fn config_path() -> PathBuf {
     let mut path = std::env::current_exe()
         .expect("failed to get executable path");
@@ -142,7 +143,7 @@ fn config_path() -> PathBuf {
     path
 }
 
-/// Default config content — written on first run.
+/// 默认配置内容（首次运行时写入）— Default config content, written on first run.
 const DEFAULT_CONFIG: &str = r#"# GI-Utils 热键配置
 # 格式: [[bindings]]  key = "按键名"  func = "功能名"  mode = "Once/Loop/Toggle"
 
@@ -187,7 +188,12 @@ func = "坐标颜色"
 mode = "Loop"
 "#;
 
-/// Load and parse the config file. Generates a default if missing.
+/// 加载并解析配置文件 — Load and parse the config file. Generates a default if missing.
+///
+/// 若文件不存在则自动创建默认配置。验证双向唯一性：每个按键只能绑定一个功能，
+/// 每个功能只能绑定一个按键。
+/// If the file is missing, a default config is generated. Validates bidirectional
+/// uniqueness: each key maps to one function and each function maps to one key.
 pub fn load() -> Result<Vec<Binding>, String> {
     let path = config_path();
 
@@ -243,7 +249,9 @@ pub fn load() -> Result<Vec<Binding>, String> {
 // Function factory
 // ═══════════════════════════════════════════════════════════════════
 
-/// Create a function instance by name.
+/// 按名称创建功能实例 — Create a function instance by name.
+///
+/// 新增功能只需在此处增加一个分支。
 /// New functions only need a branch added here.
 pub fn create_function(name: &str, send_ctx: Arc<SendContext>) -> Result<Arc<dyn KeyFunction>, String> {
     match name {

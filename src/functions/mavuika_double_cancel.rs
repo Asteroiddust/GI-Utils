@@ -1,5 +1,5 @@
-//! 双玛头 — 复杂鼠标按键序列 + S 键。
-//! 用于原神双玛头操作。Loop 模式。
+//! 双玛头 (Mavuika Double Cancel) — 复杂鼠标按键序列 + S 键。
+//! 用于原神玛薇卡双坠操作。Loop 模式，按住循环。
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
@@ -11,6 +11,10 @@ use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// 双玛头 (Mavuika Double Cancel) 功能 — Loop 模式。
+///
+/// 执行复杂的鼠标按键序列（左键按/放 + 右键点击）+ S 键，用于原神玛薇卡双坠操作。
+/// 每次循环展开 5 轮序列，每轮包含左键 hold、右键点击、S 键 hold 等步骤。
 pub struct 双玛头 {
     click_once: EventSequence,
     main_loop: EventSequence,
@@ -18,6 +22,12 @@ pub struct 双玛头 {
 }
 
 impl 双玛头 {
+    /// 创建 `双玛头` 实例。
+    ///
+    /// 构建两个 `EventSequence`：
+    /// - `click_once`: 激活时先执行一次 left_click + 40ms
+    /// - `main_loop`: C++ 原版每轮 while 内跑 5 遍序列，此处构造时展开为 5 份，
+    ///   每份含 10 步（左键 down/up、右键 click、S press/release 等时间控制）
     pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut click_once = EventSequence::new();
         click_once.left_click().sleep(40.0);
@@ -49,6 +59,11 @@ impl 双玛头 {
 }
 
 impl KeyFunction for 双玛头 {
+    /// 执行双玛头操作：初始点击 → 主循环。
+    ///
+    /// 初始段发送 left_click + 40ms (不可中断)。
+    /// 主循环发送展开的 5 轮序列，跟踪鼠标左键和 S 键状态，
+    /// 提前停止时自动释放粘滞键。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
         // ── on activate ──
         for event in self.click_once.events() {
