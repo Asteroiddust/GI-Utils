@@ -11,12 +11,14 @@ mod interception;
 mod scan_code;
 mod utils;
 
-use engine::{KeyMonitor, TriggerMode};
 use engine::bindings::KeyId;
+use engine::{KeyMonitor, TriggerMode};
 use functions::auto_clicker::连点器;
 use functions::ganyu_aim_cancel::甘雨走A;
 use functions::ghost_walk::鬼畜走路;
+use functions::mavuika_double_cancel::双玛头;
 use functions::mavuika_jump::火神跳喷;
+use functions::mouse_color::坐标颜色;
 use functions::quick_pickup::快速拾取;
 use scan_code::ScanCode;
 use std::sync::Arc;
@@ -60,26 +62,62 @@ fn main() {
 
     // F13: 连点器
     let auto_clicker = Arc::new(连点器::new(send_ctx.clone()));
-    bindings.register(KeyId::new(ScanCode::F13, false), TriggerMode::WhileHeld, auto_clicker);
+    bindings.register(
+        KeyId::new(ScanCode::F13, false),
+        TriggerMode::WhileHeld,
+        auto_clicker,
+    );
 
     // F14: 快速拾取 (F + 滚轮下拉)
     let quick_pickup = Arc::new(快速拾取::new(send_ctx.clone()));
-    bindings.register(KeyId::new(ScanCode::F14, false), TriggerMode::WhileHeld, quick_pickup);
+    bindings.register(
+        KeyId::new(ScanCode::F14, false),
+        TriggerMode::WhileHeld,
+        quick_pickup,
+    );
 
     // F15: 鬼畜走路 (WASD 交错按键)
     let ghost_walk = Arc::new(鬼畜走路::new(send_ctx.clone()));
-    bindings.register(KeyId::new(ScanCode::F15, false), TriggerMode::WhileHeld, ghost_walk);
+    bindings.register(
+        KeyId::new(ScanCode::F15, false),
+        TriggerMode::WhileHeld,
+        ghost_walk,
+    );
 
     // F16: 火神跳喷 (初始跳 + 循环连跳)
-    let fire_jump = Arc::new(火神跳喷::new(send_ctx.clone()));
-    bindings.register(KeyId::new(ScanCode::F16, false), TriggerMode::WhileHeld, fire_jump);
+    let mavuika_hop = Arc::new(火神跳喷::new(send_ctx.clone()));
+    bindings.register(
+        KeyId::new(ScanCode::F16, false),
+        TriggerMode::WhileHeld,
+        mavuika_hop,
+    );
 
     // F17: 甘雨走A (射箭后摇取消)
-    let ganyu_aim = Arc::new(甘雨走A::new(send_ctx.clone()));
-    bindings.register(KeyId::new(ScanCode::F17, false), TriggerMode::Once, ganyu_aim);
+    let ganyu_aim_cancel = Arc::new(甘雨走A::new(send_ctx.clone()));
+    bindings.register(
+        KeyId::new(ScanCode::F17, false),
+        TriggerMode::Once,
+        ganyu_aim_cancel,
+    );
+
+    // F18: 双玛头 (复杂按键序列)
+    let mavuika_double_cancel = Arc::new(双玛头::new(send_ctx.clone()));
+    bindings.register(
+        KeyId::new(ScanCode::F18, false),
+        TriggerMode::WhileHeld,
+        mavuika_double_cancel,
+    );
+
+    // F19: 坐标颜色 (光标位置 + 像素RGB)
+    let mouse_color = Arc::new(坐标颜色::new());
+    bindings.register(
+        KeyId::new(ScanCode::F19, false),
+        TriggerMode::WhileHeld,
+        mouse_color,
+    );
 
     // TODO: 继续注册移植的功能
-    // bindings.register(KeyId::new(ScanCode::F18, false), 双玛头);
+    // bindings.register(KeyId::new(ScanCode::SC_Add, false), 优化游戏);
     // ...
 
     println!("Registered functions:");
@@ -88,6 +126,8 @@ fn main() {
     println!("  F15 = 鬼畜走路  (按住循环)");
     println!("  F16 = 火神跳喷  (按住循环)");
     println!("  F17 = 甘雨走A  (单次执行)");
+    println!("  F18 = 双玛头  (按住循环)");
+    println!("  F19 = 坐标颜色  (按住循环)");
     println!();
     println!("Monitoring started. Press F12 to exit.");
     println!();
