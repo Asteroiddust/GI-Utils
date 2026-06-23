@@ -20,8 +20,8 @@ impl 坐标颜色 {
 }
 
 impl KeyFunction for 坐标颜色 {
-    fn execute(&self, running: Arc<AtomicBool>) {
-        while running.load(Ordering::Acquire) {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
+        while !stop_requested.load(Ordering::Acquire) {
             if let Some(pos) = screen::get_cursor_pos() {
                 if let Some(color) = self.reader.read(pos.x, pos.y) {
                     print!(

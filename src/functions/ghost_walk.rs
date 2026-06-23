@@ -4,7 +4,7 @@
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
 use crate::interception::InterceptionContext;
-use crate::scan_code::ScanCode;
+use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,20 +19,20 @@ impl 鬼畜走路 {
         let mut sequence = EventSequence::new();
         // W: 1ms press → release → 49ms gap → next key
         sequence
-            .hold(ScanCode::W, 1.0).sleep(49.0)
-            .hold(ScanCode::A, 1.0).sleep(49.0)
-            .hold(ScanCode::S, 1.0).sleep(49.0)
-            .hold(ScanCode::D, 1.0).sleep(49.0);
+            .hold(Key::W, 1.0).sleep(49.0)
+            .hold(Key::A, 1.0).sleep(49.0)
+            .hold(Key::S, 1.0).sleep(49.0)
+            .hold(Key::D, 1.0).sleep(49.0);
         Self { sequence, send_ctx }
     }
 }
 
 impl KeyFunction for 鬼畜走路 {
-    fn execute(&self, running: Arc<AtomicBool>) {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
         let events = self.sequence.events();
 
-        while running.load(Ordering::Acquire) {
-            let mut held: Option<ScanCode> = None;
+        while !stop_requested.load(Ordering::Acquire) {
+            let mut held = None;
 
             for event in events {
                 // Track key state for cleanup on early stop
@@ -47,8 +47,8 @@ impl KeyFunction for 鬼畜走路 {
                 self.send_ctx.send_event(event);
 
                 if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &running);
-                    if !running.load(Ordering::Acquire) {
+                    delay::delay_ms_interruptible(*ms, &stop_requested);
+                    if stop_requested.load(Ordering::Acquire) {
                         // Release stuck key before exiting
                         if let Some(key) = held {
                             self.send_ctx.send_event(&InputEvent::release(key));

@@ -4,7 +4,7 @@
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
 use crate::interception::InterceptionContext;
-use crate::scan_code::ScanCode;
+use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,17 +18,17 @@ pub struct 火神跳喷 {
 impl 火神跳喷 {
     pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
         let mut initial_jump = EventSequence::new();
-        initial_jump.tap(ScanCode::SPACE).sleep(120.0);
+        initial_jump.tap(Key::SPACE).sleep(120.0);
 
         let mut loop_seq = EventSequence::new();
-        loop_seq.tap(ScanCode::SPACE).sleep(10.0);
+        loop_seq.tap(Key::SPACE).sleep(10.0);
 
         Self { initial_jump, loop_seq, send_ctx }
     }
 }
 
 impl KeyFunction for 火神跳喷 {
-    fn execute(&self, running: Arc<AtomicBool>) {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
         // ── on activate: initial jump ──
         for event in self.initial_jump.events() {
             self.send_ctx.send_event(event);
@@ -38,11 +38,11 @@ impl KeyFunction for 火神跳喷 {
         }
 
         // ── while held: loop jump ──
-        while running.load(Ordering::Acquire) {
+        while !stop_requested.load(Ordering::Acquire) {
             for event in self.loop_seq.events() {
                 self.send_ctx.send_event(event);
                 if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &running);
+                    delay::delay_ms_interruptible(*ms, &stop_requested);
                 }
             }
         }

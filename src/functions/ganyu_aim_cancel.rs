@@ -4,7 +4,7 @@
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
 use crate::interception::InterceptionContext;
-use crate::scan_code::ScanCode;
+use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -22,14 +22,14 @@ impl 甘雨走A {
             .sleep(50.0)
             .right_click()
             .sleep(30.0)
-            .press(ScanCode::R)
-            .release(ScanCode::R);
+            .press(Key::R)
+            .release(Key::R);
         Self { sequence, send_ctx }
     }
 }
 
 impl KeyFunction for 甘雨走A {
-    fn execute(&self, _running: Arc<AtomicBool>) {
+    fn execute(&self, _stop_requested: Arc<AtomicBool>) {
         let events = self.sequence.events();
         for event in events {
             self.send_ctx.send_event(event);

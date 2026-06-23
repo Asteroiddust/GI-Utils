@@ -22,6 +22,7 @@
 //! ```
 
 use crate::interception::ffi::*;
+use crate::key::Key;
 use crate::scan_code::ScanCode;
 
 // ═══════════════════════════════════════════════════════════════
@@ -68,12 +69,14 @@ pub enum InputEvent {
 // ── Constructors ──────────────────────────────────────────────
 
 impl InputEvent {
-    pub fn press(code: impl Into<ScanCode>) -> Self {
-        InputEvent::Keyboard { code: code.into(), state: INTERCEPTION_KEY_DOWN }
+    pub fn press(key: impl Into<Key>) -> Self {
+        let key = key.into();
+        InputEvent::Keyboard { code: key.code, state: key.down_state() }
     }
 
-    pub fn release(code: impl Into<ScanCode>) -> Self {
-        InputEvent::Keyboard { code: code.into(), state: INTERCEPTION_KEY_UP }
+    pub fn release(key: impl Into<Key>) -> Self {
+        let key = key.into();
+        InputEvent::Keyboard { code: key.code, state: key.up_state() }
     }
 
     pub fn left_down() -> Self {
@@ -199,25 +202,25 @@ impl EventSequence {
     // ── Keyboard primitives ────────────────────────────────
 
     /// Press a key down. No delay.
-    pub fn press(&mut self, code: impl Into<ScanCode>) -> &mut Self {
-        self.push(InputEvent::press(code))
+    pub fn press(&mut self, key: impl Into<Key>) -> &mut Self {
+        self.push(InputEvent::press(key))
     }
 
     /// Release a key. No delay.
-    pub fn release(&mut self, code: impl Into<ScanCode>) -> &mut Self {
-        self.push(InputEvent::release(code))
+    pub fn release(&mut self, key: impl Into<Key>) -> &mut Self {
+        self.push(InputEvent::release(key))
     }
 
     /// Hold a key: press → sleep(`duration_ms`) → release.
-    pub fn hold(&mut self, code: impl Into<ScanCode>, duration_ms: f64) -> &mut Self {
-        let sc = code.into();
-        self.press(sc).sleep(duration_ms).release(sc)
+    pub fn hold(&mut self, key: impl Into<Key>, duration_ms: f64) -> &mut Self {
+        let k = key.into();
+        self.press(k).sleep(duration_ms).release(k)
     }
 
     /// Tap a key: press then immediately release (no delay between).
-    pub fn tap(&mut self, code: impl Into<ScanCode>) -> &mut Self {
-        let sc = code.into();
-        self.press(sc).release(sc)
+    pub fn tap(&mut self, key: impl Into<Key>) -> &mut Self {
+        let k = key.into();
+        self.press(k).release(k)
     }
 
     // ── Mouse button primitives ────────────────────────────

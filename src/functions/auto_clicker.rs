@@ -21,14 +21,14 @@ impl 连点器 {
 }
 
 impl KeyFunction for 连点器 {
-    fn execute(&self, running: Arc<AtomicBool>) {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
         let events = self.sequence.events();
 
-        while running.load(Ordering::Acquire) {
+        while !stop_requested.load(Ordering::Acquire) {
             for event in events {
                 self.send_ctx.send_event(event);
                 if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &running);
+                    delay::delay_ms_interruptible(*ms, &stop_requested);
                 }
             }
         }

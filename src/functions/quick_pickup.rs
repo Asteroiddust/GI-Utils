@@ -4,7 +4,7 @@
 use crate::engine::event::{EventSequence, InputEvent, ScrollDir};
 use crate::engine::function::KeyFunction;
 use crate::interception::InterceptionContext;
-use crate::scan_code::ScanCode;
+use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,7 +18,7 @@ impl 快速拾取 {
     pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
         let mut sequence = EventSequence::new();
         sequence
-            .tap(ScanCode::F)
+            .tap(Key::F)
             .sleep(10.0)
             .wheel(ScrollDir::DOWN)
             .sleep(10.0);
@@ -27,14 +27,14 @@ impl 快速拾取 {
 }
 
 impl KeyFunction for 快速拾取 {
-    fn execute(&self, running: Arc<AtomicBool>) {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
         let events = self.sequence.events();
 
-        while running.load(Ordering::Acquire) {
+        while !stop_requested.load(Ordering::Acquire) {
             for event in events {
                 self.send_ctx.send_event(event);
                 if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &running);
+                    delay::delay_ms_interruptible(*ms, &stop_requested);
                 }
             }
         }

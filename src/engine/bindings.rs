@@ -9,28 +9,12 @@
 //! | `Toggle`    | toggle start / stop | —                   |
 
 use crate::engine::function::KeyFunction;
-use crate::scan_code::ScanCode;
+use crate::key::Key;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tracing::debug;
-
-// ═══════════════════════════════════════════════════════════════
-// KeyId
-// ═══════════════════════════════════════════════════════════════
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyId {
-    pub code: ScanCode,
-    pub is_e0: bool,
-}
-
-impl KeyId {
-    pub fn new(code: impl Into<ScanCode>, is_e0: bool) -> Self {
-        Self { code: code.into(), is_e0 }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════
 // Trigger mode
@@ -52,8 +36,8 @@ struct Entry {
     mode: TriggerMode,
     /// True while any invocation is in progress (all modes).
     active: Arc<AtomicBool>,
-    /// For WhileHeld / Toggle: true while the function should keep running.
-    keep_running: Option<Arc<AtomicBool>>,
+    /// For WhileHeld / Toggle: true signals the function to stop.
+    stop_requested: Option<Arc<AtomicBool>>,
     /// For WhileHeld / Toggle: thread handle for join-on-stop.
     handle: Option<JoinHandle<()>>,
 }
@@ -64,28 +48,28 @@ impl Entry {
     }
 
     /// Spawn for WhileHeld / Toggle: looping, cancelable.
-    fn spawn_loop(&mut self, key: KeyId) {
+    fn spawn_loop(&mut self, key: Key) {
         let func = self.func.clone();
-        let keep_running = Arc::new(AtomicBool::new(true));
-        let r = keep_running.clone();
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let stop = stop_requested.clone();
 
         self.active.store(true, Ordering::Release);
         let active = self.active.clone();
         let handle = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
-                func.execute(r);
+                func.execute(stop);
                 active.store(false, Ordering::Release);
             })
             .expect("Failed to spawn function thread");
 
-        self.keep_running = Some(keep_running);
+        self.stop_requested = Some(stop_requested);
         self.handle = Some(handle);
         debug!("Started {:?}", key);
     }
 
     /// Spawn for Once: runs to completion, no cancellation needed.
-    fn spawn_once(&mut self, key: KeyId) {
+    fn spawn_once(&mut self, key: Key) {
         let func = self.func.clone();
 
         self.active.store(true, Ordering::Release);
@@ -93,7 +77,7 @@ impl Entry {
         thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
-                func.execute(Arc::new(AtomicBool::new(true))); // dummy — no loop
+                func.execute(Arc::new(AtomicBool::new(false))); // dummy — no loop
                 active.store(false, Ordering::Release);
             })
             .expect("Failed to spawn function thread");
@@ -101,23 +85,23 @@ impl Entry {
     }
 
     /// Stop for WhileHeld / Toggle: signal + join.
-    fn stop_loop(&mut self, key: KeyId) {
-        if let Some(ref keep_running) = self.keep_running {
-            keep_running.store(false, Ordering::Release);
+    fn stop_loop(&mut self, key: Key) {
+        if let Some(ref stop_requested) = self.stop_requested {
+            stop_requested.store(true, Ordering::Release);
         }
         if let Some(handle) = self.handle.take() {
             debug!("Joining {:?}...", key);
             let _ = handle.join();
             debug!("Stopped {:?}", key);
         }
-        self.keep_running = None;
+        self.stop_requested = None;
         self.active.store(false, Ordering::Release);
     }
 }
 
 pub struct KeyBindings {
-    bindings: Mutex<HashMap<KeyId, Entry>>,
-    keys_held: Mutex<HashMap<KeyId, bool>>,
+    bindings: Mutex<HashMap<Key, Entry>>,
+    keys_held: Mutex<HashMap<Key, bool>>,
 }
 
 impl KeyBindings {
@@ -129,26 +113,26 @@ impl KeyBindings {
     }
 
     /// Register a function with a trigger mode.
-    pub fn register(&self, key: KeyId, mode: TriggerMode, func: Arc<dyn KeyFunction>) {
+    pub fn register(&self, key: Key, mode: TriggerMode, func: Arc<dyn KeyFunction>) {
         let entry = Entry {
             func,
             mode,
             active: Arc::new(AtomicBool::new(false)),
-            keep_running: None,
+            stop_requested: None,
             handle: None,
         };
         self.bindings.lock().unwrap().insert(key, entry);
         debug!("Registered {:?} ({:?})", key, mode);
     }
 
-    pub fn unregister(&self, key: KeyId) {
+    pub fn unregister(&self, key: Key) {
         self.bindings.lock().unwrap().remove(&key);
         debug!("Unregistered {:?}", key);
     }
 
     // ── Key-down ────────────────────────────────────────────
 
-    pub fn process_key_down(&self, key: KeyId) {
+    pub fn process_key_down(&self, key: Key) {
         // Debounce: ignore auto-repeat while held
         {
             let mut held = self.keys_held.lock().unwrap();
@@ -186,7 +170,7 @@ impl KeyBindings {
 
     // ── Key-up ──────────────────────────────────────────────
 
-    pub fn process_key_up(&self, key: KeyId) {
+    pub fn process_key_up(&self, key: Key) {
         {
             let mut held = self.keys_held.lock().unwrap();
             held.insert(key, false);

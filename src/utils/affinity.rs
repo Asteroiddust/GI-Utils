@@ -223,7 +223,7 @@ pub fn restore_all_affinity() -> Result<(), Error> {
 
 /// Set this process's own CPU affinity and priority to real-time.
 /// Must be called at startup, before any timing-critical work.
-pub fn init_tool_affinity() -> Result<(), Error> {
+pub fn configure_self() -> Result<(), Error> {
     let self_pid = process::id();
     let h = open_process(self_pid)?;
     set_affinity(&h, self_pid, TOOL_CORES_MASK)?;

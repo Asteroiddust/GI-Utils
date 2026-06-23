@@ -3,9 +3,10 @@
 //! Creates Interception contexts, sets up filters, and runs the
 //! blocking event loop that receives, forwards, and dispatches input events.
 
-use crate::engine::bindings::{KeyBindings, KeyId};
+use crate::engine::bindings::KeyBindings;
 use crate::interception::ffi::*;
 use crate::interception::InterceptionContext;
+use crate::key::Key;
 use crate::scan_code::ScanCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -84,24 +85,23 @@ impl KeyMonitor {
                 let ks = crate::interception::strokes::read_key_stroke(&stroke_buf);
 
                 // 3. F12 exit
-                if ks.code == ScanCode::F12.raw() && ks.state == INTERCEPTION_KEY_DOWN {
+                if ks.code == Key::F12.code.raw() && ks.state == INTERCEPTION_KEY_DOWN {
                     self.stop_requested.store(true, Ordering::Release);
                     break;
                 }
 
-                // 4. Parse flags
+                // 4. Parse into a fully disambiguated Key
                 let is_e0      = (ks.state & INTERCEPTION_KEY_E0) != 0;
                 let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
                 let is_e1      = (ks.state & INTERCEPTION_KEY_E1) != 0;
-                let sc = ScanCode::from(ks.code);
+                let key = Key { code: ScanCode(ks.code), is_e0 };
 
                 // 5. Verbose display
                 if self.verbose {
-                    print_keystroke(device, sc, is_pressing, is_e0, is_e1, ks.information);
+                    print_keystroke(device, key, is_pressing, is_e1, ks.information);
                 }
 
                 // 6. Dispatch
-                let key = KeyId::new(sc, is_e0);
                 if is_pressing {
                     self.bindings.process_key_down(key);
                 } else {
@@ -114,9 +114,9 @@ impl KeyMonitor {
 
 // ── Keystroke display ────────────────────────────────────────
 
-fn print_keystroke(device: i32, code: ScanCode, pressing: bool, e0: bool, e1: bool, info: u32) {
+fn print_keystroke(device: i32, key: Key, pressing: bool, e1: bool, info: u32) {
     let dir = if pressing { "\u{2193}" } else { "\u{2191}" };
-    let tags = match (e0, e1) {
+    let tags = match (key.is_e0, e1) {
         (false, false) => "",
         (true,  false) => " E0",
         (false, true)  => " E1",
@@ -126,7 +126,7 @@ fn print_keystroke(device: i32, code: ScanCode, pressing: bool, e0: bool, e1: bo
     let dev_type = if device <= 10 { "KBD" } else { "MSE" };
     println!(
         "[{}] {:<3} #{:<2} {:<16} {:>4}  code={:#04X}  state={:#04X}  info={:#08X}",
-        dir, dev_type, device, tags, code.name(), code.raw(),
+        dir, dev_type, device, tags, key.name(), key.code.raw(),
         if pressing { 0x00u16 } else { 0x01u16 }, info
     );
 }

@@ -4,7 +4,7 @@
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
 use crate::interception::InterceptionContext;
-use crate::scan_code::ScanCode;
+use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -34,9 +34,9 @@ impl 双玛头 {
                 .left_down()              //  5: L↓
                 .sleep(180.0)             //     hold L 180ms
                 .right_click()            //  6-7: R↓R↑
-                .press(ScanCode::S)       //  8: S↓
+                .press(Key::S)       //  8: S↓
                 .sleep(750.0)             //     hold S 750ms
-                .release(ScanCode::S)     //  9: S↑
+                .release(Key::S)     //  9: S↑
                 .sleep(350.0)             //
                 .left_up()                // 10: L↑
                 .sleep(540.0);
@@ -47,7 +47,7 @@ impl 双玛头 {
 }
 
 impl KeyFunction for 双玛头 {
-    fn execute(&self, running: Arc<AtomicBool>) {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
         // ── on activate ──
         for event in self.click_once.events() {
             self.send_ctx.send_event(event);
@@ -57,11 +57,11 @@ impl KeyFunction for 双玛头 {
         }
 
         // ── main loop ──
-        while running.load(Ordering::Acquire) {
+        while !stop_requested.load(Ordering::Acquire) {
             for event in self.main_loop.events() {
                 self.send_ctx.send_event(event);
                 if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &running);
+                    delay::delay_ms_interruptible(*ms, &stop_requested);
                 }
             }
         }

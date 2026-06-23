@@ -44,6 +44,16 @@ fn tsc_freq() -> f64 {
     })
 }
 
+/// Check interval in TSC cycles (~100μs for interruptible delay).
+/// Computed once from the calibrated frequency.
+static CHECK_INTERVAL: OnceLock<u64> = OnceLock::new();
+
+fn check_interval() -> u64 {
+    *CHECK_INTERVAL.get_or_init(|| {
+        (tsc_freq() / 10_000.0) as u64
+    })
+}
+
 // ── Public API ────────────────────────────────────────────────
 
 /// High-precision busy-wait delay in milliseconds.
@@ -71,23 +81,22 @@ pub fn delay_ms(ms: f64) {
 /// Precision is identical to [`delay_ms`]: the TSC target is fixed,
 /// and neither the extra `RDTSC` nor the flag check changes the
 /// exit moment.
-pub fn delay_ms_interruptible(ms: f64, running: &AtomicBool) {
+pub fn delay_ms_interruptible(ms: f64, stop_requested: &AtomicBool) {
     if ms <= 0.0 {
         return;
     }
     let freq = tsc_freq();
     let target = read_tsc() + (ms * freq / 1000.0) as u64;
 
-    // Check interval: 100μs in TSC cycles — balances responsiveness vs. overhead.
-    let check_interval = (freq / 10_000.0) as u64;
-    let mut next_check = read_tsc().wrapping_add(check_interval);
+    let interval = check_interval();
+    let mut next_check = read_tsc().wrapping_add(interval);
 
     while read_tsc() < target {
         if read_tsc() >= next_check {
-            if !running.load(Ordering::Acquire) {
+            if stop_requested.load(Ordering::Acquire) {
                 return;
             }
-            next_check = read_tsc().wrapping_add(check_interval);
+            next_check = read_tsc().wrapping_add(interval);
         }
         cpu_relax();
     }
