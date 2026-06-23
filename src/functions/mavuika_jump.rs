@@ -1,9 +1,9 @@
 //! 火神跳喷 — 初始跳跃后循环空格连跳。
-//! 用于原神火神跳喷移动。WhileHeld 模式，按住循环。
+//! 用于原神火神跳喷移动。Loop 模式，按住循环。
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
-use crate::interception::InterceptionContext;
+use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,11 +12,11 @@ use std::sync::Arc;
 pub struct 火神跳喷 {
     initial_jump: EventSequence,
     loop_seq: EventSequence,
-    send_ctx: Arc<InterceptionContext>,
+    send_ctx: Arc<SendContext>,
 }
 
 impl 火神跳喷 {
-    pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
+    pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut initial_jump = EventSequence::new();
         initial_jump.tap(Key::SPACE).sleep(120.0);
 
@@ -29,7 +29,7 @@ impl 火神跳喷 {
 
 impl KeyFunction for 火神跳喷 {
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
-        // ── on activate: initial jump ──
+        // ── on activate: initial jump (non-cancellable, matches C++) ──
         for event in self.initial_jump.events() {
             self.send_ctx.send_event(event);
             if let InputEvent::Sleep { ms } = event {

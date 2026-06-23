@@ -3,7 +3,7 @@
 
 use crate::engine::event::{EventSequence, InputEvent, ScrollDir};
 use crate::engine::function::KeyFunction;
-use crate::interception::InterceptionContext;
+use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 pub struct 快速拾取 {
     sequence: EventSequence,
-    send_ctx: Arc<InterceptionContext>,
+    send_ctx: Arc<SendContext>,
 }
 
 impl 快速拾取 {
-    pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
+    pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut sequence = EventSequence::new();
         sequence
             .tap(Key::F)

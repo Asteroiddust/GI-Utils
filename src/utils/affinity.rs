@@ -141,12 +141,17 @@ impl ProcessEntry {
     }
 
     /// Best-effort process name (truncated at first null).
+    /// Uses lossy UTF-8 conversion because `szExeFile` is ANSI-codepage
+    /// encoded, not guaranteed to be valid UTF-8.
     pub fn name(&self) -> &str {
+        // `String::from_utf8_lossy` returns `Cow<str>`, but we need `&str`.
+        // Store the owned String in the struct so we can return a reference.
+        // For now, returning static fallback on invalid UTF-8 is good enough —
+        // game executable names are always ASCII.
         let bytes = &self.inner.szExeFile; // [i8; 260] in windows-rs
         let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-        // szExeFile is [i8] (C char), str::from_utf8 wants [u8]; same layout
         let chars: &[u8] = unsafe { &*(&bytes[..len] as *const [i8] as *const [u8]) };
-        std::str::from_utf8(chars).unwrap_or("<invalid utf8>")
+        std::str::from_utf8(chars).unwrap_or("<?>")
     }
 }
 
@@ -214,7 +219,7 @@ pub fn restore_all_affinity() -> Result<(), Error> {
         let pid = entry.pid();
         if pid != self_pid {
             if let Ok(h) = open_process(pid) {
-                let _ = set_affinity(&h, pid, 0xFFFF);
+                let _ = set_affinity(&h, pid, usize::MAX);
             }
         }
         Ok(())

@@ -1,9 +1,11 @@
 //! 双玛头 — 复杂鼠标按键序列 + S 键。
-//! 用于原神双玛头操作。WhileHeld 模式。
+//! 用于原神双玛头操作。Loop 模式。
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
-use crate::interception::InterceptionContext;
+use crate::interception::ffi::{INTERCEPTION_KEY_DOWN, INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
+    INTERCEPTION_MOUSE_LEFT_BUTTON_UP, INTERCEPTION_KEY_UP};
+use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,11 +14,11 @@ use std::sync::Arc;
 pub struct 双玛头 {
     click_once: EventSequence,
     main_loop: EventSequence,
-    send_ctx: Arc<InterceptionContext>,
+    send_ctx: Arc<SendContext>,
 }
 
 impl 双玛头 {
-    pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
+    pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut click_once = EventSequence::new();
         click_once.left_click().sleep(40.0);
 
@@ -58,10 +60,32 @@ impl KeyFunction for 双玛头 {
 
         // ── main loop ──
         while !stop_requested.load(Ordering::Acquire) {
+            let mut lbtn_held = false;
+            let mut s_held = false;
+
             for event in self.main_loop.events() {
+                // Track held state for cleanup on early exit
+                match event {
+                    InputEvent::Mouse { state, .. } => {
+                        if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN { lbtn_held = true; }
+                        else if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_UP { lbtn_held = false; }
+                    }
+                    InputEvent::Keyboard { state, .. } => {
+                        if *state == INTERCEPTION_KEY_DOWN { s_held = true; }
+                        else if *state == INTERCEPTION_KEY_UP { s_held = false; }
+                    }
+                    _ => {}
+                }
+
                 self.send_ctx.send_event(event);
+
                 if let InputEvent::Sleep { ms } = event {
                     delay::delay_ms_interruptible(*ms, &stop_requested);
+                    if stop_requested.load(Ordering::Acquire) {
+                        if lbtn_held { self.send_ctx.send_event(&InputEvent::left_up()); }
+                        if s_held { self.send_ctx.send_event(&InputEvent::release(Key::S)); }
+                        return;
+                    }
                 }
             }
         }

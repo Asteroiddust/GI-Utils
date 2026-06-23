@@ -20,11 +20,18 @@ pub fn beep(frequency: u32, duration_ms: u32) {
         );
         return;
     }
-    unsafe { Beep(frequency, duration_ms); }
+    let ok = unsafe { Beep(frequency, duration_ms) };
+    if ok == 0 {
+        // Beep can fail if the sound card is busy or the system has no beep device.
+        // Not actionable — just ignore.
+    }
 }
 
 /// Play a beep asynchronously on a separate thread.
 /// Returns immediately; the beep plays in the background.
+///
+/// Intended for infrequent use (startup, exit, one-off feedback).
+/// Each call spawns an OS thread; do not call in tight loops.
 pub fn beep_async(frequency: u32, duration_ms: u32) {
     if frequency < 37 || frequency > 32767 {
         eprintln!(

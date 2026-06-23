@@ -1,7 +1,8 @@
 //! 坐标颜色 — 实时显示光标位置和像素颜色。
-//! WhileHeld 模式：按住时持续显示，松开停止。
+//! Loop 模式：按住时持续显示，松开停止。
 
 use crate::engine::function::KeyFunction;
+use crate::utils::delay;
 use crate::utils::screen::{self, PixelReader};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +32,7 @@ impl KeyFunction for 坐标颜色 {
                     io::stdout().flush().ok();
                 }
             }
+            delay::delay_ms_interruptible(20.0, &stop_requested);
         }
         println!(); // final newline after \r
     }

@@ -31,9 +31,12 @@ fn cpu_relax() {
 /// Falls back to 9800X3D base clock if calibration was somehow skipped.
 static TSC_FREQ: OnceLock<f64> = OnceLock::new();
 
-/// Set the TSC frequency (called by calibration).
+/// Set the TSC frequency (called once by calibration).
 pub(crate) fn init_tsc_freq(freq_hz: f64) {
-    TSC_FREQ.set(freq_hz).ok();
+    if TSC_FREQ.set(freq_hz).is_err() {
+        // Already calibrated — ignore repeat call.
+        // The first calibration result is kept.
+    }
 }
 
 /// Get the current TSC frequency.
@@ -132,18 +135,30 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
         let tsc_end = read_tsc();
         let elapsed = start.elapsed().as_secs_f64();
         let rate = (tsc_end - tsc_start) as f64 / elapsed;
-        print!("\r  sample {:>2}/{}: {:.0} Hz", i + 1, sample_count, rate);
-        io::stdout().flush().ok();
-        rates.push(rate);
+        if rate.is_finite() {
+            print!("\r  sample {:>2}/{}: {:.0} Hz", i + 1, sample_count, rate);
+            io::stdout().flush().ok();
+            rates.push(rate);
+        } else {
+            eprintln!("\r  sample {:>2}/{}: invalid — skipping", i + 1, sample_count);
+        }
     }
     println!(); // final newline after \r overwrites
 
+    let n = rates.len();
+    if n == 0 {
+        // All samples invalid — use hardcoded fallback.
+        // Should never happen on modern invariant-TSC CPUs.
+        eprintln!("  -> all samples invalid, using default frequency");
+        return tsc_freq();
+    }
+
     rates.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let median = if sample_count % 2 == 0 {
-        (rates[sample_count / 2 - 1] + rates[sample_count / 2]) / 2.0
+    let median = if n % 2 == 0 {
+        (rates[n / 2 - 1] + rates[n / 2]) / 2.0
     } else {
-        rates[sample_count / 2]
+        rates[n / 2]
     };
 
     init_tsc_freq(median);

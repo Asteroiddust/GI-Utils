@@ -36,7 +36,12 @@ impl Drop for ScreenDC {
     }
 }
 
-// GDI device contexts are process-wide resources — safe to share across threads.
+// GDI device contexts (DC) are process-wide resources tied to a desktop.
+// Safe to share across threads because:
+//   - `GetDC(NULL)` returns a desktop DC valid for the entire session
+//   - `GetPixel` is a read-only operation — concurrent reads don't race
+//   - The DC handle is valid until `ReleaseDC`, which only happens on Drop
+//   - No mutable state is exposed through `&self` methods
 unsafe impl Send for ScreenDC {}
 unsafe impl Sync for ScreenDC {}
 

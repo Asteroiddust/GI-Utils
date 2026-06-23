@@ -3,7 +3,7 @@
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
-use crate::interception::InterceptionContext;
+use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::AtomicBool;
@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 pub struct 甘雨走A {
     sequence: EventSequence,
-    send_ctx: Arc<InterceptionContext>,
+    send_ctx: Arc<SendContext>,
 }
 
 impl 甘雨走A {
-    pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
+    pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut sequence = EventSequence::new();
         sequence
             .left_click()

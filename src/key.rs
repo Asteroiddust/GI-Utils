@@ -56,43 +56,65 @@ impl Key {
     pub fn name(self) -> &'static str {
         if self.is_e0 {
             match self.code.0 {
-                0x1D => "RCtrl",
-                0x38 => "RAlt",
-                0x47 => "Home",
-                0x48 => "Up",
-                0x49 => "PageUp",
-                0x4B => "Left",
-                0x4D => "Right",
-                0x4F => "End",
-                0x50 => "Down",
-                0x51 => "PageDown",
-                0x52 => "Insert",
-                0x53 => "Delete",
-                0x1C => "NumpadEnter",
-                0x35 => "NumpadDivide",
-                0x37 => "PrintScreen",
-                0x5B => "LWin",
-                0x5C => "RWin",
-                0x5D => "Apps",
+                0x1D => return "RCtrl",
+                0x38 => return "RAlt",
+                0x47 => return "Home",
+                0x48 => return "Up",
+                0x49 => return "PageUp",
+                0x4B => return "Left",
+                0x4D => return "Right",
+                0x4F => return "End",
+                0x50 => return "Down",
+                0x51 => return "PageDown",
+                0x52 => return "Insert",
+                0x53 => return "Delete",
+                0x1C => return "NumpadEnter",
+                0x35 => return "NumpadDivide",
+                0x37 => return "PrintScreen",
+                0x5B => return "LWin",
+                0x5C => return "RWin",
+                0x5D => return "Apps",
                 // Media (E0-only)
-                0x10 => "PrevTrack",
-                0x19 => "NextTrack",
-                0x20 => "Mute",
-                0x21 => "Calculator",
-                0x22 => "PlayPause",
-                0x24 => "Stop",
-                0x2E => "VolumeDown",
-                0x30 => "VolumeUp",
-                0x32 => "WWWHome",
+                0x10 => return "PrevTrack",
+                0x19 => return "NextTrack",
+                0x20 => return "Mute",
+                0x21 => return "Calculator",
+                0x22 => return "PlayPause",
+                0x24 => return "Stop",
+                0x2E => return "VolumeDown",
+                0x30 => return "VolumeUp",
+                0x32 => return "WWWHome",
                 // ACPI (E0-only)
-                0x5E => "Power",
-                0x5F => "Sleep",
-                0x63 => "Wake",
-                _ => return self.code.name(),
+                0x5E => return "Power",
+                0x5F => return "Sleep",
+                0x63 => return "Wake",
+                _ => {}
             }
         } else {
-            self.code.name()
+            // Non-E0 overrides for codes shared with E0 keys
+            match self.code.0 {
+                0x37 => return "NumpadMultiply",
+                0x47 => return "Numpad7",
+                0x48 => return "Numpad8",
+                0x49 => return "Numpad9",
+                0x4B => return "Numpad4",
+                0x4D => return "Numpad6",
+                0x4F => return "Numpad1",
+                0x50 => return "Numpad2",
+                0x51 => return "Numpad3",
+                0x52 => return "Numpad0",
+                0x53 => return "NumpadPeriod",
+                0x1C => return "Enter",
+                0x35 => return "Slash",
+                0x1D => return "Ctrl",
+                0x38 => return "Alt",
+                0x5B => return "LWin",
+                0x5C => return "RWin",
+                0x5D => return "Apps",
+                _ => {}
+            }
         }
+        self.code.name()
     }
 }
 
@@ -126,34 +148,35 @@ impl std::fmt::Debug for Key {
 
 impl Key {
     // ── Row 1 ──────────────────────────────────────────────
-    pub const ESCAPE: Self = Self { code: ScanCode(0x01), is_e0: false };
-    pub const F1: Self = Self { code: ScanCode(0x3B), is_e0: false };
-    pub const F2: Self = Self { code: ScanCode(0x3C), is_e0: false };
-    pub const F3: Self = Self { code: ScanCode(0x3D), is_e0: false };
-    pub const F4: Self = Self { code: ScanCode(0x3E), is_e0: false };
-    pub const F5: Self = Self { code: ScanCode(0x3F), is_e0: false };
-    pub const F6: Self = Self { code: ScanCode(0x40), is_e0: false };
-    pub const F7: Self = Self { code: ScanCode(0x41), is_e0: false };
-    pub const F8: Self = Self { code: ScanCode(0x42), is_e0: false };
-    pub const F9: Self = Self { code: ScanCode(0x43), is_e0: false };
-    pub const F10: Self = Self { code: ScanCode(0x44), is_e0: false };
-    pub const F11: Self = Self { code: ScanCode(0x57), is_e0: false };
-    pub const F12: Self = Self { code: ScanCode(0x58), is_e0: false };
-    pub const F13: Self = Self { code: ScanCode(0x64), is_e0: false };
-    pub const F14: Self = Self { code: ScanCode(0x65), is_e0: false };
-    pub const F15: Self = Self { code: ScanCode(0x66), is_e0: false };
-    pub const F16: Self = Self { code: ScanCode(0x67), is_e0: false };
-    pub const F17: Self = Self { code: ScanCode(0x68), is_e0: false };
-    pub const F18: Self = Self { code: ScanCode(0x69), is_e0: false };
-    pub const F19: Self = Self { code: ScanCode(0x6A), is_e0: false };
-    pub const F20: Self = Self { code: ScanCode(0x6B), is_e0: false };
-    pub const F21: Self = Self { code: ScanCode(0x6C), is_e0: false };
-    pub const F22: Self = Self { code: ScanCode(0x6D), is_e0: false };
-    pub const F23: Self = Self { code: ScanCode(0x6E), is_e0: false };
-    pub const F24: Self = Self { code: ScanCode(0x6F), is_e0: false };
-    pub const PRINT_SCREEN: Self = Self { code: ScanCode(0x37), is_e0: true }; // E0.2A E0.37
-    pub const SCROLL_LOCK: Self = Self { code: ScanCode(0x46), is_e0: false };
-    pub const PAUSE: Self = Self { code: ScanCode(0x45), is_e0: false }; // E1.1D.45
+    pub const ESCAPE:       Self = Self { code: ScanCode(0x01), is_e0: false };
+    pub const F1:           Self = Self { code: ScanCode(0x3B), is_e0: false };
+    pub const F2:           Self = Self { code: ScanCode(0x3C), is_e0: false };
+    pub const F3:           Self = Self { code: ScanCode(0x3D), is_e0: false };
+    pub const F4:           Self = Self { code: ScanCode(0x3E), is_e0: false };
+    pub const F5:           Self = Self { code: ScanCode(0x3F), is_e0: false };
+    pub const F6:           Self = Self { code: ScanCode(0x40), is_e0: false };
+    pub const F7:           Self = Self { code: ScanCode(0x41), is_e0: false };
+    pub const F8:           Self = Self { code: ScanCode(0x42), is_e0: false };
+    pub const F9:           Self = Self { code: ScanCode(0x43), is_e0: false };
+    pub const F10:          Self = Self { code: ScanCode(0x44), is_e0: false };
+    pub const F11:          Self = Self { code: ScanCode(0x57), is_e0: false };
+    pub const F12:          Self = Self { code: ScanCode(0x58), is_e0: false };
+    pub const F13:          Self = Self { code: ScanCode(0x64), is_e0: false };
+    pub const F14:          Self = Self { code: ScanCode(0x65), is_e0: false };
+    pub const F15:          Self = Self { code: ScanCode(0x66), is_e0: false };
+    pub const F16:          Self = Self { code: ScanCode(0x67), is_e0: false };
+    pub const F17:          Self = Self { code: ScanCode(0x68), is_e0: false };
+    pub const F18:          Self = Self { code: ScanCode(0x69), is_e0: false };
+    pub const F19:          Self = Self { code: ScanCode(0x6A), is_e0: false };
+    pub const F20:          Self = Self { code: ScanCode(0x6B), is_e0: false };
+    pub const F21:          Self = Self { code: ScanCode(0x6C), is_e0: false };
+    pub const F22:          Self = Self { code: ScanCode(0x6D), is_e0: false };
+    pub const F23:          Self = Self { code: ScanCode(0x6E), is_e0: false };
+    pub const F24:          Self = Self { code: ScanCode(0x6F), is_e0: false };
+    pub const PRINT_SCREEN: Self = Self { code: ScanCode(0x37), is_e0: true  }; // E0.2A E0.37
+    pub const SCROLL_LOCK:  Self = Self { code: ScanCode(0x46), is_e0: false };
+    #[deprecated(note = "PAUSE uses E1 prefix (E1.1D.45), not representable as Key. Use with E1-aware parsing.")]
+    pub const PAUSE:        Self = Self { code: ScanCode(0x45), is_e0: false }; // E1.1D.45 — same raw value as NUM_LOCK
 
     // ── Row 2 ──────────────────────────────────────────────
     pub const GRAVE: Self = Self { code: ScanCode(0x29), is_e0: false };
@@ -245,6 +268,7 @@ impl Key {
     pub const NUMPAD_0: Self = Self { code: ScanCode(0x52), is_e0: false };
     pub const NUMPAD_ADD: Self = Self { code: ScanCode(0x4E), is_e0: false };
     pub const NUMPAD_SUBTRACT: Self = Self { code: ScanCode(0x4A), is_e0: false };
+    pub const NUMPAD_MULTIPLY: Self = Self { code: ScanCode(0x37), is_e0: false };
     pub const NUMPAD_ENTER: Self = Self { code: ScanCode(0x1C), is_e0: true };
     pub const NUMPAD_DIVIDE: Self = Self { code: ScanCode(0x35), is_e0: true };
     pub const NUMPAD_PERIOD: Self = Self { code: ScanCode(0x53), is_e0: false };

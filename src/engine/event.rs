@@ -283,7 +283,7 @@ impl EventSequence {
     /// for multiple events. `scroll(ScrollDir::DOWN, 7)` equals one event
     /// with `rolling = -840`.
     pub fn scroll(&mut self, delta: i16, times: usize) -> &mut Self {
-        self.wheel(delta * times as i16)
+        self.wheel(delta.saturating_mul(times as i16))
     }
 
     // ── Timing primitive ───────────────────────────────────

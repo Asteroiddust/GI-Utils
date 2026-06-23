@@ -5,6 +5,7 @@
 
 #![allow(dead_code)] // Phase 1: infrastructure will be used in Phase 3
 
+mod config;
 mod engine;
 mod functions;
 mod interception;
@@ -12,15 +13,7 @@ mod key;
 mod scan_code;
 mod utils;
 
-use engine::{KeyMonitor, TriggerMode};
-use key::Key;
-use functions::auto_clicker::连点器;
-use functions::ganyu_aim_cancel::甘雨走A;
-use functions::ghost_walk::鬼畜走路;
-use functions::mavuika_double_cancel::双玛头;
-use functions::mavuika_jump::火神跳喷;
-use functions::mouse_color::坐标颜色;
-use functions::quick_pickup::快速拾取;
+use engine::Engine;
 use std::sync::Arc;
 
 fn main() {
@@ -30,8 +23,13 @@ fn main() {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
+    // ── Load config ─────────────────────────────────────────
+    // Must come first — fail-fast if config is broken, no need to
+    // wait through TSC calibration.
+    let config = config::load().expect("Failed to load config");
+
     println!("══════════════════════════════════════════");
-    println!("  GI-Utils v0.1.0");
+    println!("  GI-Utils v1.0.0");
     println!("  Game Input Automation Utility (Rust)");
     println!("══════════════════════════════════════════");
     println!();
@@ -53,59 +51,41 @@ fn main() {
     utils::delay::calibrate_tsc_frequency();
     println!();
 
-    // Create the main monitor
-    let monitor = KeyMonitor::new();
-    let send_ctx = monitor.send_context();
-    let bindings = monitor.bindings();
+    let engine = Engine::new();
+    let send_ctx = engine.send_context();
+    let bindings = engine.bindings();
 
-    // ── Register functions ──────────────────────────────────
+    // ── Register bindings ───────────────────────────────────
 
-    // F13: 连点器
-    let auto_clicker = Arc::new(连点器::new(send_ctx.clone()));
-    bindings.register(Key::F13, TriggerMode::WhileHeld, auto_clicker);
-
-    // F14: 快速拾取 (F + 滚轮下拉)
-    let quick_pickup = Arc::new(快速拾取::new(send_ctx.clone()));
-    bindings.register(Key::F14, TriggerMode::WhileHeld, quick_pickup);
-
-    // F15: 鬼畜走路 (WASD 交错按键)
-    let ghost_walk = Arc::new(鬼畜走路::new(send_ctx.clone()));
-    bindings.register(Key::F15, TriggerMode::WhileHeld, ghost_walk);
-
-    // F16: 火神跳喷 (初始跳 + 循环连跳)
-    let mavuika_hop = Arc::new(火神跳喷::new(send_ctx.clone()));
-    bindings.register(Key::F16, TriggerMode::WhileHeld, mavuika_hop);
-
-    // F17: 甘雨走A (射箭后摇取消)
-    let ganyu_aim_cancel = Arc::new(甘雨走A::new(send_ctx.clone()));
-    bindings.register(Key::F17, TriggerMode::Once, ganyu_aim_cancel);
-
-    // F18: 双玛头 (复杂按键序列)
-    let mavuika_double_cancel = Arc::new(双玛头::new(send_ctx.clone()));
-    bindings.register(Key::F18, TriggerMode::WhileHeld, mavuika_double_cancel);
-
-    // F19: 坐标颜色 (光标位置 + 像素RGB)
-    let mouse_color = Arc::new(坐标颜色::new());
-    bindings.register(Key::F19, TriggerMode::WhileHeld, mouse_color);
-
-    // TODO: 继续注册移植的功能
-    // bindings.register(KeyId::new(ScanCode::SC_Add, false), 优化游戏);
-    // ...
+    // Stop function — needs engine's stop_flag, special-cased
+    let stop_func = Arc::new(functions::stop::停止退出::new(engine.stop_flag()));
 
     println!("Registered functions:");
-    println!("  F13 = 连点器  (按住循环)");
-    println!("  F14 = 快速拾取  (按住循环)");
-    println!("  F15 = 鬼畜走路  (按住循环)");
-    println!("  F16 = 火神跳喷  (按住循环)");
-    println!("  F17 = 甘雨走A  (单次执行)");
-    println!("  F18 = 双玛头  (按住循环)");
-    println!("  F19 = 坐标颜色  (按住循环)");
+    for binding in &config {
+        let func: Arc<dyn engine::function::KeyFunction> =
+            if binding.func == "停止退出" {
+                stop_func.clone()
+            } else {
+                config::create_function(&binding.func, send_ctx.clone())
+                    .unwrap_or_else(|e| panic!(
+                        "config error: binding '{}' → '{}': {}",
+                        binding.key.name(), binding.func, e
+                    ))
+            };
+        bindings.register(binding.key, binding.mode, func);
+        println!(
+            "  {} = {}  ({:?})",
+            binding.key.name(),
+            binding.func,
+            binding.mode
+        );
+    }
     println!();
-    println!("Monitoring started. Press F12 to exit.");
+    println!("Engine running.");
     println!();
 
     // Run the main event loop (blocks until F12)
-    monitor.run();
+    engine.run();
 
     // Exit beep: 375 Hz, 300 ms (same as original C++)
     utils::beep::beep(375, 300);

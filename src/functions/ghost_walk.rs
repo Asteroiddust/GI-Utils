@@ -1,9 +1,10 @@
 //! 鬼畜走路 — WASD 交错按键，产生鬼畜移动效果。
-//! 用于原神鬼畜移动。WhileHeld 模式，按住循环。
+//! 用于原神鬼畜移动。Loop 模式，按住循环。
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
-use crate::interception::InterceptionContext;
+use crate::interception::ffi::INTERCEPTION_KEY_DOWN;
+use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,11 +12,11 @@ use std::sync::Arc;
 
 pub struct 鬼畜走路 {
     sequence: EventSequence,
-    send_ctx: Arc<InterceptionContext>,
+    send_ctx: Arc<SendContext>,
 }
 
 impl 鬼畜走路 {
-    pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
+    pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut sequence = EventSequence::new();
         // W: 1ms press → release → 49ms gap → next key
         sequence
@@ -37,7 +38,7 @@ impl KeyFunction for 鬼畜走路 {
             for event in events {
                 // Track key state for cleanup on early stop
                 if let InputEvent::Keyboard { code, state } = event {
-                    if *state == crate::interception::ffi::INTERCEPTION_KEY_DOWN {
+                    if *state == INTERCEPTION_KEY_DOWN {
                         held = Some(*code);
                     } else {
                         held = None;

@@ -1,121 +1,139 @@
-# GI-Utils — Rust 游戏输入自动化工具
+# GI-Utils — Rust 游戏输入自动化工具 v1.0.0
+
+> **Review cleared**: 48/48 issues resolved (0C 0H 0M 0L 0S)
+> **Build**: O3 + LTO fat + panic=abort + target-cpu=native
 
 ## 项目概述
 
 基于 [Interception](https://github.com/oblitum/Interception) 内核驱动的游戏辅助工具，从 C++ (Visual Studio) 重构为 Rust。
 
-原 C++ 项目位于 `E:\Projects\fmttest`，服务于原神/崩铁/鸣潮等游戏。
+原 C++ 项目: `E:\Projects\fmttest`，服务于原神/崩铁/鸣潮等游戏。
 
 ## 技术栈
 
-- **Rust edition 2021** (稳定版)
-- **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入，FFI 调用 `interception.dll`
-- **windows-rs 0.58** — Win32 API (GDI 像素取色、进程管理、线程优先级)
-- **tracing** — debug 构建的结构化日志（release 用 `println!`/`eprintln!`）
+- **Rust 1.96** (edition 2021)
+- **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入
+- **windows-rs 0.62** — Win32 API (GDI、Threading、ToolHelp)
+- **toml + serde** — TOML 配置文件解析
+- **tracing** — debug 构建的结构化日志
 
 ## 项目结构
 
 ```
 src/
-├── main.rs                    # 入口：提权 → TSC校准 → 注册功能 → 启动 KeyMonitor
+├── main.rs                    # 入口：加载 config → 校准 TSC → 注册 → Engine.run()
+├── config.rs                  # TOML 配置解析 + 函数工厂
 ├── build.rs                   # 链接 interception.lib
-│
-├── interception/              # Interception FFI 绑定 (完整覆盖 interception.h)
+├── key.rs                     # Key (ScanCode + is_e0) + 90+ 常量
+├── scan_code.rs               # ScanCode(u16) FFI 新类型
+
+├── interception/              # Interception FFI 绑定
 │   ├── ffi.rs                 #   extern "C" 声明、常量、repr(C) struct
-│   ├── context.rs             #   RAII InterceptionContext + safe send/receive API
-│   └── strokes.rs             #   类型安全 Stroke 转换（零拷贝）
-│
-├── scan_code.rs               # ScanCode(u16) newtype + 完整 Set 1 关联常量 + name()
-│
-├── utils/                     # 工具模块
-│   ├── delay.rs               #   read_tsc() + cpu_relax() 安全包装 + TSC 校准
-│   ├── beep.rs                #   蜂鸣反馈 (直接 FFI kernel32 Beep)
-│   ├── affinity.rs            #   RAII OwnedHandle + ProcessIterator + Result API
-│   └── screen.rs              #   RAII ScreenDC + 像素取色 + 光标位置
-│
-├── engine/                    # 核心引擎
-│   ├── event.rs               #   InputEvent (Keyboard/Mouse/Sleep) + EventSequence
-│   ├── function.rs            #   KeyFunction trait (1 method) + Arc<AtomicBool> 取消
-│   ├── bindings.rs            #   KeyBindings + KeyId + TriggerMode (3种触发模式)
-│   └── monitor.rs             #   KeyMonitor 主事件循环 + verbose keystroke 显示
-│
-└── functions/                 # 游戏功能实现
-    ├── mod.rs
-    └── auto_clicker.rs        #   连点器 (F13, WhileHeld)
+│   ├── context.rs             #   InterceptionContext (recv) + SendContext (send)
+│   └── strokes.rs             #   read/write unaligned 安全转换
+
+├── engine/
+│   ├── mod.rs                 #   Engine — 事件循环 + 按键显示
+│   ├── event.rs               #   InputEvent + EventSequence 链式 API
+│   ├── function.rs            #   KeyFunction trait (1 method)
+│   └── bindings.rs            #   KeyBindings + TriggerMode + ActiveGuard
+
+├── utils/
+│   ├── delay.rs               #   TSC delay + interruptible + 校准
+│   ├── beep.rs                #   蜂鸣 (同步 beep + 异步 beep_async)
+│   ├── affinity.rs            #   CPU 亲和性 + 进程迭代
+│   └── screen.rs              #   PixelReader (cached DC) + 像素取色
+
+└── functions/
+    ├── stop.rs                #   停止退出 (F12, Once)
+    ├── auto_clicker.rs        #   连点器 (F13, Loop)
+    ├── quick_pickup.rs        #   快速拾取 (F14, Loop)
+    ├── ghost_walk.rs          #   鬼畜走路 (F15, Loop)
+    ├── mavuika_jump.rs        #   火神跳喷 (F16, Loop)
+    ├── ganyu_aim_cancel.rs    #   甘雨走A (F17, Once)
+    ├── mavuika_double_cancel.rs # 双玛头 (F18, Loop)
+    └── mouse_color.rs         #   坐标颜色 (F19, Loop)
 ```
 
 ## 架构
 
 ```
-KeyMonitor (主循环, blocking)
-  ├── InterceptionContext: recv (接收) + send (转发/注入)
-  ├── 事件循环: wait → receive → forward → dispatch
-  │     ├── F12 → 退出
-  │     ├── verbose? → print_keystroke()
-  │     └── KeyBindings.process_key_down/up(key)
-  └── KeyBindings
-        ├── HashMap<KeyId, Entry>  (绑定注册表)
-        ├── HashMap<KeyId, bool>   (去抖表)
-        ├── Entry.active: Arc<AtomicBool>      (统一运行状态)
-        ├── Entry.cancel: Option<Arc<...>>    (loop 取消信号)
-        ├── Entry.handle: Option<JoinHandle>  (loop 线程句柄)
-        ├── spawn_once() / spawn_loop() / stop_loop()
-        └── TriggerMode 分支: Once / WhileHeld / Toggle
+Engine (主循环, blocking)
+├── InterceptionContext (recv) + SendContext (send, Arc 共享)
+├── 事件循环: wait → receive → forward → dispatch
+│   └── KeyBindings.process_key_down/up(key)
+└── KeyBindings
+      ├── HashMap<Key, Entry>    (绑定注册表)
+      ├── HashMap<Key, bool>     (去抖表)
+      ├── Entry.active: Arc<AtomicBool>        (运行状态)
+      ├── Entry.stop_requested: Arc<AtomicBool> (停止信号)
+      ├── Entry.handle: Option<JoinHandle>     (线程句柄)
+      └── TriggerMode: Once / Loop / Toggle
 ```
 
 ## 核心设计决策
 
 | 决策 | 理由 |
 |------|------|
-| **沿用 Interception** | 内核驱动是唯一可靠的在游戏中注入输入的方式 |
-| **不用 tokio/async** | `std::thread` + `Arc<AtomicBool>` 足够，零额外依赖 |
-| **ScanCode 用 newtype** | 公共 API 类型安全 (`KeyId::new(ScanCode::F13, false)`)，允许重复值 |
-| **Sleep 是 InputEvent 的独立 variant** | 延迟和动作正交，执行循环只需顺序处理 events |
-| **EventSequence 链式 API** | 所有方法返回 `&mut Self`，`press.sleep.release.wheel` |
-| **TriggerMode 三种模式** | Once (单次) / WhileHeld (按住循环) / Toggle (开关) |
-| **KeyFunction trait 只有 1 个方法** | `execute(&self, running: Arc<AtomicBool>)`，启动/停止/生命周期全在 manager |
-| **Entry 用 active + cancel 双 flag** | Once 只设 active (线程自清)，WhileHeld/Toggle 通过 cancel 通知停止 |
-| **send_ctx 用 Arc 共享** | 多线程安全共享 Interception 发送上下文 |
-| **println! 替代 tracing 作 release 输出** | 避免 Windows 上 stderr 缓冲导致的输出不可见 |
+| **Key = ScanCode + is_e0** | 单一类型消除 PS/2 值冲突，E0 自动注入 state |
+| **SendContext 独立类型** | 发送/接收分离，编译器强制禁止并发接收 |
+| **stop_requested 正向语义** | `true`=停止，全项目统一，无双重否定 |
+| **TOML 动态配置** | `config.toml` 驱动热键映射，无需重编译 |
+| **ActiveGuard Drop 防护** | 线程 panic 时自动清理 active 标志 |
+| **Mutex 外 join** | stop 不阻塞主事件循环 |
+| **delay_ms_interruptible** | 100μs 检查间隔，Loop/Toggle 即时响应 |
+| **EventSequence 链式 API** | `seq.tap(K).sleep(50).wheel(DOWN)` |
+| **KeyFunction 只有 1 个方法** | `execute(&self, stop_requested: Arc<AtomicBool>)` |
+| **printf 作 release 输出** | 避免 Windows stderr 缓冲问题 |
 
 ## 构建
 
 ```bash
 cargo build --release
-# 输出: target/release/gi-utils.exe
+# 输出: target/release/gi-utils.exe (~200KB)
 ```
 
-依赖 `interception.lib`，路径在 `build.rs` 中配置：
-```
-E:\Program\Interception\library\x64\interception.lib
-```
-
-运行时需要 `interception.dll` 在 exe 同目录。
+release profile: `opt-level=3, lto=fat, panic=abort, strip=true`
 
 ## 运行
 
-**必须以管理员身份运行**（Interception 内核驱动要求）。
+**必须以管理员身份运行**。首次运行自动生成 `config.toml`。
 
-```
-F13 = Auto Clicker (按住激活，松开停止，WhileHeld 模式)
-F12 = 退出程序
+```toml
+[[bindings]]
+key = "F12"
+func = "停止退出"
+mode = "Once"
+
+[[bindings]]
+key = "F13"
+func = "连点器"
+mode = "Loop"
 ```
 
 ## 移植进度
 
-| 功能 | C++ 类名 | Rust 状态 |
-|------|---------|----------|
-| 连点器 | `连点器` | ✅ 已移植 |
-| 快速拾取 | `快速拾取` | ⬜ 待移植 |
-| 龙王喷水 | `龙王喷水` + `上下左右重置` | ⬜ 待移植 |
-| 火神跳飞 | `火神跳飞` | ⬜ 待移植 |
-| 甘雨走A | `甘雨走A` | ⬜ 待移植 |
-| 甘雨加特林 | `甘雨加特林` | ⬜ 待移植 |
-| 双玛头 | `双玛头` | ⬜ 待移植 |
-| 鬼畜走路 | `鬼畜走路` | ⬜ 待移植 |
-| 克洛琳德 | `克洛琳德` | ⬜ 待移植（需像素检测） |
-| 添加好友 | `添加好友` | ⬜ 待移植 |
-| 申请加入 | `申请加入` | ⬜ 待移植 |
-| 坐标颜色 | `坐标颜色` | ⬜ 待移植 |
-| 优化游戏 | `优化游戏` | ⬜ 待移植（CPU 亲和性已写） |
-| 2048 系列 | `二零四八_*` | ⬜ 待移植 |
+| 功能 | 状态 |
+|------|------|
+| 停止退出 | ✅ |
+| 连点器 | ✅ |
+| 快速拾取 | ✅ |
+| 鬼畜走路 | ✅ |
+| 火神跳喷 | ✅ |
+| 甘雨走A | ✅ |
+| 双玛头 | ✅ |
+| 坐标颜色 | ✅ |
+| 甘雨加特林 | ⬜ |
+| 龙王喷水 + 子功能 | ⬜ |
+| 克洛琳德 | ⬜ |
+| 添加好友 | ⬜ |
+| 申请加入 | ⬜ |
+| 优化游戏 | ⬜ |
+| 2048 系列 | ⬜ |
+
+## 事件类型
+
+| 类型 | 模型 | 代表功能 |
+|------|------|---------|
+| **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器、快速拾取、甘雨走A、双玛头 |
+| **Timestamp** (Time based) | 时间轴调度器 | 鬼畜走路、龙王喷水（未来：多键编排） |

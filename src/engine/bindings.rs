@@ -2,11 +2,11 @@
 //!
 //! Supports three trigger modes (Logitech G Hub style):
 //!
-//! | Mode        | Key-down            | Key-up              |
-//! |-------------|---------------------|---------------------|
-//! | `Once`      | spawn, run to end   | —                   |
-//! | `WhileHeld` | spawn loop          | cancel + join       |
-//! | `Toggle`    | toggle start / stop | —                   |
+//! | Mode     | Key-down            | Key-up              |
+//! |----------|---------------------|---------------------|
+//! | `Once`   | spawn, run to end   | —                   |
+//! | `Loop`   | spawn loop          | cancel + join       |
+//! | `Toggle` | toggle start / stop | —                   |
 
 use crate::engine::function::KeyFunction;
 use crate::key::Key;
@@ -16,29 +16,41 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tracing::debug;
 
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 // Trigger mode
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerMode {
     Once,
-    WhileHeld,
+    Loop,
     Toggle,
 }
 
-// ═══════════════════════════════════════════════════════════════
-// KeyBindings
-// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// ActiveGuard — ensures active is cleared even on panic
+// ═══════════════════════════════════════════════════════════════════
+
+struct ActiveGuard(Arc<AtomicBool>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Entry
+// ═══════════════════════════════════════════════════════════════════
 
 struct Entry {
     func: Arc<dyn KeyFunction>,
     mode: TriggerMode,
     /// True while any invocation is in progress (all modes).
     active: Arc<AtomicBool>,
-    /// For WhileHeld / Toggle: true signals the function to stop.
+    /// For Loop / Toggle: true signals the function to stop.
     stop_requested: Option<Arc<AtomicBool>>,
-    /// For WhileHeld / Toggle: thread handle for join-on-stop.
+    /// For Loop / Toggle: thread handle for join-on-stop.
     handle: Option<JoinHandle<()>>,
 }
 
@@ -47,19 +59,19 @@ impl Entry {
         self.active.load(Ordering::Acquire)
     }
 
-    /// Spawn for WhileHeld / Toggle: looping, cancelable.
+    /// Spawn for Loop / Toggle: looping, cancelable.
     fn spawn_loop(&mut self, key: Key) {
         let func = self.func.clone();
         let stop_requested = Arc::new(AtomicBool::new(false));
         let stop = stop_requested.clone();
 
         self.active.store(true, Ordering::Release);
-        let active = self.active.clone();
+        let guard = ActiveGuard(self.active.clone());
         let handle = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
+                let _guard = guard; // move into closure, drops on scope exit (incl. panic)
                 func.execute(stop);
-                active.store(false, Ordering::Release);
             })
             .expect("Failed to spawn function thread");
 
@@ -73,31 +85,34 @@ impl Entry {
         let func = self.func.clone();
 
         self.active.store(true, Ordering::Release);
-        let active = self.active.clone();
+        let guard = ActiveGuard(self.active.clone());
         thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
-                func.execute(Arc::new(AtomicBool::new(false))); // dummy — no loop
-                active.store(false, Ordering::Release);
+                let _guard = guard;
+                func.execute(Arc::new(AtomicBool::new(false)));
             })
             .expect("Failed to spawn function thread");
         debug!("Started (once) {:?}", key);
     }
 
-    /// Stop for WhileHeld / Toggle: signal + join.
-    fn stop_loop(&mut self, key: Key) {
+    /// Signal stop and take the thread handle for deferred join.
+    /// The caller must join the returned handle OUTSIDE the mutex lock.
+    fn signal_stop(&mut self, key: Key) -> Option<JoinHandle<()>> {
         if let Some(ref stop_requested) = self.stop_requested {
             stop_requested.store(true, Ordering::Release);
         }
-        if let Some(handle) = self.handle.take() {
-            debug!("Joining {:?}...", key);
-            let _ = handle.join();
-            debug!("Stopped {:?}", key);
-        }
         self.stop_requested = None;
         self.active.store(false, Ordering::Release);
+        let handle = self.handle.take();
+        debug!("Signalled stop for {:?}", key);
+        handle
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// KeyBindings
+// ═══════════════════════════════════════════════════════════════════
 
 pub struct KeyBindings {
     bindings: Mutex<HashMap<Key, Entry>>,
@@ -142,58 +157,81 @@ impl KeyBindings {
             held.insert(key, true);
         }
 
-        let mut bindings = self.bindings.lock().unwrap();
-        if let Some(entry) = bindings.get_mut(&key) {
-            match entry.mode {
-                TriggerMode::Once => {
-                    if entry.is_running() {
-                        return;
+        let mut deferred = None;
+        {
+            let mut bindings = self.bindings.lock().unwrap();
+            if let Some(entry) = bindings.get_mut(&key) {
+                match entry.mode {
+                    TriggerMode::Once => {
+                        if entry.is_running() {
+                            return;
+                        }
+                        entry.spawn_once(key);
                     }
-                    entry.spawn_once(key);
-                }
-                TriggerMode::WhileHeld => {
-                    if entry.is_running() {
-                        return;
-                    }
-                    entry.spawn_loop(key);
-                }
-                TriggerMode::Toggle => {
-                    if entry.is_running() {
-                        entry.stop_loop(key);
-                    } else {
+                    TriggerMode::Loop => {
+                        if entry.is_running() {
+                            return;
+                        }
                         entry.spawn_loop(key);
+                    }
+                    TriggerMode::Toggle => {
+                        if entry.is_running() {
+                            deferred = entry.signal_stop(key);
+                        } else {
+                            entry.spawn_loop(key);
+                        }
                     }
                 }
             }
+        } // Mutex released — join outside
+        if let Some(h) = deferred {
+            debug!("Joining {:?}...", key);
+            let _ = h.join();
+            debug!("Stopped {:?}", key);
         }
     }
 
     // ── Key-up ──────────────────────────────────────────────
 
     pub fn process_key_up(&self, key: Key) {
-        {
-            let mut held = self.keys_held.lock().unwrap();
-            held.insert(key, false);
-        }
+        self.keys_held.lock().unwrap().remove(&key);
 
-        let mut bindings = self.bindings.lock().unwrap();
-        if let Some(entry) = bindings.get_mut(&key) {
-            match entry.mode {
-                TriggerMode::Once => {}
-                TriggerMode::WhileHeld => {
-                    entry.stop_loop(key);
+        let deferred: Option<JoinHandle<()>>;
+        {
+            let mut bindings = self.bindings.lock().unwrap();
+            if let Some(entry) = bindings.get_mut(&key) {
+                match entry.mode {
+                    TriggerMode::Loop => {
+                        deferred = entry.signal_stop(key);
+                    }
+                    _ => {
+                        deferred = None;
+                    }
                 }
-                TriggerMode::Toggle => {}
+            } else {
+                deferred = None;
             }
+        } // Mutex released — join outside
+        if let Some(h) = deferred {
+            debug!("Joining {:?}...", key);
+            let _ = h.join();
+            debug!("Stopped {:?}", key);
         }
     }
 
     // ── Shutdown ────────────────────────────────────────────
 
     pub fn stop_all(&self) {
-        let mut bindings = self.bindings.lock().unwrap();
-        for (key, entry) in bindings.iter_mut() {
-            entry.stop_loop(*key);
+        let handles: Vec<JoinHandle<()>>;
+        {
+            let mut bindings = self.bindings.lock().unwrap();
+            handles = bindings
+                .iter_mut()
+                .filter_map(|(key, entry)| entry.signal_stop(*key))
+                .collect();
+        } // Mutex released
+        for h in handles {
+            let _ = h.join();
         }
     }
 }

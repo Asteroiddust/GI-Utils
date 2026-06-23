@@ -2,18 +2,18 @@
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
-use crate::interception::InterceptionContext;
+use crate::interception::SendContext;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub struct 连点器 {
     sequence: EventSequence,
-    send_ctx: Arc<InterceptionContext>,
+    send_ctx: Arc<SendContext>,
 }
 
 impl 连点器 {
-    pub fn new(send_ctx: Arc<InterceptionContext>) -> Self {
+    pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut sequence = EventSequence::new();
         sequence.left_click().sleep(10.0);
         Self { sequence, send_ctx }
