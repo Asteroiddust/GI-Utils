@@ -112,7 +112,25 @@ struct KeyScheduler {
 
 **实现难度**：★★★★。需要重新设计事件模型和运行时调度器。
 
-### 4. 通用 held-key 清理
+### 4. 配置热重载
+
+监控 `config.toml` 文件变化，检测到修改后自动重新解析并更新绑定，无需重启程序。
+
+**方案**：
+- 主事件循环中通过 `InterceptionContext::wait()` 的超时变体轮询（或独立监控线程）
+- 使用 `std::fs::metadata` 比较 `config.toml` 的最后修改时间 (`modified()`)
+- 检测到变更后调用 `config::load()` → 清空旧绑定 → 重新注册
+- 正在运行中的功能不受影响（已持有 `Arc<KeyFunction>` + `stop_requested`）
+
+**设计要点**：
+- 运行时卸载旧功能：先 signal stop → join 所有活跃线程 → 清空 `KeyBindings` → 重新注册
+- 停止退出功能的 `stop_flag` 保持不变（Engine 生命周期不变）
+- 热重载前后打印 diff：哪些键新增、移除、变更
+- 解析失败时保留旧绑定，打印错误，不崩溃
+
+**实现难度**：★★★。改动集中在 `Engine::run()`（轮询逻辑）、`KeyBindings`（清空/重新注册）、`config.rs`（reload 接口）。
+
+### 5. 通用 held-key 清理
 
 当前鬼畜走路用单 `held` 变量，适合所有有序序列功能。提取为通用 pattern：
 
@@ -127,6 +145,40 @@ impl HeldTracker {
 ```
 
 **触发时机**：当某个功能需要多键同时按下（如 MIDI 键盘模拟）时再做。
+
+### 6. GUI 配置面板（egui）
+
+基于 egui 的轻量原生 GUI，提供可视化绑定管理，替代手动编辑 `config.toml`。
+
+**为什么选 egui**：
+- 纯 Rust，增量仅 ~200KB
+- 不引入新运行时（对比 tauri 50MB+、Qt 20MB+）
+- immediate mode 天然适合实时预览（坐标颜色像素、按键状态）
+
+**功能**：
+- 绑定表格：显示所有绑定（按键 / 功能 / 模式），实时增删改
+- 按键捕获：点击「改键」→ 按任意键 → 自动识别 Key 名称
+- 模式切换：下拉框 Once / Loop / Toggle
+- 功能选择：下拉框列出所有已注册功能名
+- 实时生效：修改立即 unregister → register，不中断运行中的功能
+- 持久化：保存时写回 `config.toml`
+- 系统托盘：常驻托盘图标 + 右键菜单（退出/显示面板）
+
+**架构**：
+```
+Engine::run() — 独立线程，现有事件循环不变
+GUI 主线程 — egui 窗口 + 托盘
+  ├── 调用 bindings.unregister() / register() 实时改绑定
+  └── 调用 config::save() 持久化
+```
+
+**关键 API（已就绪）**：
+- `KeyBindings::register(key, mode, func)` — 运行时新增/覆盖绑定
+- `KeyBindings::unregister(key)` — signal stop → join → remove
+- `config::list_function_names()` — 返回所有可用功能名（待加）
+- `config::save(path, bindings)` — 序列化并写文件（待加）
+
+**实现难度**：★★★。前端约 200 行 egui，后端需要在 `config.rs` 和 `KeyBindings` 上加少量接口。
 
 ---
 

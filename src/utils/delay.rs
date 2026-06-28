@@ -157,14 +157,13 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
             );
         }
     }
-    println!(); // final newline after \r overwrites
 
     let n = rates.len();
     if n == 0 {
         // 所有样本无效 — 使用硬编码回退。
         // All samples invalid — use hardcoded fallback.
         // Should never happen on modern invariant-TSC CPUs.
-        eprintln!("  -> all samples invalid, using default frequency");
+        eprintln!("\r  -> all samples invalid, using default frequency");
         return tsc_freq();
     }
 
@@ -177,9 +176,11 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
     };
 
     init_tsc_freq(median);
-    println!(
-        "  -> calibrated: {:.0} Hz (median of {} x {}ms samples)",
+    print!(
+        "\r  -> calibrated: {:.0} Hz (median of {} x {}ms samples)",
         median, sample_count, duration_ms
     );
+    io::stdout().flush().ok();
+    println!(); // final newline
     median
 }

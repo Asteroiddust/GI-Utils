@@ -257,6 +257,11 @@ mode = "Loop"
 key = "F19"
 func = "坐标颜色"
 mode = "Loop"
+
+[[bindings]]
+key = "NumpadAdd"
+func = "优化游戏"
+mode = "Once"
 "#;
 
 /// 加载并解析配置文件 — Load and parse the config file. Generates a default if missing.
@@ -347,6 +352,7 @@ pub fn create_function(
             crate::functions::mavuika_double_cancel::双玛头::new(send_ctx),
         )),
         "坐标颜色" => Ok(Arc::new(crate::functions::mouse_color::坐标颜色::new())),
+        "优化游戏" => Ok(Arc::new(crate::functions::optimize_game::优化游戏::new())),
         _ => Err(format!("unknown function: '{}'", name)),
     }
 }

@@ -199,16 +199,6 @@ fn set_priority(h: &OwnedHandle, pid: u32, prio: PROCESS_CREATION_FLAGS) -> Resu
 
 // ── Public API ────────────────────────────────────────────────
 
-/// 为指定 PID 设置 CPU 亲和性和优先级 — Configure a specific process.
-///
-/// Opens the process, then sets CPU affinity mask and priority class.
-pub fn configure_process(pid: u32, mask: usize, prio: u32) -> Result<(), Error> {
-    let h = open_process(pid)?;
-    set_affinity(&h, pid, mask)?;
-    set_priority(&h, pid, PROCESS_CREATION_FLAGS(prio))?;
-    Ok(())
-}
-
 /// 遍历所有进程 — Walk all processes and apply a closure to each.
 fn for_each_process<F>(mut f: F) -> Result<(), Error>
 where

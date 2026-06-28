@@ -17,6 +17,45 @@ mod utils;
 use engine::Engine;
 use std::sync::Arc;
 
+/// 按终端显示宽度填充字符串（CJK 字符计 2 列，ASCII 计 1 列）。
+fn pad_wide(s: &str, width: usize) -> String {
+    let dw: usize = s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum();
+    let pad = width.saturating_sub(dw);
+    format!("{}{}", s, " ".repeat(pad))
+}
+
+/// ── Table layout ────────────────────────────────────────
+
+const KEY_W: usize = 16;
+const FUNC_W: usize = 12;
+const MODE_W: usize = 6;
+
+fn repeat(c: char, n: usize) -> String {
+    std::iter::repeat(c).take(n).collect()
+}
+
+fn hr(left: &str, tee: &str, right: &str, fill: char) -> String {
+    format!(
+        "{}{}{}{}{}{}{}",
+        left,
+        repeat(fill, KEY_W),
+        tee,
+        repeat(fill, FUNC_W),
+        tee,
+        repeat(fill, MODE_W),
+        right,
+    )
+}
+
+fn row(key: &str, func: &str, mode: &str) -> String {
+    format!(
+        "\u{2502}{}\u{2502}{}\u{2502}{}\u{2502}",
+        pad_wide(key, KEY_W),
+        pad_wide(func, FUNC_W),
+        pad_wide(mode, MODE_W),
+    )
+}
+
 fn main() {
     // 内部日志（debug 构建时 tracing 输出到 stderr）
     // Internal logging (tracing to stderr, debug builds only)
@@ -51,6 +90,9 @@ fn main() {
     let stop_func = Arc::new(functions::stop::停止退出::new(engine.stop_flag()));
 
     println!("Registered functions:");
+    println!("{}", hr("\u{250c}", "\u{252c}", "\u{2510}", '\u{2500}'));
+    println!("{}", row("Key", "Function", "Mode"));
+    println!("{}", hr("\u{251c}", "\u{253c}", "\u{2524}", '\u{2500}'));
     for binding in &config {
         let func: Arc<dyn engine::function::KeyFunction> = if binding.func == "停止退出" {
             stop_func.clone()
@@ -66,12 +108,11 @@ fn main() {
         };
         bindings.register(binding.key, binding.mode, func);
         println!(
-            "  {} = {}  ({:?})",
-            binding.key.name(),
-            binding.func,
-            binding.mode
+            "{}",
+            row(binding.key.name(), &binding.func, &format!("{:?}", binding.mode)),
         );
     }
+    println!("{}", hr("\u{2514}", "\u{2534}", "\u{2518}", '\u{2500}'));
     println!();
     println!("Engine running.");
     println!();

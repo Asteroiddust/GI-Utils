@@ -27,7 +27,7 @@ pub fn init() {
     //    displays while GetCursorPos returns physical coordinates.
     print!("Setting DPI awareness... ");
     unsafe {
-        windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
     }
