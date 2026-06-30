@@ -11,7 +11,7 @@
 
 ## 技术栈
 
-- **Rust 1.96** (edition 2021)
+- **Rust 1.98 nightly** (edition 2021, -Z tune-cpu=native -Z plt=no)
 - **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入
 - **windows-rs 0.62** — Win32 API (GDI、Threading、ToolHelp)
 - **toml + serde** — TOML 配置文件解析
@@ -52,7 +52,8 @@ src/
     ├── mavuika_jump.rs        #   火神跳喷 (F16, Loop)
     ├── ganyu_aim_cancel.rs    #   甘雨走A (F17, Once)
     ├── mavuika_double_cancel.rs # 双玛头 (F18, Loop)
-    └── mouse_color.rs         #   坐标颜色 (F19, Loop)
+    ├── mouse_color.rs         #   坐标颜色 (F19, Loop)
+    └── optimize_game.rs        #   优化游戏 (NumpadAdd, Once, toggle 奇偶)
 ```
 
 ## 架构
@@ -93,9 +94,26 @@ cargo build --release
 # 输出: target/release/gi-utils.exe (~200KB)
 ```
 
-release profile: `opt-level=3, lto=fat, panic=abort, strip=true`
+release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1`
+
+rustflags: `-C target-cpu=native -C remark=all -Z tune-cpu=native -Z plt=no`
 
 ## 运行
+
+**必须以管理员身份运行**。首次运行自动生成 `config.toml`。
+
+## CPU 核心分配 (8C16T 9800X3D)
+
+```
+物理核 0  [0,1]  OTHER  (系统 + 其他进程)
+物理核 1  [2  ]  TOOL   (GI-Utils, 单线程)
+          [3  ]  GAME   (游戏)
+物理核 2-7 [4-15] GAME   (游戏)
+```
+
+## 部署
+
+`E:\Program\GI-Utils\gi-utils.exe` 是项目 `target/release/gi-utils.exe` 的符号链接，每次构建自动同步。
 
 **必须以管理员身份运行**。首次运行自动生成 `config.toml`。
 
@@ -123,12 +141,12 @@ mode = "Loop"
 | 甘雨走A | ✅ |
 | 双玛头 | ✅ |
 | 坐标颜色 | ✅ |
+| 优化游戏 | ✅ |
 | 甘雨加特林 | ⬜ |
 | 龙王喷水 + 子功能 | ⬜ |
 | 克洛琳德 | ⬜ |
 | 添加好友 | ⬜ |
 | 申请加入 | ⬜ |
-| 优化游戏 | ⬜ |
 | 2048 系列 | ⬜ |
 
 ## 事件类型
