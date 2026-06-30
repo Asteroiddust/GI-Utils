@@ -16,19 +16,25 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::Threading::{
     OpenProcess, SetPriorityClass, SetProcessAffinityMask, PROCESS_CREATION_FLAGS,
-    PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
 };
 
 // ── Core masks ────────────────────────────────────────────────
+// 8C16T layout:    物理核 0     1       2-7
+//                  线程[0,1]  [2][3]  [4-15]
+//                  用途 系统  工具 游戏  游戏
 
-/// 游戏进程保留核心（核心 2-13）— Cores reserved for the game process.
-pub const GAME_CORES_MASK: usize = 0b1111_1111_1111_1100;
+/// ALL MASK
+pub const ALL_CORES_MASK: usize = 0b1111_1111_1111_1111;
 
-/// 工具进程保留核心（核心 0-1）— Cores reserved for this tool.
-pub const TOOL_CORES_MASK: usize = 0b0000_0000_0000_0011;
+/// 游戏进程（物理核 1 SMT 兄弟 + 物理核 2-7，线程 3-15）。
+pub const GAME_CORES_MASK: usize = ALL_CORES_MASK;
 
-/// 其他进程核心（同工具核心）— Cores for all other processes (same as tool cores).
-pub const OTHER_CORES_MASK: usize = TOOL_CORES_MASK;
+/// 工具进程（物理核 1 主线程，线程 2，单线程足够）。
+pub const TOOL_CORES_MASK: usize = 0b1100_0000_0000_0000;
+
+/// 其他进程
+pub const OTHER_CORES_MASK: usize = ALL_CORES_MASK;
 
 // ── Error type ────────────────────────────────────────────────
 
@@ -181,15 +187,12 @@ impl ProcessEntry {
 
 /// 按 PID 打开进程 — Open a process by PID.
 fn open_process(pid: u32) -> Result<OwnedHandle, Error> {
-    unsafe { OpenProcess(PROCESS_SET_INFORMATION, false, pid) }
+    // PROCESS_QUERY_LIMITED_INFORMATION is needed on modern Windows 10/11;
+    // PROCESS_SET_INFORMATION alone may be denied even for admin.
+    let access = PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION;
+    unsafe { OpenProcess(access, false, pid) }
         .map(OwnedHandle)
         .map_err(|e| Error::OpenProcess { pid, source: e })
-}
-
-/// 设置进程 CPU 亲和性 — Set CPU affinity for a process.
-fn set_affinity(h: &OwnedHandle, pid: u32, mask: usize) -> Result<(), Error> {
-    unsafe { SetProcessAffinityMask(h.raw(), mask) }
-        .map_err(|e| Error::SetAffinity { pid, source: e })
 }
 
 /// 设置进程优先级 — Set priority class for a process.
@@ -211,16 +214,13 @@ where
 }
 
 /// 将非游戏进程移出游戏核心 — Move all non-game, non-self processes off the game cores.
-///
-/// 减少游戏进程与其他进程的 CPU 争用，从而降低输入延迟。
-/// Reduces CPU contention between the game and other processes for lower input latency.
 pub fn isolate_game_cores(game_pid: u32) -> Result<(), Error> {
     let self_pid = process::id();
     for_each_process(|entry| {
         let pid = entry.pid();
         if pid != game_pid && pid != self_pid && pid != 0 {
             if let Ok(h) = open_process(pid) {
-                let _ = set_affinity(&h, pid, OTHER_CORES_MASK);
+                let _ = unsafe { SetProcessAffinityMask(h.raw(), OTHER_CORES_MASK) };
             }
         }
         Ok(())
@@ -228,16 +228,13 @@ pub fn isolate_game_cores(game_pid: u32) -> Result<(), Error> {
 }
 
 /// 恢复所有进程的完整 CPU 亲和性 — Restore all processes to full CPU affinity.
-///
-/// 在程序退出时调用，释放之前限制的核心。
-/// Called on program exit to release previously restricted cores.
 pub fn restore_all_affinity() -> Result<(), Error> {
     let self_pid = process::id();
     for_each_process(|entry| {
         let pid = entry.pid();
         if pid != self_pid {
             if let Ok(h) = open_process(pid) {
-                let _ = set_affinity(&h, pid, usize::MAX);
+                let _ = unsafe { SetProcessAffinityMask(h.raw(), ALL_CORES_MASK) };
             }
         }
         Ok(())
@@ -251,7 +248,12 @@ pub fn restore_all_affinity() -> Result<(), Error> {
 pub fn configure_self() -> Result<(), Error> {
     let self_pid = process::id();
     let h = open_process(self_pid)?;
-    set_affinity(&h, self_pid, TOOL_CORES_MASK)?;
+    unsafe { SetProcessAffinityMask(h.raw(), TOOL_CORES_MASK) }.map_err(|e| {
+        Error::SetAffinity {
+            pid: self_pid,
+            source: e,
+        }
+    })?;
     set_priority(&h, self_pid, REALTIME_PRIORITY_CLASS)?;
     Ok(())
 }

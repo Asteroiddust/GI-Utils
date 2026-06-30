@@ -109,7 +109,11 @@ fn main() {
         bindings.register(binding.key, binding.mode, func);
         println!(
             "{}",
-            row(binding.key.name(), &binding.func, &format!("{:?}", binding.mode)),
+            row(
+                binding.key.name(),
+                &binding.func,
+                &format!("{:?}", binding.mode)
+            ),
         );
     }
     println!("{}", hr("\u{2514}", "\u{2534}", "\u{2518}", '\u{2500}'));
