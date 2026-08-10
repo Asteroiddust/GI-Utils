@@ -1,6 +1,6 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.0.0
 
-> **Review cleared**: 48/48 issues resolved (0C 0H 0M 0L 0S)
+> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）
 > **Build**: O3 + LTO fat + panic=abort + target-cpu=native
 
 ## 项目概述
@@ -21,7 +21,10 @@
 
 ```
 src/
-├── main.rs                    # 入口：加载 config → 校准 TSC → 注册 → Engine.run()
+├── main.rs                    # headless 入口：加载 config → 校准 TSC → 注册 → Engine.run()
+├── lib.rs                     # 库根 — headless 与 GUI 共享全部模块
+├── bin/
+│   └── gui.rs                 # GUI 入口 (egui + 托盘 + live-apply → gi-utils-gui.exe)
 ├── config.rs                  # TOML 配置解析 + 函数工厂
 ├── build.rs                   # 链接 interception.lib
 ├── key.rs                     # Key (ScanCode + is_e0) + 90+ 常量
@@ -66,9 +69,9 @@ Engine (主循环, blocking)
 └── KeyBindings
       ├── HashMap<Key, Entry>    (绑定注册表)
       ├── HashMap<Key, bool>     (去抖表)
-      ├── Entry.active: Arc<AtomicBool>        (运行状态)
-      ├── Entry.stop_requested: Arc<AtomicBool> (停止信号)
-      ├── Entry.handle: Option<JoinHandle>     (线程句柄)
+      ├── capture_tx             (GUI 按键捕获通道，捕获模式拦截分发)
+      ├── pending_joins          (已停止线程句柄队列 — GUI 帧 is_finished 惰性 join，绝不阻塞)
+      ├── Entry.active / stop_requested / handle
       └── TriggerMode: Once / Loop / Toggle
 ```
 
@@ -86,12 +89,16 @@ Engine (主循环, blocking)
 | **EventSequence 链式 API** | `seq.tap(K).sleep(50).wheel(DOWN)` |
 | **KeyFunction 只有 1 个方法** | `execute(&self, stop_requested: Arc<AtomicBool>)` |
 | **printf 作 release 输出** | 避免 Windows stderr 缓冲问题 |
+| **线程级核心分离** | 进程掩码 12-15，GUI 渲染→12,13 (LOWEST)，输入处理→14,15 (REALTIME) |
+| **pending_joins 惰性 join** | `is_finished()` 检查保留未结束句柄，GUI 帧永不阻塞 |
+| **GUI live-apply + 托盘隐藏** | 修改即时生效；关闭隐藏到托盘，F12/菜单退出 |
+| **锁序单向 bindings→pending** | 全部路径同序，无嵌套反转，无死锁 |
 
 ## 构建
 
 ```bash
 cargo build --release
-# 输出: target/release/gi-utils.exe (~200KB)
+# 输出: target/release/gi-utils.exe (~200KB, headless) + gi-utils-gui.exe (~4MB, GUI)
 ```
 
 release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1`
@@ -105,15 +112,22 @@ rustflags: `-C target-cpu=native -C remark=all -Z tune-cpu=native -Z plt=no`
 ## CPU 核心分配 (8C16T 9800X3D)
 
 ```
-物理核 0  [0,1]  OTHER  (系统 + 其他进程)
-物理核 1  [2  ]  TOOL   (GI-Utils, 单线程)
-          [3  ]  GAME   (游戏)
-物理核 2-7 [4-15] GAME   (游戏)
+物理核 0    [0,1  ]  OTHER  (系统 + 其他进程)
+物理核 1-5  [2-11 ]  GAME   (游戏)
+物理核 6    [12,13]  GUI    (GUI 渲染, 线程级 LOWEST 优先级)
+物理核 7    [14,15]  TOOL   (Engine 输入处理 + 功能线程, REALTIME)
 ```
+
+进程掩码 12-15（GUI 版）。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用）。headless 版进程掩码保持 14,15，无需扩展。
 
 ## 部署
 
-`E:\Program\GI-Utils\gi-utils.exe` 是项目 `target/release/gi-utils.exe` 的符号链接，每次构建自动同步。
+`E:\Program\GI-Utils\` 下两个符号链接，每次构建自动同步：
+
+```
+gi-utils.exe      → E:\Projects\Rust\GI-Utils\target\release\gi-utils.exe
+gi-utils-gui.exe  → E:\Projects\Rust\GI-Utils\target\release\gi-utils-gui.exe
+```
 
 **必须以管理员身份运行**。首次运行自动生成 `config.toml`。
 

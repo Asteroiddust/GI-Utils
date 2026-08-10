@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-Phase 1-2 完成，v1.0.0 已发布。8 个功能通过 TOML 配置驱动注册。
+v1.0.0 已发布，10 个功能通过 TOML 配置驱动注册。master 48/48 review 全清；gi-utils-gui 分支 2H/12M/15L 全清（含 L12 核心分离）。
 
 | 按键 | 功能 | 模式 | 备注 |
 |------|------|------|------|
@@ -14,6 +14,7 @@ Phase 1-2 完成，v1.0.0 已发布。8 个功能通过 TOML 配置驱动注册�
 | F17 | 甘雨走A | Once | 射箭后摇取消 |
 | F18 | 双玛头 | Loop | 复杂鼠标+键盘序列 |
 | F19 | 坐标颜色 | Loop | 光标位置+像素RGB |
+| NumpadAdd | 优化游戏 | Once | toggle 奇偶：隔离/恢复 + 提优先级 + 切前台 |
 
 ### 已完成的架构改进
 
@@ -35,8 +36,7 @@ Phase 1-2 完成，v1.0.0 已发布。8 个功能通过 TOML 配置驱动注册�
 | 3 | 克洛琳德 | ★★★ | 像素颜色检测触发 |
 | 4 | 添加好友 | ★★★ | 屏幕坐标+绝对鼠标 |
 | 5 | 申请加入 | ★★ | 鼠标序列 |
-| 6 | 优化游戏 | ★★ | 找窗口→设亲和性→切前台 |
-| 7 | 2048 系列 | ★ | 纯按键序列 |
+| 6 | 2048 系列 | ★ | 纯按键序列 |
 
 ## 移植流程
 
@@ -146,52 +146,21 @@ impl HeldTracker {
 
 **触发时机**：当某个功能需要多键同时按下（如 MIDI 键盘模拟）时再做。
 
-### 6. GUI 配置面板（egui）
+### 6. GUI 配置面板（egui）✅ 已完成（gi-utils-gui 分支）
 
-基于 egui 的轻量原生 GUI，提供可视化绑定管理，替代手动编辑 `config.toml`。
+基于 egui 0.31 的轻量原生 GUI，已实现：
 
-**为什么选 egui**：
-- 纯 Rust，增量仅 ~200KB
-- 不引入新运行时（对比 tauri 50MB+、Qt 20MB+）
-- immediate mode 天然适合实时预览（坐标颜色像素、按键状态）
+- 绑定表格：增删改实时生效（live-apply），保存写回 `config.toml`
+- 按键捕获：Set Key → 按任意键 → 自动识别；Esc/Cancel 取消；捕获期间表格禁用
+- 系统托盘：Shell_NotifyIconW 图标 + 右键菜单（Show/Exit），关闭隐藏到托盘
+- 单实例互斥（CreateMutexW），已有实例时激活其窗口
+- 退出清理：stop_all 先于亲和性恢复；beep_async；panic hook 兜底恢复亲和性
+- 核心分离（L12）：GUI 渲染线程 → 12,13 (LOWEST)，Engine/功能线程 → 14,15 (REALTIME)
 
-**功能**：
-- 绑定表格：显示所有绑定（按键 / 功能 / 模式），实时增删改
-- 按键捕获：点击「改键」→ 按任意键 → 自动识别 Key 名称
-- 模式切换：下拉框 Once / Loop / Toggle
-- 功能选择：下拉框列出所有已注册功能名
-- 实时生效：修改立即 unregister → register，不中断运行中的功能
-- 持久化：保存时写回 `config.toml`
-- 系统托盘：常驻托盘图标 + 右键菜单（退出/显示面板）
-
-**架构**：
-```
-Engine::run() — 独立线程，现有事件循环不变
-GUI 主线程 — egui 窗口 + 托盘
-  ├── 调用 bindings.unregister() / register() 实时改绑定
-  └── 调用 config::save() 持久化
-```
-
-**关键 API（已就绪）**：
-- `KeyBindings::register(key, mode, func)` — 运行时新增/覆盖绑定
-- `KeyBindings::unregister(key)` — signal stop → join → remove
-- `config::list_function_names()` — 返回所有可用功能名（待加）
-- `config::save(path, bindings)` — 序列化并写文件（待加）
-
-**实现难度**：★★★。前端约 200 行 egui，后端需要在 `config.rs` 和 `KeyBindings` 上加少量接口。
+产物：`gi-utils-gui.exe`（~4MB），与 headless `gi-utils.exe` 共享 `lib.rs` 全部模块。
 
 ---
 
-## 已知问题（review 残留）
+## 已知问题
 
-- [ ] M10: `config.rs` parse_key 缺少部分不常用特殊字符常量
-- [ ] M12: `create_function` 错误信息缺上下文
-- [ ] L7: `key.rs` `allow(dead_code)` 抑制 90+ 常量
-- [ ] L11: `mouse_color.rs` 忙等 100% CPU 无限速
-- [ ] L13: `mavuika_double_cancel.rs` 5x 展开 vs C++ 跑间检查
-- [ ] L16: `mod.rs` `read_key_stroke` 无条件调用
-- [ ] L17: `config.rs` 键名大小写敏感
-- [ ] L18: config 写 exe 目录，Program Files 权限
-- [ ] L20: 实时优先级在 config 加载之前
-- [ ] L21: `config_path()` 静默吞错误
-- [ ] L22: `build.rs` 硬编码路径不可移植
+无残留 — master 48/48 与 gi-utils-gui 2H/12M/15L review 全部清零（含 L12，2026-08-10）。后续 review 结论请更新 CLAUDE.md 顶部状态行。

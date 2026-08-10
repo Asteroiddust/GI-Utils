@@ -1,5 +1,12 @@
 # GI-Utils Rust 重构技术方案
 
+> **状态（2026-08）**：重构已完成并发布 v1.0.0。本文是重构前的选型方案，
+> 部分决策与最终实现不同，以 [CLAUDE.md](CLAUDE.md) 为准：
+> - 未用 `interception-sys` crate — 自行编写 FFI 绑定（`interception/` 模块）
+> - 未用 `CancellationToken` — 采用 `stop_requested: Arc<AtomicBool>`（更轻，无 async 依赖）
+> - 未用 edition 2024 — 保持 edition 2021（nightly 工具链）
+> - `EventSequence` 链式 API 已按 2.3 实现；键盘/鼠标事件已按 enum 区分
+
 ## 1. 核心依赖选型
 
 ### 1.1 输入拦截/注入 — 最关键的选择
