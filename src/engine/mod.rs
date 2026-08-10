@@ -24,7 +24,7 @@ use std::sync::Arc;
 pub struct Engine {
     recv_ctx: InterceptionContext,
     send_ctx: Arc<SendContext>,
-    bindings: KeyBindings,
+    bindings: Arc<KeyBindings>,
     stop_requested: Arc<AtomicBool>,
     /// 为 true 时将所有按键输出到 stdout。
     verbose: bool,
@@ -54,15 +54,15 @@ impl Engine {
         Self {
             recv_ctx,
             send_ctx,
-            bindings: KeyBindings::new(),
+            bindings: Arc::new(KeyBindings::new()),
             stop_requested: Arc::new(AtomicBool::new(false)),
             verbose,
         }
     }
 
-    /// 获取按键绑定引用（用于注册函数）。
-    pub fn bindings(&self) -> &KeyBindings {
-        &self.bindings
+    /// 获取按键绑定共享引用（用于注册函数，可跨线程）。
+    pub fn bindings(&self) -> Arc<KeyBindings> {
+        self.bindings.clone()
     }
 
     /// 获取共享的 send 上下文（供需要发送输入的函数使用）。
@@ -84,8 +84,18 @@ impl Engine {
     pub fn run(&self) {
         let send_ctx = &self.send_ctx;
 
+        // L12: Engine 线程固定到输入处理核心（14,15）— GUI 版进程掩码为
+        // 12-15，新线程继承进程掩码，需显式收窄；headless 版为无操作
+        // （进程掩码本就是 14,15）。失败不致命 — 仅降低时序隔离性。
+        let _ = crate::utils::affinity::pin_current_thread(
+            crate::utils::affinity::ENGINE_CORES_MASK,
+        );
+
         while !self.stop_requested.load(Ordering::Acquire) {
-            let device = self.recv_ctx.wait();
+            let device = self.recv_ctx.wait_timeout(100);
+            if device == 0 {
+                continue; // timeout, recheck stop_requested
+            }
             let mut stroke_buf: InterceptionStroke = [0u8; STROKE_SIZE];
 
             while self.recv_ctx.receive(device, &mut stroke_buf) > 0 {

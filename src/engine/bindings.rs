@@ -13,6 +13,7 @@ use crate::engine::function::KeyFunction;
 use crate::key::Key;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tracing::debug;
@@ -76,6 +77,12 @@ impl Entry {
         let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
+                // L12: 功能线程固定到输入处理核心（14,15）— 进程掩码较宽
+                // （GUI 版 12-15）时新线程继承进程掩码，需显式收窄。
+                // 失败不致命 — 仅降低时序隔离性。
+                let _ = crate::utils::affinity::pin_current_thread(
+                    crate::utils::affinity::ENGINE_CORES_MASK,
+                );
                 let _guard = guard; // 移入闭包，作用域退出（含 panic）时 drop
                 func.execute(stop);
             });
@@ -104,6 +111,10 @@ impl Entry {
         let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
+                // L12: 功能线程固定到输入处理核心（14,15），与 GUI 渲染分离
+                let _ = crate::utils::affinity::pin_current_thread(
+                    crate::utils::affinity::ENGINE_CORES_MASK,
+                );
                 let _guard = guard;
                 func.execute(Arc::new(AtomicBool::new(false)));
             });
@@ -150,6 +161,16 @@ impl Entry {
 pub struct KeyBindings {
     bindings: Mutex<HashMap<Key, Entry>>,
     keys_held: Mutex<HashMap<Key, bool>>,
+    /// GUI 按键捕获：有捕获请求时，下一个按下的键通过此 Sender 发送。
+    capture_tx: Mutex<Option<Sender<Key>>>,
+    /// 待 join 的已停止线程句柄。
+    ///
+    /// 停止 Loop/Toggle 时**不在 Engine 线程 join** — 功能线程若处于不可中断
+    /// 延时（如优化游戏最长 2s），join 会冻结事件循环，导致按键转发停止、
+    /// F12 退出失效。句柄暂存此处，由 GUI 线程通过 [`drain_pending_joins`]
+    /// 异步 join。线程仍会自行退出（stop_requested + ActiveGuard 清除 active），
+    /// join 只是回收句柄。
+    pending_joins: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl KeyBindings {
@@ -158,7 +179,27 @@ impl KeyBindings {
         Self {
             bindings: Mutex::new(HashMap::new()),
             keys_held: Mutex::new(HashMap::new()),
+            capture_tx: Mutex::new(None),
+            pending_joins: Mutex::new(Vec::new()),
         }
+    }
+
+    /// join 已结束的线程句柄（应在 GUI/UI 线程调用，锁外 join）。
+    /// 未结束的保留在队列中 — `is_finished()` 检查绝不阻塞调用线程，
+    /// 每帧调用一次即可回收所有已退出的功能线程。
+    /// Join finished thread handles — call from the GUI thread.
+    /// Handles whose threads are still running stay queued (never blocks).
+    pub fn drain_pending_joins(&self) {
+        let mut pending = self.pending_joins.lock().unwrap();
+        let mut remaining: Vec<JoinHandle<()>> = Vec::with_capacity(pending.len());
+        for h in pending.drain(..) {
+            if h.is_finished() {
+                let _ = h.join();
+            } else {
+                remaining.push(h);
+            }
+        }
+        *pending = remaining;
     }
 
     /// 注册按键绑定：将按键与函数和触发模式关联。
@@ -181,11 +222,66 @@ impl KeyBindings {
         debug!("Unregistered {:?}", key);
     }
 
+    /// 停止所有运行中的绑定并清空注册表。
+    /// Stop all running bindings and clear the registry.
+    /// 用于 GUI live-apply 时全量替换绑定列表。
+    ///
+    /// 必须先 drain 再 join：若先 stop_all(join 全部线程) 再 clear()，
+    /// join 完成后到 clear 之间的窗口内 Engine 线程可能收到一次 key-down
+    /// （此时旧线程已退出、active 已被 ActiveGuard 清除），在旧 Entry 上
+    /// spawn 新线程 — 随后 clear() 连同 stop_requested 一起 drop，
+    /// 新线程将无人能停止（僵尸 Loop 线程）。
+    ///
+    /// 句柄不在此同步 join：功能线程可能处于不可中断延时（优化游戏最长
+    /// 2s），join 会阻塞调用线程（GUI 帧）。推入 pending 队列，由 GUI
+    /// 帧循环通过 [`drain_pending_joins`] 惰性回收（is_finished 检查）。
+    /// 线程仍会自行退出（stop_requested + ActiveGuard 清除 active）。
+    pub fn clear_all(&self) {
+        {
+            let mut bindings = self.bindings.lock().unwrap();
+            // drain 使 map 立即清空：期间任何 key-down 查表必 miss，无法 spawn
+            let handles = bindings
+                .drain()
+                .filter_map(|(key, mut entry)| entry.signal_stop(key));
+            // 锁序：bindings → pending_joins，与 process_key_down 一致，不嵌套反转
+            self.pending_joins.lock().unwrap().extend(handles);
+        }
+        debug!("Cleared all bindings");
+    }
+
+    // ── 按键捕获 — Key capture for GUI ────────────────────
+
+    /// 启用按键捕获：下一个按下的键通过返回的 Receiver 发送。
+    /// 捕获的键正常转发到系统（Engine 先 forward 再 dispatch），但不会被分发到功能绑定。
+    /// Enable key capture: the next key-down is sent through the Receiver.
+    pub fn enable_capture(&self) -> Receiver<Key> {
+        let (tx, rx) = mpsc::channel();
+        *self.capture_tx.lock().unwrap() = Some(tx);
+        rx
+    }
+
+    /// 取消按键捕获。
+    pub fn disable_capture(&self) {
+        *self.capture_tx.lock().unwrap() = None;
+    }
+
     // ── 按下处理 — Key-down dispatch ──────────────────────
 
     /// 处理按键按下事件：防抖后根据 TriggerMode 启动或切换功能。
     /// Handle key-down: debounce, then start or toggle the bound function.
     pub fn process_key_down(&self, key: Key) {
+        // 按键捕获模式：拦截并发送给 GUI，不分发到功能绑定。
+        // Key capture mode: forward to GUI via channel, skip normal dispatch.
+        if let Some(tx) = self.capture_tx.lock().unwrap().take() {
+            let _ = tx.send(key);
+            // 捕获分支也必须记录 held：capture_tx 已被 take 一次性取走，
+            // 若按住不放，auto-repeat 的 key-down 会走正常分发路径 —
+            // 防抖表无记录就会误触发刚绑定的功能（如 F12 停止退出）。
+            // 记录后 repeat 被防抖吞掉，key-up 时正常清除。
+            self.keys_held.lock().unwrap().insert(key, true);
+            return;
+        }
+
         // 防抖：按住时忽略 auto-repeat
         {
             let mut held = self.keys_held.lock().unwrap();
@@ -221,11 +317,13 @@ impl KeyBindings {
                     }
                 }
             }
-        } // Mutex 已释放 — 在外侧 join
+        } // Mutex 已释放 — 交给 pending 队列异步 join
         if let Some(h) = deferred {
-            debug!("Joining {:?}...", key);
-            let _ = h.join();
-            debug!("Stopped {:?}", key);
+            // 不在 Engine 线程 join：功能线程的不可中断延时可能长达 2s
+            // （优化游戏），阻塞 join 会冻结事件循环 — 按键转发停止、F12 失效。
+            // 句柄入队，由 GUI 线程 drain_pending_joins 回收。
+            self.pending_joins.lock().unwrap().push(h);
+            debug!("Stopped {:?} (deferred join)", key);
         }
     }
 
@@ -251,11 +349,10 @@ impl KeyBindings {
             } else {
                 deferred = None;
             }
-        } // Mutex 已释放 — 在外侧 join
+        } // Mutex 已释放 — 交给 pending 队列异步 join
         if let Some(h) = deferred {
-            debug!("Joining {:?}...", key);
-            let _ = h.join();
-            debug!("Stopped {:?}", key);
+            self.pending_joins.lock().unwrap().push(h);
+            debug!("Stopped {:?} (deferred join)", key);
         }
     }
 
@@ -264,13 +361,18 @@ impl KeyBindings {
     /// 停止所有正在运行的绑定，等待所有线程结束。
     /// Stop all running bindings and join all threads.
     pub fn stop_all(&self) {
-        let handles: Vec<JoinHandle<()>>;
+        let mut handles: Vec<JoinHandle<()>>;
         {
             let mut bindings = self.bindings.lock().unwrap();
             handles = bindings
                 .iter_mut()
                 .filter_map(|(key, entry)| entry.signal_stop(*key))
                 .collect();
+        }
+        // 顺带回收 pending 队列中的已停止线程（两段锁依次获取，不嵌套）
+        {
+            let mut pending = self.pending_joins.lock().unwrap();
+            handles.extend(pending.drain(..));
         } // Mutex 已释放 — 在外侧 join
         for h in handles {
             let _ = h.join();

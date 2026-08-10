@@ -8,7 +8,7 @@ use crate::engine::function::KeyFunction;
 use crate::engine::TriggerMode;
 use crate::interception::SendContext;
 use crate::key::Key;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -17,13 +17,13 @@ use std::sync::{Arc, OnceLock};
 // Config structure
 // ═══════════════════════════════════════════════════════════════════
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RawConfig {
     #[serde(default)]
     bindings: Vec<RawBinding>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct RawBinding {
     key: String,
     func: String,
@@ -41,142 +41,148 @@ pub struct Binding {
 // Key name → Key constant  (case-insensitive lookup)
 // ═══════════════════════════════════════════════════════════════════
 
+/// All known key-name to Key mappings. Single source of truth for both
+/// parse (string → Key) and serialize (Key → string).
+const KEY_PAIRS: &[(&str, Key)] = &[
+    ("F1", Key::F1),
+    ("F2", Key::F2),
+    ("F3", Key::F3),
+    ("F4", Key::F4),
+    ("F5", Key::F5),
+    ("F6", Key::F6),
+    ("F7", Key::F7),
+    ("F8", Key::F8),
+    ("F9", Key::F9),
+    ("F10", Key::F10),
+    ("F11", Key::F11),
+    ("F12", Key::F12),
+    ("F13", Key::F13),
+    ("F14", Key::F14),
+    ("F15", Key::F15),
+    ("F16", Key::F16),
+    ("F17", Key::F17),
+    ("F18", Key::F18),
+    ("F19", Key::F19),
+    ("F20", Key::F20),
+    ("F21", Key::F21),
+    ("F22", Key::F22),
+    ("F23", Key::F23),
+    ("F24", Key::F24),
+    ("Esc", Key::ESCAPE),
+    ("Tab", Key::TAB),
+    ("CapsLock", Key::CAPS_LOCK),
+    ("LShift", Key::LSHIFT),
+    ("RShift", Key::RSHIFT),
+    ("LCtrl", Key::LCTRL),
+    ("RCtrl", Key::RCTRL),
+    ("LAlt", Key::LALT),
+    ("RAlt", Key::RALT),
+    ("LWin", Key::LWIN),
+    ("RWin", Key::RWIN),
+    ("Apps", Key::APPS),
+    ("Space", Key::SPACE),
+    ("Enter", Key::ENTER),
+    ("Backspace", Key::BACKSPACE),
+    ("A", Key::A),
+    ("B", Key::B),
+    ("C", Key::C),
+    ("D", Key::D),
+    ("E", Key::E),
+    ("F", Key::F),
+    ("G", Key::G),
+    ("H", Key::H),
+    ("I", Key::I),
+    ("J", Key::J),
+    ("K", Key::K),
+    ("L", Key::L),
+    ("M", Key::M),
+    ("N", Key::N),
+    ("O", Key::O),
+    ("P", Key::P),
+    ("Q", Key::Q),
+    ("R", Key::R),
+    ("S", Key::S),
+    ("T", Key::T),
+    ("U", Key::U),
+    ("V", Key::V),
+    ("W", Key::W),
+    ("X", Key::X),
+    ("Y", Key::Y),
+    ("Z", Key::Z),
+    ("N1", Key::N1),
+    ("N2", Key::N2),
+    ("N3", Key::N3),
+    ("N4", Key::N4),
+    ("N5", Key::N5),
+    ("N6", Key::N6),
+    ("N7", Key::N7),
+    ("N8", Key::N8),
+    ("N9", Key::N9),
+    ("N0", Key::N0),
+    ("Up", Key::UP),
+    ("Down", Key::DOWN),
+    ("Left", Key::LEFT),
+    ("Right", Key::RIGHT),
+    ("Home", Key::HOME),
+    ("End", Key::END),
+    ("PageUp", Key::PAGEUP),
+    ("PageDown", Key::PAGEDOWN),
+    ("Insert", Key::INSERT),
+    ("Delete", Key::DELETE),
+    ("PrintScreen", Key::PRINT_SCREEN),
+    ("ScrollLock", Key::SCROLL_LOCK),
+    ("NumLock", Key::NUM_LOCK),
+    ("SysRq", Key::SYS_RQ),
+    ("`", Key::GRAVE),
+    ("-", Key::MINUS),
+    ("=", Key::EQUALS),
+    ("[", Key::LBRACKET),
+    ("]", Key::RBRACKET),
+    ("\\", Key::BACKSLASH),
+    (";", Key::SEMICOLON),
+    ("'", Key::QUOTE),
+    (",", Key::COMMA),
+    (".", Key::PERIOD),
+    ("/", Key::SLASH),
+    ("MediaPrevTrack", Key::MEDIA_PREV_TRACK),
+    ("MediaNextTrack", Key::MEDIA_NEXT_TRACK),
+    ("MediaMute", Key::MEDIA_MUTE),
+    ("MediaCalculator", Key::MEDIA_CALCULATOR),
+    ("MediaPlayPause", Key::MEDIA_PLAY_PAUSE),
+    ("MediaStop", Key::MEDIA_STOP),
+    ("MediaVolumeDown", Key::MEDIA_VOLUME_DOWN),
+    ("MediaVolumeUp", Key::MEDIA_VOLUME_UP),
+    ("MediaWWWHome", Key::MEDIA_WWW_HOME),
+    ("Power", Key::ACPI_POWER),
+    ("Sleep", Key::ACPI_SLEEP),
+    ("Wake", Key::ACPI_WAKE),
+    ("Oem5", Key::OEM5),
+    ("Numpad0", Key::NUMPAD_0),
+    ("Numpad1", Key::NUMPAD_1),
+    ("Numpad2", Key::NUMPAD_2),
+    ("Numpad3", Key::NUMPAD_3),
+    ("Numpad4", Key::NUMPAD_4),
+    ("Numpad5", Key::NUMPAD_5),
+    ("Numpad6", Key::NUMPAD_6),
+    ("Numpad7", Key::NUMPAD_7),
+    ("Numpad8", Key::NUMPAD_8),
+    ("Numpad9", Key::NUMPAD_9),
+    ("NumpadAdd", Key::NUMPAD_ADD),
+    ("NumpadSubtract", Key::NUMPAD_SUBTRACT),
+    ("NumpadMultiply", Key::NUMPAD_MULTIPLY),
+    ("NumpadDivide", Key::NUMPAD_DIVIDE),
+    ("NumpadEnter", Key::NUMPAD_ENTER),
+    ("NumpadPeriod", Key::NUMPAD_PERIOD),
+];
+
 static KEY_MAP: OnceLock<HashMap<String, Key>> = OnceLock::new();
 
 fn key_map() -> &'static HashMap<String, Key> {
     KEY_MAP.get_or_init(|| {
-        let pairs: &[(&str, Key)] = &[
-            ("F1", Key::F1),
-            ("F2", Key::F2),
-            ("F3", Key::F3),
-            ("F4", Key::F4),
-            ("F5", Key::F5),
-            ("F6", Key::F6),
-            ("F7", Key::F7),
-            ("F8", Key::F8),
-            ("F9", Key::F9),
-            ("F10", Key::F10),
-            ("F11", Key::F11),
-            ("F12", Key::F12),
-            ("F13", Key::F13),
-            ("F14", Key::F14),
-            ("F15", Key::F15),
-            ("F16", Key::F16),
-            ("F17", Key::F17),
-            ("F18", Key::F18),
-            ("F19", Key::F19),
-            ("F20", Key::F20),
-            ("F21", Key::F21),
-            ("F22", Key::F22),
-            ("F23", Key::F23),
-            ("F24", Key::F24),
-            ("Esc", Key::ESCAPE),
-            ("Tab", Key::TAB),
-            ("CapsLock", Key::CAPS_LOCK),
-            ("LShift", Key::LSHIFT),
-            ("RShift", Key::RSHIFT),
-            ("LCtrl", Key::LCTRL),
-            ("RCtrl", Key::RCTRL),
-            ("LAlt", Key::LALT),
-            ("RAlt", Key::RALT),
-            ("LWin", Key::LWIN),
-            ("RWin", Key::RWIN),
-            ("Apps", Key::APPS),
-            ("Space", Key::SPACE),
-            ("Enter", Key::ENTER),
-            ("Backspace", Key::BACKSPACE),
-            ("A", Key::A),
-            ("B", Key::B),
-            ("C", Key::C),
-            ("D", Key::D),
-            ("E", Key::E),
-            ("F", Key::F),
-            ("G", Key::G),
-            ("H", Key::H),
-            ("I", Key::I),
-            ("J", Key::J),
-            ("K", Key::K),
-            ("L", Key::L),
-            ("M", Key::M),
-            ("N", Key::N),
-            ("O", Key::O),
-            ("P", Key::P),
-            ("Q", Key::Q),
-            ("R", Key::R),
-            ("S", Key::S),
-            ("T", Key::T),
-            ("U", Key::U),
-            ("V", Key::V),
-            ("W", Key::W),
-            ("X", Key::X),
-            ("Y", Key::Y),
-            ("Z", Key::Z),
-            ("N1", Key::N1),
-            ("N2", Key::N2),
-            ("N3", Key::N3),
-            ("N4", Key::N4),
-            ("N5", Key::N5),
-            ("N6", Key::N6),
-            ("N7", Key::N7),
-            ("N8", Key::N8),
-            ("N9", Key::N9),
-            ("N0", Key::N0),
-            ("Up", Key::UP),
-            ("Down", Key::DOWN),
-            ("Left", Key::LEFT),
-            ("Right", Key::RIGHT),
-            ("Home", Key::HOME),
-            ("End", Key::END),
-            ("PageUp", Key::PAGEUP),
-            ("PageDown", Key::PAGEDOWN),
-            ("Insert", Key::INSERT),
-            ("Delete", Key::DELETE),
-            ("PrintScreen", Key::PRINT_SCREEN),
-            ("ScrollLock", Key::SCROLL_LOCK),
-            ("NumLock", Key::NUM_LOCK),
-            ("SysRq", Key::SYS_RQ),
-            ("`", Key::GRAVE),
-            ("-", Key::MINUS),
-            ("=", Key::EQUALS),
-            ("[", Key::LBRACKET),
-            ("]", Key::RBRACKET),
-            ("\\", Key::BACKSLASH),
-            (";", Key::SEMICOLON),
-            ("'", Key::QUOTE),
-            (",", Key::COMMA),
-            (".", Key::PERIOD),
-            ("/", Key::SLASH),
-            ("MediaPrevTrack", Key::MEDIA_PREV_TRACK),
-            ("MediaNextTrack", Key::MEDIA_NEXT_TRACK),
-            ("MediaMute", Key::MEDIA_MUTE),
-            ("MediaCalculator", Key::MEDIA_CALCULATOR),
-            ("MediaPlayPause", Key::MEDIA_PLAY_PAUSE),
-            ("MediaStop", Key::MEDIA_STOP),
-            ("MediaVolumeDown", Key::MEDIA_VOLUME_DOWN),
-            ("MediaVolumeUp", Key::MEDIA_VOLUME_UP),
-            ("MediaWWWHome", Key::MEDIA_WWW_HOME),
-            ("Power", Key::ACPI_POWER),
-            ("Sleep", Key::ACPI_SLEEP),
-            ("Wake", Key::ACPI_WAKE),
-            ("Oem5", Key::OEM5),
-            ("Numpad0", Key::NUMPAD_0),
-            ("Numpad1", Key::NUMPAD_1),
-            ("Numpad2", Key::NUMPAD_2),
-            ("Numpad3", Key::NUMPAD_3),
-            ("Numpad4", Key::NUMPAD_4),
-            ("Numpad5", Key::NUMPAD_5),
-            ("Numpad6", Key::NUMPAD_6),
-            ("Numpad7", Key::NUMPAD_7),
-            ("Numpad8", Key::NUMPAD_8),
-            ("Numpad9", Key::NUMPAD_9),
-            ("NumpadAdd", Key::NUMPAD_ADD),
-            ("NumpadSubtract", Key::NUMPAD_SUBTRACT),
-            ("NumpadMultiply", Key::NUMPAD_MULTIPLY),
-            ("NumpadDivide", Key::NUMPAD_DIVIDE),
-            ("NumpadEnter", Key::NUMPAD_ENTER),
-            ("NumpadPeriod", Key::NUMPAD_PERIOD),
-        ];
-        pairs.iter().map(|(s, k)| (s.to_lowercase(), *k)).collect()
+        KEY_PAIRS
+            .iter()
+            .map(|(s, k)| (s.to_lowercase(), *k))
+            .collect()
     })
 }
 
@@ -185,6 +191,15 @@ fn parse_key(name: &str) -> Result<Key, String> {
         .get(&name.to_lowercase())
         .copied()
         .ok_or_else(|| format!("unknown key: '{}'", name))
+}
+
+/// 反向查找：Key → 配置名。用于序列化时把 Key 转回 "F13" / "NumpadAdd" 等。
+/// Reverse lookup: Key → config name. Used when serializing bindings.
+pub fn key_to_config_name(key: Key) -> Option<&'static str> {
+    KEY_PAIRS
+        .iter()
+        .find(|(_, k)| *k == key)
+        .map(|(s, _)| *s)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -318,6 +333,44 @@ pub fn load() -> Result<Vec<Binding>, String> {
     }
 
     Ok(bindings)
+}
+
+/// 保存绑定列表到 config.toml — Serialize bindings back to config.toml.
+pub fn save(bindings: &[Binding]) -> Result<(), String> {
+    let raw_bindings: Vec<RawBinding> = bindings
+        .iter()
+        .map(|b| RawBinding {
+            key: key_to_config_name(b.key)
+                .unwrap_or("?")
+                .to_string(),
+            func: b.func.clone(),
+            mode: format!("{:?}", b.mode),
+        })
+        .collect();
+    let toml_str = toml::to_string_pretty(&RawConfig {
+        bindings: raw_bindings,
+    })
+    .map_err(|e| format!("failed to serialize config: {}", e))?;
+    let content = format!(
+        "# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}",
+        toml_str
+    );
+    std::fs::write(config_path(), content).map_err(|e| format!("failed to write config: {}", e))
+}
+
+/// 返回所有可用功能名称 — List all available function names.
+pub fn list_function_names() -> Vec<&'static str> {
+    vec![
+        "停止退出",
+        "连点器",
+        "快速拾取",
+        "鬼畜走路",
+        "火神跳喷",
+        "甘雨走A",
+        "双玛头",
+        "坐标颜色",
+        "优化游戏",
+    ]
 }
 
 // ═══════════════════════════════════════════════════════════════════

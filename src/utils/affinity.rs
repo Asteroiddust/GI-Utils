@@ -15,23 +15,34 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, SetPriorityClass, SetProcessAffinityMask, PROCESS_CREATION_FLAGS,
+    GetCurrentThread, OpenProcess, SetPriorityClass, SetProcessAffinityMask,
+    SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_LOWEST, PROCESS_CREATION_FLAGS,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
 };
 
 // ── Core masks ────────────────────────────────────────────────
-// 8C16T layout:    物理核 0     1       2-7
-//                  线程[0,1]  [2][3]  [4-15]
-//                  用途 系统  工具 游戏  游戏
+// 8C16T layout:  物理核 0    1-5      6        7
+//                线程  [0,1] [2-11]  [12,13]  [14,15]
+//                用途  系统  游戏   GUI渲染  输入处理
 
 /// ALL MASK
 pub const ALL_CORES_MASK: usize = 0b1111_1111_1111_1111;
 
-/// 游戏进程（物理核 1 SMT 兄弟 + 物理核 2-7，线程 3-15）。
+/// 游戏进程（全部核心 — 隔离逻辑保留游戏全核，见 optimize_game）。
 pub const GAME_CORES_MASK: usize = ALL_CORES_MASK;
 
-/// 工具进程（物理核 1 主线程，线程 2，单线程足够）。
-pub const TOOL_CORES_MASK: usize = 0b1100_0000_0000_0000;
+/// 输入处理核心（物理核 7，逻辑 14,15）— Engine 事件循环 + 全部功能线程。
+/// 与 GUI 渲染核心（12,13）分离：渲染卡顿不影响输入注入时序。
+/// headless 版整个进程 pin 在此（`configure_self`）。
+pub const ENGINE_CORES_MASK: usize = 0b1100_0000_0000_0000;
+
+/// GUI 渲染核心（物理核 6，逻辑 12,13）— eframe 主线程（渲染 + 事件循环）。
+pub const GUI_CORES_MASK: usize = 0b0011_0000_0000_0000;
+
+/// 进程级掩码（物理核 6-7，逻辑 12-15）：GUI + 输入处理的总范围。
+/// Windows 要求线程掩码 ⊆ 进程掩码 — 先在进程级放出全部范围，
+/// 再在各线程内收窄到各自子集。
+pub const PROCESS_CORES_MASK: usize = GUI_CORES_MASK | ENGINE_CORES_MASK;
 
 /// 其他进程
 pub const OTHER_CORES_MASK: usize = ALL_CORES_MASK;
@@ -56,6 +67,10 @@ pub enum Error {
         pid: u32,
         source: windows::core::Error,
     },
+    /// 设置线程 CPU 亲和性失败 — Failed to set thread affinity mask.
+    SetThreadAffinity { source: windows::core::Error },
+    /// 设置线程优先级失败 — Failed to set thread priority.
+    SetThreadPriority { source: windows::core::Error },
     /// 创建进程快照失败 — Failed to create toolhelp snapshot.
     Snapshot { source: windows::core::Error },
 }
@@ -71,6 +86,12 @@ impl fmt::Display for Error {
             }
             Error::SetPriority { pid, source } => {
                 write!(f, "failed to set priority for process {}: {}", pid, source)
+            }
+            Error::SetThreadAffinity { source } => {
+                write!(f, "failed to set thread affinity: {}", source)
+            }
+            Error::SetThreadPriority { source } => {
+                write!(f, "failed to set thread priority: {}", source)
             }
             Error::Snapshot { source } => {
                 write!(f, "failed to create process snapshot: {}", source)
@@ -241,6 +262,46 @@ pub fn restore_all_affinity() -> Result<(), Error> {
     })
 }
 
+/// 将当前线程固定到指定核心掩码 — Pin the current thread to the given core mask.
+///
+/// 线程掩码必须是进程掩码的子集。新 spawn 的线程继承**进程**亲和性
+/// （而非父线程），因此进程掩码较宽（GUI 版 12-15）时，时序关键线程
+/// 必须在闭包内显式收窄到输入处理核心（14,15）。
+pub fn pin_current_thread(mask: usize) -> Result<(), Error> {
+    // SetThreadAffinityMask 返回旧掩码；失败返回 0（win32 语义，非 Result）。
+    let prev = unsafe { SetThreadAffinityMask(GetCurrentThread(), mask) };
+    if prev == 0 {
+        Err(Error::SetThreadAffinity {
+            source: windows::core::Error::from_thread(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// GUI 版线程配置 — GUI variant: widen the process mask to 12-15 and pin
+/// the calling thread (eframe main/UI thread) to the GUI render cores at
+/// reduced thread priority.
+///
+/// 必须在 [`configure_self`] 之后、创建 Engine 线程之前调用：新线程继承
+/// 进程掩码，需先扩展进程掩码到 12-15，Engine/功能线程才能收窄到 14,15。
+/// 仅在 GUI 二进制调用；headless 版进程掩码保持 14,15，无需扩展。
+pub fn configure_gui_self() -> Result<(), Error> {
+    // 1. 扩展进程掩码至 12-15 — 线程掩码必须 ⊆ 进程掩码，
+    //    GUI(12,13) 与输入处理(14,15) 才能分别收窄
+    let self_pid = process::id();
+    let h = open_process(self_pid)?;
+    unsafe { SetProcessAffinityMask(h.raw(), PROCESS_CORES_MASK) }
+        .map_err(|e| Error::SetAffinity { pid: self_pid, source: e })?;
+    // 2. GUI 主线程 → 12,13（渲染与输入处理分离，互不干扰）
+    pin_current_thread(GUI_CORES_MASK)?;
+    // 3. GUI 线程降为线程级最低优先级（REALTIME base 24 - 2 = 22）：
+    //    渲染线程不应抢占输入线程（24）的调度 — 渲染降级不牺牲注入时序。
+    //    22 仍高于所有普通进程（HIGH 为 13），不影响响应性。
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) }
+        .map_err(|e| Error::SetThreadPriority { source: e })
+}
+
 /// 配置当前进程 — Set this process's own CPU affinity and priority to real-time.
 ///
 /// 必须在启动时调用，在任何时序关键的工作之前。
@@ -248,7 +309,7 @@ pub fn restore_all_affinity() -> Result<(), Error> {
 pub fn configure_self() -> Result<(), Error> {
     let self_pid = process::id();
     let h = open_process(self_pid)?;
-    unsafe { SetProcessAffinityMask(h.raw(), TOOL_CORES_MASK) }.map_err(|e| {
+    unsafe { SetProcessAffinityMask(h.raw(), ENGINE_CORES_MASK) }.map_err(|e| {
         Error::SetAffinity {
             pid: self_pid,
             source: e,

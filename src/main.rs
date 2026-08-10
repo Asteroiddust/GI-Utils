@@ -4,17 +4,8 @@
 //! Uses the Interception driver for kernel-level keyboard/mouse input injection.
 //! Press F12 to exit.
 
-#![allow(dead_code)] // 第一阶段：基础设施将在第三阶段使用。Phase 1 infra unused in Phase 2.
-
-mod config;
-mod engine;
-mod functions;
-mod interception;
-mod key;
-mod scan_code;
-mod utils;
-
-use engine::Engine;
+use gi_utils::engine::Engine;
+use gi_utils::{config, engine, functions, utils};
 use std::sync::Arc;
 
 /// 按终端显示宽度填充字符串（CJK 字符计 2 列，ASCII 计 1 列）。
@@ -78,7 +69,9 @@ fn main() {
 
     // 系统初始化：DPI → 优先级/亲和性 → TSC 校准
     // System init: DPI → priority/affinity → TSC calibration
-    utils::init();
+    for line in utils::init() {
+        println!("{}", line);
+    }
 
     let engine = Engine::new();
     let send_ctx = engine.send_context();
