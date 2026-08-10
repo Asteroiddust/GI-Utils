@@ -18,8 +18,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, HWND, LPARAM, LRESULT, SetLastError,
+    WPARAM,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NOTIFYICONDATAW, NOTIFYICON_VERSION_4, NIF_ICON, NIF_MESSAGE, NIF_TIP,
     NIM_ADD, NIM_DELETE, NIM_SETVERSION,
@@ -27,10 +31,11 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos,
-    GetMessageW, GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    SetWindowLongPtrW, ShowWindow, TrackPopupMenu, ICONINFO, MF_STRING, MSG, SW_HIDE, SW_SHOW,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
-    WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_USER, GWLP_USERDATA,
+    GetMessageW, GetWindowLongPtrW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu, ICONINFO, MB_ICONERROR,
+    MB_OK, MF_STRING, MSG, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+    WM_USER, GWLP_USERDATA,
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -66,6 +71,8 @@ struct GuiApp {
     stop_flag: Arc<AtomicBool>,
     /// Engine 后台线程句柄。
     engine_handle: Option<JoinHandle<()>>,
+    /// 托盘线程句柄（Drop 时投递 WM_CLOSE 后 join，确保 NIM_DELETE 清理执行）。
+    tray_handle: Option<JoinHandle<()>>,
 
     /// 按键捕获状态。
     capture: CaptureState,
@@ -84,18 +91,26 @@ struct GuiApp {
     tray_rx: Receiver<TrayAction>,
     /// 真正的退出标志（托盘菜单 Exit 或 F12 触发）。
     should_exit: bool,
+    /// 托盘图标是否已成功创建（NIM_ADD 成功）。
+    /// false 时窗口关闭直接退出而非隐藏 — 否则图标不可用、窗口永远无法恢复。
+    tray_ok: bool,
+    /// 配置是否成功加载。false 时禁用保存 — 防止用空列表覆盖损坏的 config.toml。
+    config_ok: bool,
 }
 
 /// 托盘 → GUI 的消息类型。
 enum TrayAction {
     Show,
     Exit,
+    /// 托盘图标创建结果（NIM_ADD 成功与否）。
+    Ready(bool),
 }
 
 /// 按键捕获状态。
 struct CaptureState {
     active: bool,
-    binding_idx: Option<usize>,
+    /// 目标绑定的 `GuiBinding.id`（非行索引 — 捕获期间行可能被增删，索引会漂移）。
+    binding_id: Option<usize>,
     rx: Option<Receiver<Key>>,
 }
 
@@ -117,6 +132,12 @@ impl eframe::App for GuiApp {
                 self.should_exit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            Ok(TrayAction::Ready(ok)) => {
+                self.tray_ok = ok;
+                if !ok {
+                    self.log("WARNING: tray icon creation failed — closing will exit instead of hiding.");
+                }
+            }
             _ => {}
         }
 
@@ -128,6 +149,12 @@ impl eframe::App for GuiApp {
 
         // -0.5. 窗口关闭 → 隐藏到托盘（除非托盘菜单或 F12 触发退出）
         if ctx.input(|i| i.viewport().close_requested()) && !self.should_exit {
+            // 托盘图标不可用时隐藏 = 应用永远无法恢复 — 直接退出
+            if !self.tray_ok {
+                self.should_exit = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // 用原生 ShowWindow(SW_HIDE) 替代 egui 的 Visible(false)
             // egui 的 Visible(false) 会导致 update() 停止调用，托盘消息无法处理
@@ -244,7 +271,7 @@ impl GuiApp {
 
                     for (i, binding) in self.bindings_list.iter_mut().enumerate() {
                         // ---- Key 列 ----
-                        if self.capture.active && self.capture.binding_idx == Some(i) {
+                        if self.capture.active && self.capture.binding_id == Some(binding.id) {
                             ui.label("(capturing...)");
                         } else if let Some(ref name) = binding.key.map(|_| binding.key_name.clone()) {
                             ui.label(name);
@@ -302,11 +329,19 @@ impl GuiApp {
 
         // 延迟处理（避免在 grid 闭包中 borrow self）
         if let Some(idx) = remove_idx {
+            // 删除捕获目标行时同步取消捕获，避免 id 悬空
+            if let Some(id) = self.capture.binding_id {
+                if self.bindings_list.get(idx).map(|g| g.id) == Some(id) {
+                    self.cancel_capture();
+                }
+            }
             self.bindings_list.remove(idx);
             need_apply = true;
         }
         if let Some(idx) = capture_idx {
-            self.start_capture(idx);
+            if let Some(id) = self.bindings_list.get(idx).map(|g| g.id) {
+                self.start_capture(id);
+            }
         }
         if need_apply {
             self.live_apply();
@@ -319,24 +354,27 @@ impl GuiApp {
             if ui.button("+ Add Binding").clicked() {
                 let id = self.next_id;
                 self.next_id += 1;
-                let idx = self.bindings_list.len();
                 self.bindings_list.push(GuiBinding {
                     id,
                     key: None,
                     key_name: "...".into(),
-                    func: self
-                        .function_names
-                        .first()
-                        .copied()
-                        .unwrap_or("连点器")
-                        .into(),
+                    // 默认"连点器"而非列表第一项 — 第一项是"停止退出"，
+                    // 用户加行后不选功能直接按键会导致程序退出
+                    func: "连点器".into(),
                     mode: TriggerMode::Loop,
                 });
                 // 新增行自动进入按键捕获
-                self.start_capture(idx);
+                self.start_capture(id);
             }
 
-            if ui.button("Save to Config").clicked() {
+            // 配置加载失败时禁用保存 — 防止用空列表覆盖损坏的 config.toml
+            // egui 0.31：on_hover_text 是 Response 的方法（Button 上没有）
+            let save_resp = ui.add_enabled(self.config_ok, egui::Button::new("Save to Config"));
+            let save_clicked = save_resp.clicked();
+            if !self.config_ok {
+                save_resp.on_hover_text("config.toml 加载失败，保存会覆盖现有配置");
+            }
+            if save_clicked {
                 match self.save_config() {
                     Ok(()) => self.dirty = false,
                     Err(e) => self.error_msg = Some(e),
@@ -359,6 +397,10 @@ impl GuiApp {
                 ui.label("Press any key on your keyboard...");
                 ui.add_space(8.0);
                 ui.label("Waiting for key press...");
+                ui.add_space(8.0);
+                if ui.button("Cancel").clicked() {
+                    self.cancel_capture();
+                }
             });
     }
 
@@ -437,11 +479,19 @@ impl GuiApp {
     fn log(&mut self, msg: impl Into<String>) {
         self.log_messages.push(msg.into());
     }
-    /// 开始按键捕获。
-    fn start_capture(&mut self, binding_idx: usize) {
+    /// 开始按键捕获。`binding_id` 是目标行的 `GuiBinding.id`（与行号无关）。
+    fn start_capture(&mut self, binding_id: usize) {
         self.capture.active = true;
-        self.capture.binding_idx = Some(binding_idx);
+        self.capture.binding_id = Some(binding_id);
         self.capture.rx = Some(self.key_bindings.enable_capture());
+    }
+
+    /// 取消按键捕获（弹窗 Cancel 按钮）。
+    fn cancel_capture(&mut self) {
+        self.key_bindings.disable_capture();
+        self.capture.active = false;
+        self.capture.binding_id = None;
+        self.capture.rx = None;
     }
 
     /// 检查是否有捕获到的按键。
@@ -455,23 +505,56 @@ impl GuiApp {
                     .unwrap_or_else(|| key.name())
                     .to_string();
 
-                if let Some(idx) = self.capture.binding_idx {
-                    if let Some(binding) = self.bindings_list.get_mut(idx) {
+                // 按 id 定位行 — 捕获期间增删行不导致写错行
+                if let Some(id) = self.capture.binding_id {
+                    if let Some(binding) = self.bindings_list.iter_mut().find(|g| g.id == id) {
                         binding.key = Some(key);
                         binding.key_name = name;
                     }
+                    // 目标行已被删除 → 按键静默丢弃，仅结束捕获
                 }
 
                 self.capture.active = false;
-                self.capture.binding_idx = None;
+                self.capture.binding_id = None;
                 self.capture.rx = None;
                 self.live_apply();
             }
         }
     }
 
+    /// 校验绑定列表的双向唯一性（key 唯一、func 唯一）。未设键的行跳过。
+    /// 与 config::load 的校验规则一致；live_apply 与 save_config 共用。
+    fn validate_bindings(&self) -> Result<(), String> {
+        let mut keys = std::collections::HashSet::new();
+        let mut funcs = std::collections::HashSet::new();
+        for g in &self.bindings_list {
+            if let Some(key) = g.key {
+                if !keys.insert(key) {
+                    return Err(format!(
+                        "duplicate key: '{}' is bound to multiple functions",
+                        key.name()
+                    ));
+                }
+            }
+            if !funcs.insert(g.func.clone()) {
+                return Err(format!(
+                    "duplicate function: '{}' is bound to multiple keys",
+                    g.func
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// 即时应用：将所有 GUI 绑定注册到 Engine 的 KeyBindings。
     fn live_apply(&mut self) {
+        // 唯一性校验失败则不应用 — 保持现有绑定，避免两行同键时
+        // HashMap::insert 静默后写覆盖（表格显示两行、实际只有一行生效）
+        if let Err(e) = self.validate_bindings() {
+            self.error_msg = Some(e);
+            return;
+        }
+
         // 先清空旧绑定，再全量重新注册（覆盖删除/改键的条目）。
         self.key_bindings.clear_all();
 
@@ -502,6 +585,8 @@ impl GuiApp {
 
     /// 保存绑定列表到 config.toml。
     fn save_config(&self) -> Result<(), String> {
+        self.validate_bindings()?;
+
         let bindings: Vec<Binding> = self
             .bindings_list
             .iter()
@@ -513,26 +598,6 @@ impl GuiApp {
                 })
             })
             .collect();
-
-        // 验证双向唯一性
-        {
-            let mut keys = std::collections::HashSet::new();
-            let mut funcs = std::collections::HashSet::new();
-            for b in &bindings {
-                if !keys.insert(b.key) {
-                    return Err(format!(
-                        "duplicate key: '{}' is bound to multiple functions",
-                        b.key.name()
-                    ));
-                }
-                if !funcs.insert(b.func.clone()) {
-                    return Err(format!(
-                        "duplicate function: '{}' is bound to multiple keys",
-                        b.func
-                    ));
-                }
-            }
-        }
 
         config::save(&bindings)
     }
@@ -546,6 +611,25 @@ impl Drop for GuiApp {
     fn drop(&mut self) {
         // 取消按键捕获
         self.key_bindings.disable_capture();
+
+        // 通知托盘线程退出消息泵：GetMessageW 需要 WM_QUIT 才返回，
+        // 而 WM_QUIT 由 WM_DESTROY → PostQuitMessage 发出 — 必须显式
+        // 投递 WM_CLOSE 触发 DestroyWindow，否则 NIM_DELETE/DestroyIcon
+        // 永不执行（托盘图标残留到进程死亡）
+        unsafe {
+            // windows-rs 0.62：FindWindowW 参数为 `impl Param<PCWSTR>`，
+            // `Option<&PCWSTR>`（而非 `Option<PCWSTR>`）满足该 bound。
+            if let Ok(hwnd) = FindWindowW(
+                Some(&windows::core::w!("GIUtilsTrayWindow")),
+                None,
+            ) {
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+        // 等待托盘线程完成清理（NIM_DELETE/DestroyIcon/DestroyWindow）
+        if let Some(handle) = self.tray_handle.take() {
+            let _ = handle.join();
+        }
 
         // 信号 Engine 停止
         self.stop_flag.store(true, Ordering::Release);
@@ -601,7 +685,12 @@ fn create_tray_icon_pixels() -> (Vec<u8>, u32, u32) {
 }
 
 /// 从 RGBA 像素创建 HICON（在托盘线程内调用，HICON 非 Send）。
-unsafe fn create_hicon_from_rgba(rgba: &[u8], w: u32, h: u32) -> windows::Win32::UI::WindowsAndMessaging::HICON {
+/// 失败返回 None — 调用方负责发送 TrayAction::Ready(false) 并退出。
+unsafe fn create_hicon_from_rgba(
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+) -> Option<windows::Win32::UI::WindowsAndMessaging::HICON> {
     // RGBA → BGRA + 翻转
     let mut bgra = Vec::with_capacity((w * h * 4) as usize);
     for row in (0..h).rev() {
@@ -621,6 +710,14 @@ unsafe fn create_hicon_from_rgba(rgba: &[u8], w: u32, h: u32) -> windows::Win32:
     let hbm_color = windows::Win32::Graphics::Gdi::CreateBitmap(
         w as i32, h as i32, 1, 32, Some(bgra.as_ptr() as *const std::ffi::c_void),
     );
+    use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
+
+    // CreateBitmap 失败或资源不足 → 不进入 panic 路径，返回 None 优雅降级
+    if hbm_mask.is_invalid() || hbm_color.is_invalid() {
+        let _ = DeleteObject(HGDIOBJ(hbm_mask.0));
+        let _ = DeleteObject(HGDIOBJ(hbm_color.0));
+        return None;
+    }
     let icon_info = ICONINFO {
         fIcon: true.into(),
         xHotspot: 0,
@@ -628,7 +725,14 @@ unsafe fn create_hicon_from_rgba(rgba: &[u8], w: u32, h: u32) -> windows::Win32:
         hbmMask: hbm_mask,
         hbmColor: hbm_color,
     };
-    CreateIconIndirect(&icon_info).expect("CreateIconIndirect failed")
+    let icon = match CreateIconIndirect(&icon_info) {
+        Ok(icon) if !icon.is_invalid() => Some(icon),
+        _ => None,
+    };
+    // CreateIconIndirect 复制了位图内容 — 释放临时位图（L2：避免泄漏）
+    let _ = DeleteObject(HGDIOBJ(hbm_mask.0));
+    let _ = DeleteObject(HGDIOBJ(hbm_color.0));
+    icon
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -723,12 +827,7 @@ unsafe extern "system" fn tray_wnd_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-fn run_tray_thread(
-    tx: Sender<TrayAction>,
-    pixels: Vec<u8>,
-    w: u32,
-    h: u32,
-) {
+fn run_tray_thread(tx: Sender<TrayAction>, pixels: Vec<u8>, w: u32, h: u32) {
     use std::mem;
     use windows::core::w;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -737,18 +836,41 @@ fn run_tray_thread(
 
     unsafe {
         // 在托盘线程内创建 HICON（HICON 不 Send）
-        let icon = create_hicon_from_rgba(&pixels, w, h);
-
-        // 查找主窗口 HWND（用于 Show/Hide）
-        let main_hwnd = loop {
-            let h = FindWindowW(None, w!("GI-Utils Configuration"));
-            if h.is_ok() {
-                break h.unwrap();
+        // 失败 → 通知 GUI 托盘不可用并退出，不 panic（panic 会留下
+        // 无托盘的 GUI 且 close_requested 无 NIM_DELETE — 不可达）
+        let icon = match create_hicon_from_rgba(&pixels, w, h) {
+            Some(icon) => icon,
+            None => {
+                let _ = tx.send(TrayAction::Ready(false));
+                return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
         };
 
-        let hinst = GetModuleHandleW(None).expect("GetModuleHandleW");
+        // 查找主窗口 HWND（用于 Show/Hide）
+        // 主窗口在 eframe 初始化后创建；最多等 30s（60 × 500ms）。
+        // 标题不匹配时不再无限空转 — 超时按托盘失败处理。
+        let mut main_hwnd = None;
+        for _ in 0..60 {
+            if let Ok(h) = FindWindowW(None, w!("GI-Utils Configuration")) {
+                main_hwnd = Some(h);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let Some(main_hwnd) = main_hwnd else {
+            let _ = tx.send(TrayAction::Ready(false));
+            let _ = DestroyIcon(icon);
+            return;
+        };
+
+        let hinst = match GetModuleHandleW(None) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = tx.send(TrayAction::Ready(false));
+                let _ = DestroyIcon(icon);
+                return;
+            }
+        };
 
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
@@ -759,8 +881,9 @@ fn run_tray_thread(
         };
         RegisterClassW(&wc);
 
-        let ctx = Box::new(TrayContext { tx, main_hwnd });
-        let hwnd = CreateWindowExW(
+        // tx 克隆进 ctx（Sender Clone）；外层 tx 保留用于 NIM_ADD 后发送 Ready
+        let ctx = Box::new(TrayContext { tx: tx.clone(), main_hwnd });
+        let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("GIUtilsTrayWindow"),
             w!(""),
@@ -773,8 +896,16 @@ fn run_tray_thread(
             None,
             Some(windows::Win32::Foundation::HINSTANCE(hinst.0)),
             Some(Box::into_raw(ctx) as *const _ as *const std::ffi::c_void),
-        )
-        .expect("CreateWindowExW for tray");
+        ) {
+            Ok(hwnd) => hwnd,
+            Err(_) => {
+                // ctx 已泄漏（无法从失败调用回收指针）— 进程级资源，可接受；
+                // 必须通知 GUI 不可达路径已建立，否则托盘线程死亡后 GUI 无法退出
+                let _ = tx.send(TrayAction::Ready(false));
+                let _ = DestroyIcon(icon);
+                return;
+            }
+        };
 
         let mut nid: NOTIFYICONDATAW = mem::zeroed();
         nid.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -790,7 +921,10 @@ fn run_tray_thread(
             .enumerate()
             .for_each(|(i, c)| nid.szTip[i] = *c);
 
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+        // NIM_ADD 失败 = 托盘图标不可用，但消息窗口仍然有效 —
+        // Drop 的 PostMessageW(WM_CLOSE) 依然能结束消息泵，退出路径完整。
+        let add_ok = Shell_NotifyIconW(NIM_ADD, &nid).as_bool();
+        let _ = tx.send(TrayAction::Ready(add_ok));
 
         // NotifyIconVersion 4 (modern Win10+ behavior)
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
@@ -814,32 +948,79 @@ fn run_tray_thread(
 }
 
 
+/// 用 MessageBox 显示错误 — GUI 无控制台时的用户反馈通道。
+/// 用于 panic hook 与致命启动错误。
+fn show_message_box(title: &str, msg: &str) {
+    let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let msg_wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            windows::core::PCWSTR(msg_wide.as_ptr()),
+            windows::core::PCWSTR(title_wide.as_ptr()),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+}
+
+/// 安装 panic hook：恢复 CPU 亲和性 + MessageBox 显示错误。
+///
+/// panic=abort 时 Drop 不执行（`restore_all_affinity` 在 Drop 路径中），
+/// 若 panic 前已隔离游戏核心，其它进程会停留在受限核心 — hook 兜底恢复。
+/// 必须在任何可能 panic 的代码之前安装。
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = utils::affinity::restore_all_affinity();
+        show_message_box(
+            "GI-Utils 错误",
+            &format!("GI-Utils 发生致命错误，即将退出：\n\n{}", info),
+        );
+    }));
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // main — GUI 入口
 // ═══════════════════════════════════════════════════════════════════
 
 fn main() {
+    use windows::core::w;
+
     // 启动日志（GUI 无控制台，收集到内存后在日志面板显示）
     let mut startup_log: Vec<String> = vec![
         "GI-Utils GUI v1.0.0".into(),
         "Initializing...".into(),
     ];
 
+    // ── 0. panic hook + 单实例保护（在任何副作用之前）────────
+    install_panic_hook();
+
+    // 单实例：已有实例时激活其窗口并退出。
+    // mutex 句柄故意不释放 — 进程退出时由 OS 自动释放，保持排他。
+    unsafe {
+        SetLastError(ERROR_SUCCESS);
+        let _single_instance_mutex = CreateMutexW(None, true, w!("GIUtilsSingleInstance"));
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            if let Ok(hwnd) = FindWindowW(None, w!("GI-Utils Configuration")) {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = SetForegroundWindow(hwnd);
+            }
+            return;
+        }
+    }
+
     // ── 1. 系统初始化 ───────────────────────────────────────
-    utils::init();
-    startup_log.push("DPI awareness: PER_MONITOR_AWARE_V2".into());
-    startup_log.push("Priority: real-time, affinity core set.".into());
-    startup_log.push("TSC frequency calibrated.".into());
+    // init 返回日志行（GUI 无控制台，println 会被静默丢弃）
+    startup_log.extend(utils::init());
 
     // ── 2. 加载配置 ─────────────────────────────────────────
-    let config_bindings = match config::load() {
+    let (config_bindings, config_ok) = match config::load() {
         Ok(b) => {
             startup_log.push(format!("Loaded {} bindings from config.toml", b.len()));
-            b
+            (b, true)
         }
         Err(e) => {
             startup_log.push(format!("Config error: {}", e));
-            Vec::new()
+            (Vec::new(), false)
         }
     };
 
@@ -882,12 +1063,18 @@ fn main() {
     let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
     let (pixels, w, h) = create_tray_icon_pixels();
 
-    std::thread::Builder::new()
+    let tray_handle = match std::thread::Builder::new()
         .name("tray".into())
         .spawn(move || {
             run_tray_thread(tray_tx, pixels, w, h);
-        })
-        .expect("Failed to spawn tray thread");
+        }) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            // 托盘线程创建失败 — tray_ok 保持 false（关闭窗口直接退出），GUI 仍可用
+            startup_log.push(format!("Tray thread spawn failed: {}", e));
+            None
+        }
+    };
 
     // ── 6. 启动 Engine 后台线程 ─────────────────────────────
     let engine_handle = std::thread::Builder::new()
@@ -924,9 +1111,10 @@ fn main() {
         send_ctx,
         stop_flag,
         engine_handle: Some(engine_handle),
+        tray_handle,
         capture: CaptureState {
             active: false,
-            binding_idx: None,
+            binding_id: None,
             rx: None,
         },
         function_names,
@@ -935,6 +1123,10 @@ fn main() {
         log_visible: true,
         tray_rx,
         should_exit: false,
+        // tray_ok 由托盘线程的 TrayAction::Ready 异步置位；
+        // 在此之前关闭窗口直接退出（不隐藏）。
+        tray_ok: false,
+        config_ok,
     };
 
     // ── 8. 运行 GUI 事件循环 ────────────────────────────────
@@ -945,12 +1137,17 @@ fn main() {
         ..Default::default()
     };
 
-    if let Err(_e) = eframe::run_native(
+    if let Err(e) = eframe::run_native(
         "GI-Utils Configuration",
         options,
         Box::new(|_cc| Ok(Box::new(app))),
     ) {
-        // 无控制台可用，直接退出（错误信息已由 eframe 内部记录）
+        // 无控制台 — 用 MessageBox 展示错误而非静默退出
+        let _ = utils::affinity::restore_all_affinity();
+        show_message_box(
+            "GI-Utils 启动失败",
+            &format!("GUI 初始化失败：\n\n{}", e),
+        );
         std::process::exit(1);
     }
 }

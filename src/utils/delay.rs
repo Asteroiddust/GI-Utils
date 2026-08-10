@@ -116,23 +116,20 @@ pub fn delay_ms_interruptible(ms: f64, stop_requested: &AtomicBool) {
 
 /// 校准 TSC 频率 — Calibrate TSC frequency with default parameters.
 ///
-/// 20 samples x 100ms，总计约 2 秒。返回校准后的频率（Hz）。启动时自动执行。
-/// 20 samples x 100ms. Returns the calibrated frequency in Hz.
-/// Called automatically at startup. Takes ~2 seconds total.
-pub fn calibrate_tsc_frequency() -> f64 {
+/// 20 samples x 100ms，总计约 2 秒。返回校准后的频率（Hz）与进度日志行。
+/// 启动时自动执行。日志行供调用方输出（headless 打印 / GUI 注入日志面板）。
+pub fn calibrate_tsc_frequency() -> (f64, Vec<String>) {
     calibrate(20, 100.0)
 }
 
 /// 测量 TSC 频率 — Measure TSC frequency using `sample_count` samples of `duration_ms` each.
-/// 返回中位频率（Hz）。
-/// Returns the median frequency in Hz.
-fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
+/// 返回中位频率（Hz）与逐样本日志行。
+fn calibrate(sample_count: usize, duration_ms: f64) -> (f64, Vec<String>) {
     use std::time::Instant;
 
     let dur = std::time::Duration::from_secs_f64(duration_ms / 1000.0);
     let mut rates: Vec<f64> = Vec::with_capacity(sample_count);
-
-    use std::io::{self, Write};
+    let mut lines: Vec<String> = Vec::with_capacity(sample_count + 2);
 
     for i in 0..sample_count {
         let start = Instant::now();
@@ -146,15 +143,14 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
         let elapsed = start.elapsed().as_secs_f64();
         let rate = (tsc_end - tsc_start) as f64 / elapsed;
         if rate.is_finite() {
-            print!("\r  sample {:>2}/{}: {:.0} Hz", i + 1, sample_count, rate);
-            io::stdout().flush().ok();
+            lines.push(format!("  sample {:>2}/{}: {:.0} Hz", i + 1, sample_count, rate));
             rates.push(rate);
         } else {
-            eprintln!(
-                "\r  sample {:>2}/{}: invalid — skipping",
+            lines.push(format!(
+                "  sample {:>2}/{}: invalid — skipping",
                 i + 1,
                 sample_count
-            );
+            ));
         }
     }
 
@@ -163,8 +159,8 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
         // 所有样本无效 — 使用硬编码回退。
         // All samples invalid — use hardcoded fallback.
         // Should never happen on modern invariant-TSC CPUs.
-        eprintln!("\r  -> all samples invalid, using default frequency");
-        return tsc_freq();
+        lines.push("  -> all samples invalid, using default frequency".into());
+        return (tsc_freq(), lines);
     }
 
     rates.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
@@ -176,11 +172,9 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> f64 {
     };
 
     init_tsc_freq(median);
-    print!(
-        "\r  -> calibrated: {:.0} Hz (median of {} x {}ms samples)",
+    lines.push(format!(
+        "  -> calibrated: {:.0} Hz (median of {} x {}ms samples)",
         median, sample_count, duration_ms
-    );
-    io::stdout().flush().ok();
-    println!(); // final newline
-    median
+    ));
+    (median, lines)
 }

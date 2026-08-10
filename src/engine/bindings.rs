@@ -153,6 +153,14 @@ pub struct KeyBindings {
     keys_held: Mutex<HashMap<Key, bool>>,
     /// GUI 按键捕获：有捕获请求时，下一个按下的键通过此 Sender 发送。
     capture_tx: Mutex<Option<Sender<Key>>>,
+    /// 待 join 的已停止线程句柄。
+    ///
+    /// 停止 Loop/Toggle 时**不在 Engine 线程 join** — 功能线程若处于不可中断
+    /// 延时（如优化游戏最长 2s），join 会冻结事件循环，导致按键转发停止、
+    /// F12 退出失效。句柄暂存此处，由 GUI 线程通过 [`drain_pending_joins`]
+    /// 异步 join。线程仍会自行退出（stop_requested + ActiveGuard 清除 active），
+    /// join 只是回收句柄。
+    pending_joins: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl KeyBindings {
@@ -162,6 +170,16 @@ impl KeyBindings {
             bindings: Mutex::new(HashMap::new()),
             keys_held: Mutex::new(HashMap::new()),
             capture_tx: Mutex::new(None),
+            pending_joins: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// join 所有已停止的线程句柄（应在 GUI/UI 线程调用，锁外 join）。
+    /// Join all stopped thread handles — call from the GUI thread.
+    pub fn drain_pending_joins(&self) {
+        let handles: Vec<JoinHandle<()>> = self.pending_joins.lock().unwrap().drain(..).collect();
+        for h in handles {
+            let _ = h.join();
         }
     }
 
@@ -278,11 +296,13 @@ impl KeyBindings {
                     }
                 }
             }
-        } // Mutex 已释放 — 在外侧 join
+        } // Mutex 已释放 — 交给 pending 队列异步 join
         if let Some(h) = deferred {
-            debug!("Joining {:?}...", key);
-            let _ = h.join();
-            debug!("Stopped {:?}", key);
+            // 不在 Engine 线程 join：功能线程的不可中断延时可能长达 2s
+            // （优化游戏），阻塞 join 会冻结事件循环 — 按键转发停止、F12 失效。
+            // 句柄入队，由 GUI 线程 drain_pending_joins 回收。
+            self.pending_joins.lock().unwrap().push(h);
+            debug!("Stopped {:?} (deferred join)", key);
         }
     }
 
@@ -308,11 +328,10 @@ impl KeyBindings {
             } else {
                 deferred = None;
             }
-        } // Mutex 已释放 — 在外侧 join
+        } // Mutex 已释放 — 交给 pending 队列异步 join
         if let Some(h) = deferred {
-            debug!("Joining {:?}...", key);
-            let _ = h.join();
-            debug!("Stopped {:?}", key);
+            self.pending_joins.lock().unwrap().push(h);
+            debug!("Stopped {:?} (deferred join)", key);
         }
     }
 
@@ -321,13 +340,18 @@ impl KeyBindings {
     /// 停止所有正在运行的绑定，等待所有线程结束。
     /// Stop all running bindings and join all threads.
     pub fn stop_all(&self) {
-        let handles: Vec<JoinHandle<()>>;
+        let mut handles: Vec<JoinHandle<()>>;
         {
             let mut bindings = self.bindings.lock().unwrap();
             handles = bindings
                 .iter_mut()
                 .filter_map(|(key, entry)| entry.signal_stop(*key))
                 .collect();
+        }
+        // 顺带回收 pending 队列中的已停止线程（两段锁依次获取，不嵌套）
+        {
+            let mut pending = self.pending_joins.lock().unwrap();
+            handles.extend(pending.drain(..));
         } // Mutex 已释放 — 在外侧 join
         for h in handles {
             let _ = h.join();

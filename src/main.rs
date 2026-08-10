@@ -69,7 +69,9 @@ fn main() {
 
     // 系统初始化：DPI → 优先级/亲和性 → TSC 校准
     // System init: DPI → priority/affinity → TSC calibration
-    utils::init();
+    for line in utils::init() {
+        println!("{}", line);
+    }
 
     let engine = Engine::new();
     let send_ctx = engine.send_context();
