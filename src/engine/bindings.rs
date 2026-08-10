@@ -13,6 +13,7 @@ use crate::engine::function::KeyFunction;
 use crate::key::Key;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tracing::debug;
@@ -73,17 +74,25 @@ impl Entry {
 
         self.active.store(true, Ordering::Release);
         let guard = ActiveGuard(self.active.clone());
-        let handle = thread::Builder::new()
+        let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
                 let _guard = guard; // 移入闭包，作用域退出（含 panic）时 drop
                 func.execute(stop);
-            })
-            .expect("Failed to spawn function thread");
+            });
 
-        self.stop_requested = Some(stop_requested);
-        self.handle = Some(handle);
-        debug!("Started {:?}", key);
+        match result {
+            Ok(handle) => {
+                self.stop_requested = Some(stop_requested);
+                self.handle = Some(handle);
+                debug!("Started {:?}", key);
+            }
+            Err(e) => {
+                // guard 在此作用域退出时 drop → active = false
+                // 不在持锁状态下 panic，避免 Mutex 毒化
+                debug!("Failed to spawn {:?}: {}", key, e);
+            }
+        }
     }
 
     /// 为 Once 创建线程：运行至结束，无需取消。
@@ -93,14 +102,22 @@ impl Entry {
 
         self.active.store(true, Ordering::Release);
         let guard = ActiveGuard(self.active.clone());
-        thread::Builder::new()
+        let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
                 let _guard = guard;
                 func.execute(Arc::new(AtomicBool::new(false)));
-            })
-            .expect("Failed to spawn function thread");
-        debug!("Started (once) {:?}", key);
+            });
+
+        match result {
+            Ok(_) => {
+                debug!("Started (once) {:?}", key);
+            }
+            Err(e) => {
+                // guard 在此作用域退出时 drop → active = false
+                debug!("Failed to spawn (once) {:?}: {}", key, e);
+            }
+        }
     }
 
     /// 发送停止信号，取出线程句柄用于延迟 join。
@@ -113,7 +130,13 @@ impl Entry {
             stop_requested.store(true, Ordering::Release);
         }
         self.stop_requested = None;
-        self.active.store(false, Ordering::Release);
+        // active 由线程内 ActiveGuard::drop 在线程真正退出时清除
+        // (不再此处提前清除 — 否则在 join 完成前存在竞态窗口：
+        //  另一个 key-down 可看到 active=false 并 spawn 新线程，
+        //  导致 handle/stop_requested 被覆盖、旧线程变孤儿)
+        // active is cleared by ActiveGuard::drop when the thread
+        // actually exits — not here, to avoid a race window between
+        // signal_stop and the join.
         let handle = self.handle.take();
         debug!("Signalled stop for {:?}", key);
         handle
@@ -128,6 +151,8 @@ impl Entry {
 pub struct KeyBindings {
     bindings: Mutex<HashMap<Key, Entry>>,
     keys_held: Mutex<HashMap<Key, bool>>,
+    /// GUI 按键捕获：有捕获请求时，下一个按下的键通过此 Sender 发送。
+    capture_tx: Mutex<Option<Sender<Key>>>,
 }
 
 impl KeyBindings {
@@ -136,6 +161,7 @@ impl KeyBindings {
         Self {
             bindings: Mutex::new(HashMap::new()),
             keys_held: Mutex::new(HashMap::new()),
+            capture_tx: Mutex::new(None),
         }
     }
 
@@ -159,11 +185,64 @@ impl KeyBindings {
         debug!("Unregistered {:?}", key);
     }
 
+    /// 停止所有运行中的绑定并清空注册表。
+    /// Stop all running bindings and clear the registry.
+    /// 用于 GUI live-apply 时全量替换绑定列表。
+    ///
+    /// 必须先 drain 再 join：若先 stop_all(join 全部线程) 再 clear()，
+    /// join 完成后到 clear 之间的窗口内 Engine 线程可能收到一次 key-down
+    /// （此时旧线程已退出、active 已被 ActiveGuard 清除），在旧 Entry 上
+    /// spawn 新线程 — 随后 clear() 连同 stop_requested 一起 drop，
+    /// 新线程将无人能停止（僵尸 Loop 线程）。
+    pub fn clear_all(&self) {
+        let handles: Vec<JoinHandle<()>>;
+        {
+            let mut bindings = self.bindings.lock().unwrap();
+            // drain 使 map 立即清空：期间任何 key-down 查表必 miss，无法 spawn
+            handles = bindings
+                .drain()
+                .filter_map(|(key, mut entry)| entry.signal_stop(key))
+                .collect();
+        } // Mutex 已释放 — 在外侧 join
+        for h in handles {
+            let _ = h.join();
+        }
+        debug!("Cleared all bindings");
+    }
+
+    // ── 按键捕获 — Key capture for GUI ────────────────────
+
+    /// 启用按键捕获：下一个按下的键通过返回的 Receiver 发送。
+    /// 捕获的键正常转发到系统（Engine 先 forward 再 dispatch），但不会被分发到功能绑定。
+    /// Enable key capture: the next key-down is sent through the Receiver.
+    pub fn enable_capture(&self) -> Receiver<Key> {
+        let (tx, rx) = mpsc::channel();
+        *self.capture_tx.lock().unwrap() = Some(tx);
+        rx
+    }
+
+    /// 取消按键捕获。
+    pub fn disable_capture(&self) {
+        *self.capture_tx.lock().unwrap() = None;
+    }
+
     // ── 按下处理 — Key-down dispatch ──────────────────────
 
     /// 处理按键按下事件：防抖后根据 TriggerMode 启动或切换功能。
     /// Handle key-down: debounce, then start or toggle the bound function.
     pub fn process_key_down(&self, key: Key) {
+        // 按键捕获模式：拦截并发送给 GUI，不分发到功能绑定。
+        // Key capture mode: forward to GUI via channel, skip normal dispatch.
+        if let Some(tx) = self.capture_tx.lock().unwrap().take() {
+            let _ = tx.send(key);
+            // 捕获分支也必须记录 held：capture_tx 已被 take 一次性取走，
+            // 若按住不放，auto-repeat 的 key-down 会走正常分发路径 —
+            // 防抖表无记录就会误触发刚绑定的功能（如 F12 停止退出）。
+            // 记录后 repeat 被防抖吞掉，key-up 时正常清除。
+            self.keys_held.lock().unwrap().insert(key, true);
+            return;
+        }
+
         // 防抖：按住时忽略 auto-repeat
         {
             let mut held = self.keys_held.lock().unwrap();
