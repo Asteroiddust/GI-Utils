@@ -112,24 +112,6 @@ struct KeyScheduler {
 
 **实现难度**：★★★★。需要重新设计事件模型和运行时调度器。
 
-### 4. 配置热重载
-
-监控 `config.toml` 文件变化，检测到修改后自动重新解析并更新绑定，无需重启程序。
-
-**方案**：
-- 主事件循环中通过 `InterceptionContext::wait()` 的超时变体轮询（或独立监控线程）
-- 使用 `std::fs::metadata` 比较 `config.toml` 的最后修改时间 (`modified()`)
-- 检测到变更后调用 `config::load()` → 清空旧绑定 → 重新注册
-- 正在运行中的功能不受影响（已持有 `Arc<KeyFunction>` + `stop_requested`）
-
-**设计要点**：
-- 运行时卸载旧功能：先 signal stop → join 所有活跃线程 → 清空 `KeyBindings` → 重新注册
-- 停止退出功能的 `stop_flag` 保持不变（Engine 生命周期不变）
-- 热重载前后打印 diff：哪些键新增、移除、变更
-- 解析失败时保留旧绑定，打印错误，不崩溃
-
-**实现难度**：★★★。改动集中在 `Engine::run()`（轮询逻辑）、`KeyBindings`（清空/重新注册）、`config.rs`（reload 接口）。
-
 ### 5. 通用 held-key 清理
 
 当前鬼畜走路用单 `held` 变量，适合所有有序序列功能。提取为通用 pattern：
