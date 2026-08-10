@@ -96,6 +96,8 @@ struct GuiApp {
     tray_ok: bool,
     /// 配置是否成功加载。false 时禁用保存 — 防止用空列表覆盖损坏的 config.toml。
     config_ok: bool,
+    /// 主窗口是否隐藏到托盘（隐藏时降低重绘频率，托盘消息仍可处理）。
+    hidden: bool,
 }
 
 /// 托盘 → GUI 的消息类型。
@@ -120,12 +122,22 @@ struct CaptureState {
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 每 100ms 唤醒一次，确保隐藏窗口时也能收到托盘消息
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        // 回收已退出的功能线程句柄（is_finished 检查，绝不阻塞帧 — L4）
+        self.key_bindings.drain_pending_joins();
+
+        // 周期性唤醒：窗口可见时 100ms，隐藏到托盘时 500ms（省电），
+        // 确保隐藏窗口时也能收到托盘消息
+        let interval = if self.hidden {
+            std::time::Duration::from_millis(500)
+        } else {
+            std::time::Duration::from_millis(100)
+        };
+        ctx.request_repaint_after(interval);
 
         // -1. 处理托盘消息
         match self.tray_rx.try_recv() {
             Ok(TrayAction::Show) => {
+                self.hidden = false;
                 ctx.request_repaint();
             }
             Ok(TrayAction::Exit) => {
@@ -158,6 +170,7 @@ impl eframe::App for GuiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // 用原生 ShowWindow(SW_HIDE) 替代 egui 的 Visible(false)
             // egui 的 Visible(false) 会导致 update() 停止调用，托盘消息无法处理
+            self.hidden = true;
             unsafe {
                 if let Ok(hwnd) = FindWindowW(None, windows::core::w!("GI-Utils Configuration")) {
                     let _ = ShowWindow(hwnd, SW_HIDE);
@@ -258,6 +271,9 @@ impl GuiApp {
         let mut capture_idx: Option<usize> = None;
         let function_names = self.function_names.clone(); // 循环外克隆一次
 
+        // L3: 捕获期间禁用表格交互 — 防止捕获中改/删行导致 binding_id 悬空
+        // 或状态混乱（按键捕获窗口仍可用 Cancel 按钮取消）
+        ui.add_enabled_ui(!self.capture.active, |ui| {
         egui::ScrollArea::horizontal().show(ui, |ui| {
             egui::Grid::new("binding_grid")
                 .striped(true)
@@ -326,6 +342,7 @@ impl GuiApp {
                     }
                 });
         });
+        }); // add_enabled_ui — 捕获期间禁用
 
         // 延迟处理（避免在 grid 闭包中 borrow self）
         if let Some(idx) = remove_idx {
@@ -351,7 +368,11 @@ impl GuiApp {
     /// 操作按钮 — 新增 / 保存。
     fn show_action_buttons(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("+ Add Binding").clicked() {
+            // L3: 捕获期间禁用新增 — 新增行会自动进入捕获，会打断当前捕获
+            if ui
+                .add_enabled(!self.capture.active, egui::Button::new("+ Add Binding"))
+                .clicked()
+            {
                 let id = self.next_id;
                 self.next_id += 1;
                 self.bindings_list.push(GuiBinding {
@@ -476,8 +497,14 @@ impl GuiApp {
     }
 
     /// 向 GUI 日志面板追加一条消息。
+    /// 上限 200 条，超出时丢弃最旧的 — 长会话下日志无限增长会耗尽内存（L9）。
     fn log(&mut self, msg: impl Into<String>) {
+        const MAX_LOG: usize = 200;
         self.log_messages.push(msg.into());
+        if self.log_messages.len() > MAX_LOG {
+            let excess = self.log_messages.len() - MAX_LOG;
+            self.log_messages.drain(0..excess);
+        }
     }
     /// 开始按键捕获。`binding_id` 是目标行的 `GuiBinding.id`（与行号无关）。
     fn start_capture(&mut self, binding_id: usize) {
@@ -501,6 +528,13 @@ impl GuiApp {
         }
         if let Some(ref rx) = self.capture.rx {
             if let Ok(key) = rx.try_recv() {
+                // L3: Esc 取消捕获（与弹窗 Cancel 按钮等价）
+                if key == Key::ESCAPE {
+                    self.log("Capture cancelled (Esc)");
+                    self.cancel_capture();
+                    return;
+                }
+
                 let name = config::key_to_config_name(key)
                     .unwrap_or_else(|| key.name())
                     .to_string();
@@ -508,15 +542,19 @@ impl GuiApp {
                 // 按 id 定位行 — 捕获期间增删行不导致写错行
                 if let Some(id) = self.capture.binding_id {
                     if let Some(binding) = self.bindings_list.iter_mut().find(|g| g.id == id) {
+                        // L7: 键未变化 → 不应用、不置 dirty（重复按同一键不产生变更）
+                        if binding.key == Some(key) {
+                            self.log(format!("Key '{}' unchanged — no apply", key.name()));
+                            self.cancel_capture();
+                            return;
+                        }
                         binding.key = Some(key);
                         binding.key_name = name;
                     }
                     // 目标行已被删除 → 按键静默丢弃，仅结束捕获
                 }
 
-                self.capture.active = false;
-                self.capture.binding_id = None;
-                self.capture.rx = None;
+                self.cancel_capture();
                 self.live_apply();
             }
         }
@@ -558,6 +596,7 @@ impl GuiApp {
         // 先清空旧绑定，再全量重新注册（覆盖删除/改键的条目）。
         self.key_bindings.clear_all();
 
+        let mut errors: Vec<String> = Vec::new();
         for g in &self.bindings_list {
             let key = match g.key {
                 Some(k) => k,
@@ -572,13 +611,17 @@ impl GuiApp {
                 match config::create_function(&g.func, self.send_ctx.clone()) {
                     Ok(f) => f,
                     Err(e) => {
-                        self.error_msg = Some(format!("'{}': {}", g.func, e));
+                        // L8: 聚合所有错误 — 不覆盖只显示最后一个
+                        errors.push(format!("'{}': {}", g.func, e));
                         continue;
                     }
                 }
             };
 
             self.key_bindings.register(key, g.mode, func);
+        }
+        if !errors.is_empty() {
+            self.error_msg = Some(errors.join("\n"));
         }
         self.dirty = true; // 标记为有未保存变更
     }
@@ -638,10 +681,16 @@ impl Drop for GuiApp {
         if let Some(handle) = self.engine_handle.take() {
             let _ = handle.join();
         }
-        // Engine Drop → KeyBindings Drop → stop_all() → join 所有功能线程
 
-        // 退出蜂鸣
-        gi_utils::utils::beep::beep(375, 300);
+        // 显式停止所有功能线程 — 必须在亲和性恢复**之前**：
+        // 优化游戏（isolate_game_cores）线程可能正在运行，若先恢复亲和性
+        // 再 stop_all，线程停止时可能再次隔离核心、无人恢复。
+        // （此前依赖 Engine/KeyBindings Drop 链的 stop_all，顺序颠倒 — L9-agentA）
+        self.key_bindings.stop_all();
+
+        // 退出蜂鸣 — 异步播放（~300ms），由随后的亲和性恢复耗时（遍历进程）
+        // 覆盖；同步 beep 会阻塞 Drop 300ms（L5）。
+        gi_utils::utils::beep::beep_async(375, 300);
 
         // 恢复所有进程的完整 CPU 亲和性（best-effort，静默吞错误）
         let _ = gi_utils::utils::affinity::restore_all_affinity();
@@ -703,7 +752,11 @@ unsafe fn create_hicon_from_rgba(
             bgra.push(px[3]); // A
         }
     }
-    let mask_bits: Vec<u8> = vec![0xFF; (w * h) as usize];
+    // AND mask 全 0（1bpp）：hbmColor 是 32bpp BGRA，alpha 通道已承载
+    // 透明度。全 0xFF 会按"掩蔽"语义渲染 — 图标呈不透明方形（L1）。
+    // All-zero AND mask: the 32bpp color bitmap carries alpha; an
+    // all-0xFF mask would mask out every pixel and show a square icon.
+    let mask_bits: Vec<u8> = vec![0; ((w * h) as usize + 7) / 8];
     let hbm_mask = windows::Win32::Graphics::Gdi::CreateBitmap(
         w as i32, h as i32, 1, 1, Some(mask_bits.as_ptr() as *const std::ffi::c_void),
     );
@@ -1127,6 +1180,7 @@ fn main() {
         // 在此之前关闭窗口直接退出（不隐藏）。
         tray_ok: false,
         config_ok,
+        hidden: false,
     };
 
     // ── 8. 运行 GUI 事件循环 ────────────────────────────────

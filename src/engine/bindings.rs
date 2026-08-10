@@ -174,13 +174,22 @@ impl KeyBindings {
         }
     }
 
-    /// join 所有已停止的线程句柄（应在 GUI/UI 线程调用，锁外 join）。
-    /// Join all stopped thread handles — call from the GUI thread.
+    /// join 已结束的线程句柄（应在 GUI/UI 线程调用，锁外 join）。
+    /// 未结束的保留在队列中 — `is_finished()` 检查绝不阻塞调用线程，
+    /// 每帧调用一次即可回收所有已退出的功能线程。
+    /// Join finished thread handles — call from the GUI thread.
+    /// Handles whose threads are still running stay queued (never blocks).
     pub fn drain_pending_joins(&self) {
-        let handles: Vec<JoinHandle<()>> = self.pending_joins.lock().unwrap().drain(..).collect();
-        for h in handles {
-            let _ = h.join();
+        let mut pending = self.pending_joins.lock().unwrap();
+        let mut remaining: Vec<JoinHandle<()>> = Vec::with_capacity(pending.len());
+        for h in pending.drain(..) {
+            if h.is_finished() {
+                let _ = h.join();
+            } else {
+                remaining.push(h);
+            }
         }
+        *pending = remaining;
     }
 
     /// 注册按键绑定：将按键与函数和触发模式关联。
@@ -212,18 +221,20 @@ impl KeyBindings {
     /// （此时旧线程已退出、active 已被 ActiveGuard 清除），在旧 Entry 上
     /// spawn 新线程 — 随后 clear() 连同 stop_requested 一起 drop，
     /// 新线程将无人能停止（僵尸 Loop 线程）。
+    ///
+    /// 句柄不在此同步 join：功能线程可能处于不可中断延时（优化游戏最长
+    /// 2s），join 会阻塞调用线程（GUI 帧）。推入 pending 队列，由 GUI
+    /// 帧循环通过 [`drain_pending_joins`] 惰性回收（is_finished 检查）。
+    /// 线程仍会自行退出（stop_requested + ActiveGuard 清除 active）。
     pub fn clear_all(&self) {
-        let handles: Vec<JoinHandle<()>>;
         {
             let mut bindings = self.bindings.lock().unwrap();
             // drain 使 map 立即清空：期间任何 key-down 查表必 miss，无法 spawn
-            handles = bindings
+            let handles = bindings
                 .drain()
-                .filter_map(|(key, mut entry)| entry.signal_stop(key))
-                .collect();
-        } // Mutex 已释放 — 在外侧 join
-        for h in handles {
-            let _ = h.join();
+                .filter_map(|(key, mut entry)| entry.signal_stop(key));
+            // 锁序：bindings → pending_joins，与 process_key_down 一致，不嵌套反转
+            self.pending_joins.lock().unwrap().extend(handles);
         }
         debug!("Cleared all bindings");
     }
