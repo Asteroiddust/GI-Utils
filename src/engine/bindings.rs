@@ -77,6 +77,12 @@ impl Entry {
         let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
+                // L12: 功能线程固定到输入处理核心（14,15）— 进程掩码较宽
+                // （GUI 版 12-15）时新线程继承进程掩码，需显式收窄。
+                // 失败不致命 — 仅降低时序隔离性。
+                let _ = crate::utils::affinity::pin_current_thread(
+                    crate::utils::affinity::ENGINE_CORES_MASK,
+                );
                 let _guard = guard; // 移入闭包，作用域退出（含 panic）时 drop
                 func.execute(stop);
             });
@@ -105,6 +111,10 @@ impl Entry {
         let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
+                // L12: 功能线程固定到输入处理核心（14,15），与 GUI 渲染分离
+                let _ = crate::utils::affinity::pin_current_thread(
+                    crate::utils::affinity::ENGINE_CORES_MASK,
+                );
                 let _guard = guard;
                 func.execute(Arc::new(AtomicBool::new(false)));
             });

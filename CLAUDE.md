@@ -105,11 +105,13 @@ rustflags: `-C target-cpu=native -C remark=all -Z tune-cpu=native -Z plt=no`
 ## CPU 核心分配 (8C16T 9800X3D)
 
 ```
-物理核 0  [0,1]  OTHER  (系统 + 其他进程)
-物理核 1  [2  ]  TOOL   (GI-Utils, 单线程)
-          [3  ]  GAME   (游戏)
-物理核 2-7 [4-15] GAME   (游戏)
+物理核 0    [0,1  ]  OTHER  (系统 + 其他进程)
+物理核 1-5  [2-11 ]  GAME   (游戏)
+物理核 6    [12,13]  GUI    (GUI 渲染, 线程级 LOWEST 优先级)
+物理核 7    [14,15]  TOOL   (Engine 输入处理 + 功能线程, REALTIME)
 ```
+
+进程掩码 12-15（GUI 版）。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用）。headless 版进程掩码保持 14,15，无需扩展。
 
 ## 部署
 

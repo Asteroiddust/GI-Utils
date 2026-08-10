@@ -84,6 +84,13 @@ impl Engine {
     pub fn run(&self) {
         let send_ctx = &self.send_ctx;
 
+        // L12: Engine 线程固定到输入处理核心（14,15）— GUI 版进程掩码为
+        // 12-15，新线程继承进程掩码，需显式收窄；headless 版为无操作
+        // （进程掩码本就是 14,15）。失败不致命 — 仅降低时序隔离性。
+        let _ = crate::utils::affinity::pin_current_thread(
+            crate::utils::affinity::ENGINE_CORES_MASK,
+        );
+
         while !self.stop_requested.load(Ordering::Acquire) {
             let device = self.recv_ctx.wait_timeout(100);
             if device == 0 {

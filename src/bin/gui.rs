@@ -1065,6 +1065,14 @@ fn main() {
     // init 返回日志行（GUI 无控制台，println 会被静默丢弃）
     startup_log.extend(utils::init());
 
+    // L12: GUI 线程核心分离 — 进程掩码扩展至 12-15，当前线程（GUI 渲染）
+    // pin 12,13 并降为线程级最低优先级；Engine/功能线程在 14,15。
+    // 必须在 Engine 线程 spawn 之前完成（新线程继承进程掩码）。
+    match utils::affinity::configure_gui_self() {
+        Ok(()) => startup_log.push("Cores: GUI 12,13 (LOWEST) / input 14,15 (REALTIME)".into()),
+        Err(e) => startup_log.push(format!("GUI core config failed: {}", e)),
+    }
+
     // ── 2. 加载配置 ─────────────────────────────────────────
     let (config_bindings, config_ok) = match config::load() {
         Ok(b) => {
