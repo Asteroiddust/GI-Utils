@@ -4,6 +4,7 @@
 
 use crate::engine::function::KeyFunction;
 use crate::utils;
+use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use windows::Win32::Foundation::HWND;
@@ -121,11 +122,23 @@ impl 优化游戏 {
         println!("优化游戏: 进程优先级已提升为高");
 
         // ── 6. 切换到前台 ─────────────────────────────
+        // 最多重试 40 次 (× 50ms = 2s)，防止前台锁定导致死循环
         let foreground = unsafe { GetForegroundWindow() };
         if foreground != hwnd {
-            while unsafe { GetForegroundWindow() } != hwnd {
+            const MAX_RETRIES: u32 = 40;
+            let mut attempts: u32 = 0;
+            while unsafe { GetForegroundWindow() } != hwnd && attempts < MAX_RETRIES {
                 unsafe { SwitchToThisWindow(hwnd, true) };
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                delay::delay_ms(50.0);
+                attempts += 1;
+            }
+            if attempts >= MAX_RETRIES {
+                eprintln!(
+                    "优化游戏: 切换前台超时 ({}ms) — 跳过",
+                    MAX_RETRIES * 50
+                );
+                utils::beep::beep_async(500, 200);
+                return;
             }
         }
         println!("优化游戏: 完成");

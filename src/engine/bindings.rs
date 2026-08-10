@@ -73,17 +73,25 @@ impl Entry {
 
         self.active.store(true, Ordering::Release);
         let guard = ActiveGuard(self.active.clone());
-        let handle = thread::Builder::new()
+        let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
                 let _guard = guard; // 移入闭包，作用域退出（含 panic）时 drop
                 func.execute(stop);
-            })
-            .expect("Failed to spawn function thread");
+            });
 
-        self.stop_requested = Some(stop_requested);
-        self.handle = Some(handle);
-        debug!("Started {:?}", key);
+        match result {
+            Ok(handle) => {
+                self.stop_requested = Some(stop_requested);
+                self.handle = Some(handle);
+                debug!("Started {:?}", key);
+            }
+            Err(e) => {
+                // guard 在此作用域退出时 drop → active = false
+                // 不在持锁状态下 panic，避免 Mutex 毒化
+                debug!("Failed to spawn {:?}: {}", key, e);
+            }
+        }
     }
 
     /// 为 Once 创建线程：运行至结束，无需取消。
@@ -93,14 +101,22 @@ impl Entry {
 
         self.active.store(true, Ordering::Release);
         let guard = ActiveGuard(self.active.clone());
-        thread::Builder::new()
+        let result = thread::Builder::new()
             .name(format!("func-{:?}", key))
             .spawn(move || {
                 let _guard = guard;
                 func.execute(Arc::new(AtomicBool::new(false)));
-            })
-            .expect("Failed to spawn function thread");
-        debug!("Started (once) {:?}", key);
+            });
+
+        match result {
+            Ok(_) => {
+                debug!("Started (once) {:?}", key);
+            }
+            Err(e) => {
+                // guard 在此作用域退出时 drop → active = false
+                debug!("Failed to spawn (once) {:?}: {}", key, e);
+            }
+        }
     }
 
     /// 发送停止信号，取出线程句柄用于延迟 join。
@@ -113,7 +129,13 @@ impl Entry {
             stop_requested.store(true, Ordering::Release);
         }
         self.stop_requested = None;
-        self.active.store(false, Ordering::Release);
+        // active 由线程内 ActiveGuard::drop 在线程真正退出时清除
+        // (不再此处提前清除 — 否则在 join 完成前存在竞态窗口：
+        //  另一个 key-down 可看到 active=false 并 spawn 新线程，
+        //  导致 handle/stop_requested 被覆盖、旧线程变孤儿)
+        // active is cleared by ActiveGuard::drop when the thread
+        // actually exits — not here, to avoid a race window between
+        // signal_stop and the join.
         let handle = self.handle.take();
         debug!("Signalled stop for {:?}", key);
         handle
