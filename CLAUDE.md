@@ -1,6 +1,6 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.0.0
 
-> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间戳引擎 分支 16 单测 + 2 doctest 通过（未 review）
+> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）+ 25 单测 + 2 doctest 通过
 > **Build**: O3 + LTO fat + panic=abort + target-cpu=native
 
 ## 项目概述
@@ -95,10 +95,11 @@ Engine (主循环, blocking)
 | **Mutex 外 join** | stop 不阻塞主事件循环 |
 | **delay_ms_interruptible** | 100μs 检查间隔，Loop/Toggle 即时响应 |
 | **EventSequence 链式 API** | `seq.tap(K).sleep(50).wheel(DOWN)` |
-| **时间轴绝对时刻调度** | deadline = 播放起点 TSC + 条目偏移，无累计漂移，前序超时自然追时 |
-| **已触发即移除 + 增量同步** | 表恒为未触发条目；播放中追加条目在到期帧被 `partition_point` 捕获，不重复不遗漏（MIDI 实时编辑语义） |
-| **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程，无静态表边界缝隙（对应 C++ next_press_time + scheduled_releases） |
-| **挂起键兜底清理** | 停止/播放结束补发 release（活动音符 note-off），防卡键 |
+| **时间轴绝对时刻调度** | deadline = 播放起点 TSC + 条目偏移（饱和加法），无累计漂移，前序超时自然追时 |
+| **已触发即移除 + 增量同步** | 表恒为未触发条目；播放中追加条目在到期帧被 `partition_point` 捕获，不重复不遗漏（MIDI 实时编辑语义）；回放前缀通知编辑器清理，长会话内存有界 |
+| **表空不结束（live-edit）** | 表空以 0.5ms 轮询等待编辑器追加；结束只由 stop_requested 决定（MIDI 编辑器语义：播放器永不自杀） |
+| **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程，无静态表边界缝隙（对应 C++ next_press_time + scheduled_releases）；卡顿节拍重锚 — 错过即弃、不突发追拍（有意偏离 C++ 原版） |
+| **挂起键兜底清理** | 停止时补发 release（活动音符 note-off，含 At 键盘事件），防卡键 |
 | **KeyFunction 只有 1 个方法** | `execute(&self, stop_requested: Arc<AtomicBool>)` |
 | **printf 作 release 输出** | 避免 Windows stderr 缓冲问题 |
 | **线程级核心分离** | 进程掩码 12-15，GUI 渲染→12,13 (LOWEST)，输入处理→14,15 (REALTIME) |

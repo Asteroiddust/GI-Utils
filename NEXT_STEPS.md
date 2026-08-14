@@ -26,7 +26,7 @@ v1.0.0 已发布，10 个功能通过 TOML 配置驱动注册。master 48/48 rev
 - **ActiveGuard panic 防护** — 线程 panic 时自动清理 active 标志
 - **Mutex 外 join** — stop 不阻塞主事件循环
 - **profile: O3 + LTO fat + panic=abort** — 速度优先
-- **时间轴调度器（Timestamp 范式）** — `engine/timeline.rs`：`Timeline`/`TimelinePlayer`（绝对时刻执行器，播放中动态加入）+ `RollingKeys`/`RollingPlayer`（节奏滚动，对应 C++ next_press_time）；鬼畜走路已迁移为滚动播放器
+- **时间轴调度器（Timestamp 范式）** — `engine/timeline.rs`：`Timeline`/`TimelinePlayer`（绝对时刻执行器，播放中动态加入）+ `RollingKeys`/`RollingPlayer`（节奏滚动，对应 C++ next_press_time）；鬼畜走路已迁移为滚动播放器；code-review max 15 条发现全部清零（2026-08-14）
 
 ## 待移植功能
 
@@ -87,12 +87,13 @@ Serial 类用 `EventSequence` 构建，无需改动。Timestamp 类已落地运�
 
 ### 3. 基于时间戳的多键编排 ✅ 已实现（2026-08-14，时间戳引擎 分支）
 
-落地于 `src/engine/timeline.rs`（13 单测 + 3 delay 单测，全绿）：
+落地于 `src/engine/timeline.rs`（22 单测 + 3 delay 单测，全绿）：
 
-- `Timeline`（Note/At 条目）+ `TimelinePlayer` — 绝对时刻执行器：deadline = 播放起点 TSC + 条目偏移，无累计漂移；播放中可动态加入条目（MIDI 实时编辑语义）
-- `RollingKeys`/`RollingPlayer` — 无限滚动调度：按下实时产生、释放动态排程，对应 C++ `next_press_time + scheduled_releases`
-- 挂起键兜底清理：停止/播放结束补发 release，防卡键
+- `Timeline`（Note/At 条目）+ `TimelinePlayer` — 绝对时刻执行器：deadline = 播放起点 TSC + 条目偏移（饱和加法），无累计漂移；播放中可动态加入条目（MIDI 实时编辑语义）；**表空不结束**（0.5ms 轮询等待追加）；回放前缀通知编辑器清理（内存有界）
+- `RollingKeys`/`RollingPlayer` — 无限滚动调度：按下实时产生、释放动态排程，对应 C++ `next_press_time + scheduled_releases`；卡顿节拍重锚（错过即弃，不突发追拍）
+- 挂起键兜底清理：停止补发 release（含 At 键盘事件），防卡键
 - 鬼畜走路已迁移到 `RollingPlayer`；龙王喷水将使用 `TimelinePlayer`
+- 2026-08-14 code-review max：15 条发现全部清零（u64 回绕、NaN 钳制、停止顺序、参数校验、归并排序、节拍重锚、表空语义、前缀清理）
 
 原设计背景：
 
@@ -157,4 +158,4 @@ impl HeldTracker {
 
 ## 已知问题
 
-master 48/48 与 gi-utils-gui 2H/12M/15L review 全部清零（含 L12，2026-08-10）。时间戳引擎 分支（f762e86 + 6ab3ee1）cargo test 全绿（16 单测 + 2 doctest）、release 构建通过，未 review。后续 review 结论请更新 CLAUDE.md 顶部状态行。
+master 48/48 与 gi-utils-gui 2H/12M/15L review 全部清零（含 L12，2026-08-10）。时间轴调度器 code-review max 15 条发现全部清零（2026-08-14），cargo test 全绿（25 单测 + 2 doctest）。后续 review 结论请更新 CLAUDE.md 顶部状态行。
