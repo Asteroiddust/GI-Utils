@@ -14,9 +14,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
     GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
-    ShowWindow, TrackPopupMenu, ICONINFO, MF_STRING, MSG, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDBLCLK,
-    WM_RBUTTONUP, WM_USER, GWLP_USERDATA,
+    SendMessageW, ShowWindow, TrackPopupMenu, HICON, ICONINFO, MF_STRING, MSG, SW_SHOW,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
+    WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_SETICON, WM_USER, GWLP_USERDATA, ICON_BIG,
+    ICON_SMALL,
 };
 
 /// 托盘 → GUI 的消息类型。
@@ -118,6 +119,43 @@ unsafe fn create_hicon_from_rgba(
     icon
 }
 
+/// 从 .ico 文件加载 32×32 HICON。任何失败返回 None。
+/// Loads a 32×32 HICON from a .ico file. Returns None on any failure.
+unsafe fn load_ico_from_file(path: &str) -> Option<HICON> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{IMAGE_ICON, LR_LOADFROMFILE, LoadImageW};
+
+    let wide: Vec<u16> = path.encode_utf16().collect();
+    match LoadImageW(
+        None,
+        PCWSTR(wide.as_ptr()),
+        IMAGE_ICON,
+        32,
+        32,
+        LR_LOADFROMFILE,
+    ) {
+        Ok(handle) if !handle.is_invalid() => Some(HICON(handle.0)),
+        _ => None,
+    }
+}
+
+/// 托盘图标加载入口 — 配置了 icon_path 且加载成功时用 .ico，
+/// 否则回退程序生成图标（create_hicon_from_rgba）。绝不失败。
+/// Tray icon entry: uses the configured .ico when it loads successfully,
+/// otherwise falls back to the generated icon. Never fails.
+unsafe fn load_icon(icon_path: &str, pixels: &[u8], w: u32, h: u32) -> Option<HICON> {
+    if !icon_path.is_empty() {
+        if let Some(icon) = load_ico_from_file(icon_path) {
+            return Some(icon);
+        }
+        tracing::warn!(
+            "tray icon '{}' could not be loaded, using generated icon",
+            icon_path
+        );
+    }
+    create_hicon_from_rgba(pixels, w, h)
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Win32 托盘 (Shell_NotifyIconW)
 // ═══════════════════════════════════════════════════════════════════
@@ -211,7 +249,16 @@ unsafe extern "system" fn tray_wnd_proc(
 }
 
 /// 运行托盘线程 — 创建消息窗口 + 图标，泵消息直到收到 WM_QUIT。
-pub fn run_tray_thread(tx: Sender<TrayAction>, pixels: Vec<u8>, w: u32, h: u32) {
+///
+/// `icon_path` 非空且文件存在时用 `LoadImageW` 加载 .ico；否则回退
+/// 程序生成图标（`pixels`）。
+pub fn run_tray_thread(
+    tx: Sender<TrayAction>,
+    icon_path: String,
+    pixels: Vec<u8>,
+    w: u32,
+    h: u32,
+) {
     use std::mem;
     use windows::core::w;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -222,7 +269,7 @@ pub fn run_tray_thread(tx: Sender<TrayAction>, pixels: Vec<u8>, w: u32, h: u32) 
         // 在托盘线程内创建 HICON（HICON 不 Send）
         // 失败 → 通知 GUI 托盘不可用并退出，不 panic（panic 会留下
         // 无托盘的 GUI 且 close_requested 无 NIM_DELETE — 不可达）
-        let icon = match create_hicon_from_rgba(&pixels, w, h) {
+        let icon = match load_icon(&icon_path, &pixels, w, h) {
             Some(icon) => icon,
             None => {
                 let _ = tx.send(TrayAction::Ready(false));
@@ -246,6 +293,23 @@ pub fn run_tray_thread(tx: Sender<TrayAction>, pixels: Vec<u8>, w: u32, h: u32) 
             let _ = DestroyIcon(icon);
             return;
         };
+
+        // 窗口图标：eframe 启动时用 egui 默认 logo 设置过 WM_SETICON，
+        // 这里用同一图标源（config icon_path 或程序生成）再覆盖一次，
+        // 让任务栏/标题栏/Alt-Tab 与托盘图标一致。HICON 由本线程持有
+        // 到退出（消息泵后才 DestroyIcon），窗口引用期间始终有效。
+        let _ = SendMessageW(
+            main_hwnd,
+            WM_SETICON,
+            Some(WPARAM(ICON_BIG as usize)),
+            Some(LPARAM(icon.0 as isize)),
+        );
+        let _ = SendMessageW(
+            main_hwnd,
+            WM_SETICON,
+            Some(WPARAM(ICON_SMALL as usize)),
+            Some(LPARAM(icon.0 as isize)),
+        );
 
         let hinst = match GetModuleHandleW(None) {
             Ok(h) => h,

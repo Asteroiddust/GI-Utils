@@ -835,12 +835,18 @@ fn main() {
 
     // ── 5. 创建托盘图标 ─────────────────────────────────────
     let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
+    let gui_cfg = config::load_gui_config();
     let (pixels, w, h) = tray::create_tray_icon_pixels();
+    if gui_cfg.icon_path.is_empty() {
+        startup_log.push("Tray icon: generated".into());
+    } else {
+        startup_log.push(format!("Tray icon: {}", gui_cfg.icon_path));
+    }
 
     let tray_handle = match std::thread::Builder::new()
         .name("tray".into())
         .spawn(move || {
-            tray::run_tray_thread(tray_tx, pixels, w, h);
+            tray::run_tray_thread(tray_tx, gui_cfg.icon_path, pixels, w, h);
         }) {
         Ok(h) => Some(h),
         Err(e) => {

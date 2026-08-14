@@ -1,0 +1,3 @@
+// GI-Utils exe 图标资源 — embedded into both binaries at build time.
+// icon.ico must sit next to this .rc file (same directory).
+IDI_ICON1 ICON "icon.ico"
