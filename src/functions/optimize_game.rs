@@ -103,6 +103,9 @@ impl 优化游戏 {
             Ok(h) => h,
             Err(e) => {
                 error!("优化游戏: 打开进程失败: {}", e);
+                // 对应 C++ 原版 SetProcessAffinityMaskAndPriorityClass 失败蜂鸣 —
+                // 游戏反作弊（如 mhyprot）会拦截外部 OpenProcess，此路径不可静默
+                utils::beep::beep_async(1000, 500);
                 return;
             }
         };
