@@ -73,7 +73,6 @@ src/
 │   ├── mod.rs                 # KeyFunction trait 定义
 │   ├── auto_clicker.rs        # 连点器
 │   ├── quick_pickup.rs        # 快速拾取
-│   ├── dragon_spin.rs         # 龙王喷水 + 上下左右重置
 │   ├── fire_jump.rs           # 火神跳飞
 │   ├── ganyu_walk_a.rs        # 甘雨走A
 │   ├── double_ma.rs           # 双玛头
@@ -256,7 +255,7 @@ Phase 2: 核心引擎
 
 Phase 3: 逐个移植功能
   □ 连点器 → 快速拾取 → 火神跳飞 → 甘雨走A → 甘雨加特林
-  □ 龙王喷水 → 鬼畜走路 → 双玛头
+  □ 鬼畜走路 → 双玛头
   □ 克洛琳德（像素检测）→ 2048 → 添加好友 → 申请加入
   □ 优化游戏（CPU 亲和性）
 
