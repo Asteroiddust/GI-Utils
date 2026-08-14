@@ -289,37 +289,6 @@ func = "坐标颜色"
 mode = "Loop"
 
 [[bindings]]
-key = "F20"
-func = "龙王喷水"
-mode = "Loop"
-
-# 龙王喷水方向子功能 — 按住 F20 喷射时实时调整方向
-[[bindings]]
-key = "Up"
-func = "上"
-mode = "Once"
-
-[[bindings]]
-key = "Down"
-func = "下"
-mode = "Once"
-
-[[bindings]]
-key = "Left"
-func = "左"
-mode = "Once"
-
-[[bindings]]
-key = "Right"
-func = "右"
-mode = "Once"
-
-[[bindings]]
-key = "Home"
-func = "重置"
-mode = "Once"
-
-[[bindings]]
 key = "NumpadAdd"
 func = "优化游戏"
 mode = "Once"
@@ -438,12 +407,6 @@ pub fn list_function_names() -> Vec<&'static str> {
         "双玛头",
         "坐标颜色",
         "优化游戏",
-        "龙王喷水",
-        "上",
-        "下",
-        "左",
-        "右",
-        "重置",
     ]
 }
 
@@ -480,14 +443,6 @@ pub fn create_function(
         )),
         "坐标颜色" => Ok(Arc::new(crate::functions::mouse_color::坐标颜色::new())),
         "优化游戏" => Ok(Arc::new(crate::functions::optimize_game::优化游戏::new())),
-        "龙王喷水" => Ok(Arc::new(crate::functions::dragon_spin::龙王喷水::new(
-            send_ctx,
-        ))),
-        "上" => Ok(Arc::new(crate::functions::dragon_spin::上::new())),
-        "下" => Ok(Arc::new(crate::functions::dragon_spin::下::new())),
-        "左" => Ok(Arc::new(crate::functions::dragon_spin::左::new())),
-        "右" => Ok(Arc::new(crate::functions::dragon_spin::右::new())),
-        "重置" => Ok(Arc::new(crate::functions::dragon_spin::重置::new())),
         _ => Err(format!("unknown function: '{}'", name)),
     }
 }

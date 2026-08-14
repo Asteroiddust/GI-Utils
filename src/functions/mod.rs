@@ -4,7 +4,6 @@
 //! 通过 `TriggerMode` (Once / Loop / Toggle) 控制执行方式。
 
 pub mod auto_clicker;
-pub mod dragon_spin;
 pub mod ganyu_aim_cancel;
 pub mod ghost_walk;
 pub mod mavuika_double_cancel;

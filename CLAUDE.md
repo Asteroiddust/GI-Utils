@@ -54,7 +54,6 @@ src/
 └── functions/
     ├── stop.rs                #   停止退出 (F12, Once)
     ├── auto_clicker.rs        #   连点器 (F13, Loop)
-    ├── dragon_spin.rs          #   龙王喷水 + 方向子功能 (F20 + 方向键/Home)
     ├── quick_pickup.rs        #   快速拾取 (F14, Loop)
     ├── ghost_walk.rs          #   鬼畜走路 (F15, Loop)
     ├── mavuika_jump.rs        #   火神跳喷 (F16, Loop)
@@ -101,7 +100,6 @@ Engine (主循环, blocking)
 | **表空不结束（live-edit）** | 表空以 0.5ms 轮询等待编辑器追加；结束只由 stop_requested 决定（MIDI 编辑器语义：播放器永不自杀） |
 | **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程，无静态表边界缝隙（对应 C++ next_press_time + scheduled_releases）；卡顿节拍重锚 — 错过即弃、不突发追拍（有意偏离 C++ 原版） |
 | **挂起键兜底清理** | 停止时补发 release（活动音符 note-off，含 At 键盘事件），防卡键 |
-| **friend → Arc<Mutex> 共享状态** | C++ 龙王喷水用 static spin + 5 个 friend class 共享可变向量；Rust 用 Arc<Mutex> 共享所有权，方向功能持 clone 调方法 — 无可见性 hack，并消除原版无同步读写的隐性数据竞争 |
 | **KeyFunction 只有 1 个方法** | `execute(&self, stop_requested: Arc<AtomicBool>)` |
 | **printf 作 release 输出** | 避免 Windows stderr 缓冲问题 |
 | **线程级核心分离** | 进程掩码 12-15，GUI 渲染→12,13 (LOWEST)，输入处理→14,15 (REALTIME) |
@@ -181,7 +179,7 @@ icon_path = ""
 | 坐标颜色 | ✅ |
 | 优化游戏 | ✅ |
 | 甘雨加特林 | ⬜ |
-| 龙王喷水 + 子功能 | ✅ |
+| 龙王喷水 + 子功能 | ⬜ |
 | 克洛琳德 | ⬜ |
 | 添加好友 | ⬜ |
 | 申请加入 | ⬜ |
@@ -193,4 +191,3 @@ icon_path = ""
 |------|------|---------|
 | **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器、快速拾取、甘雨走A、双玛头、火神跳喷 |
 | **Timestamp** (Time based) | 时间轴调度器 `Timeline`/`RollingKeys`（`engine/timeline.rs`） | 鬼畜走路 ✅、未来钢琴模式 |
-| **Continuous** (State shared) | `Arc<Mutex>` 共享状态 + 1ms 中断循环 | 龙王喷水 ✅（方向子功能实时调整共享向量） |
