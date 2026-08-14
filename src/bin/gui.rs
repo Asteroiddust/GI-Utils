@@ -121,7 +121,9 @@ struct CaptureState {
 // ═══════════════════════════════════════════════════════════════════
 
 impl eframe::App for GuiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, central_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = central_ui.ctx().clone();
+
         // 回收已退出的功能线程句柄（is_finished 检查，绝不阻塞帧 — L4）
         self.key_bindings.drain_pending_joins();
 
@@ -180,7 +182,7 @@ impl eframe::App for GuiApp {
 
         // 0. 首次加载 CJK 字体
         if !self.font_loaded {
-            self.load_cjk_font(ctx);
+            self.load_cjk_font(&ctx);
             self.font_loaded = true;
         }
 
@@ -193,7 +195,7 @@ impl eframe::App for GuiApp {
         }
 
         // 3. 渲染 UI
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
+        egui::Panel::top("header").show(central_ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("GI-Utils v1.0.0  Configuration");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -205,21 +207,19 @@ impl eframe::App for GuiApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.show_binding_table(ui);
-                ui.add_space(8.0);
-                self.show_action_buttons(ui);
-            });
+        egui::ScrollArea::vertical().show(central_ui, |ui| {
+            self.show_binding_table(ui);
+            ui.add_space(8.0);
+            self.show_action_buttons(ui);
         });
 
         // 4. 右侧日志面板
         if self.log_visible {
-            egui::SidePanel::right("log_panel")
+            egui::Panel::right("log_panel")
                 .resizable(true)
-                .default_width(320.0)
-                .min_width(160.0)
-                .show(ctx, |ui| {
+                .default_size(320.0)
+                .min_size(160.0)
+                .show(central_ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.strong("Log");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -240,7 +240,7 @@ impl eframe::App for GuiApp {
         }
 
         // 5. 状态栏
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::Panel::bottom("status").show(central_ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Status: Running");
                 if self.dirty {
@@ -254,8 +254,8 @@ impl eframe::App for GuiApp {
         });
 
         // 6. 弹窗
-        self.show_capture_dialog(ctx);
-        self.show_error_dialog(ctx);
+        self.show_capture_dialog(&ctx);
+        self.show_error_dialog(&ctx);
     }
 }
 
