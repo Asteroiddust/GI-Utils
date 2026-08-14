@@ -24,9 +24,11 @@ src/
 ├── main.rs                    # headless 入口：加载 config → 校准 TSC → 注册 → Engine.run()
 ├── lib.rs                     # 库根 — headless 与 GUI 共享全部模块
 ├── bin/
-│   └── gui.rs                 # GUI 入口 (egui + 托盘 + live-apply → gi-utils-gui.exe)
-├── config.rs                  # TOML 配置解析 + 函数工厂
-├── build.rs                   # 链接 interception.lib
+│   └── gui/
+│       ├── main.rs            # GUI 入口 (egui 配置面板 + live-apply → gi-utils-gui.exe)
+│       └── tray.rs            # 托盘子系统 (Shell_NotifyIconW + WM_SETICON 窗口图标)
+├── config.rs                  # TOML 配置解析 + 函数工厂 + [gui] 图标配置
+├── build.rs                   # 链接 interception.lib + 嵌入 assets/icon.ico
 ├── key.rs                     # Key (ScanCode + is_e0) + 90+ 常量
 ├── scan_code.rs               # ScanCode(u16) FFI 新类型
 
@@ -45,7 +47,8 @@ src/
 │   ├── delay.rs               #   TSC delay + interruptible + 校准
 │   ├── beep.rs                #   蜂鸣 (同步 beep + 异步 beep_async)
 │   ├── affinity.rs            #   CPU 亲和性 + 进程迭代
-│   └── screen.rs              #   PixelReader (cached DC) + 像素取色
+│   ├── screen.rs              #   PixelReader (cached DC) + 像素取色
+│   └── log.rs                 #   LogCollector — 全局 tracing → GUI 日志面板桥
 
 └── functions/
     ├── stop.rs                #   停止退出 (F12, Once)
@@ -57,6 +60,10 @@ src/
     ├── mavuika_double_cancel.rs # 双玛头 (F18, Loop)
     ├── mouse_color.rs         #   坐标颜色 (F19, Loop)
     └── optimize_game.rs        #   优化游戏 (NumpadAdd, Once, toggle 奇偶)
+
+assets/
+├── icon.ico                   # 自定义图标（构建期嵌入 exe 资源）
+└── icon.rc                    # 图标资源脚本 (embed-resource)
 ```
 
 ## 架构
@@ -93,6 +100,9 @@ Engine (主循环, blocking)
 | **pending_joins 惰性 join** | `is_finished()` 检查保留未结束句柄，GUI 帧永不阻塞 |
 | **GUI live-apply + 托盘隐藏** | 修改即时生效；关闭隐藏到托盘，F12/菜单退出 |
 | **锁序单向 bindings→pending** | 全部路径同序，无嵌套反转，无死锁 |
+| **托盘图标 [gui] icon_path** | config.toml 运行时指定 .ico，LoadImageW 加载，失败/留空回退程序生成蓝 G |
+| **exe 图标构建期嵌入** | build.rs embed-resource 嵌入 assets/icon.ico，缺失时警告跳过、构建不失败 |
+| **WM_SETICON 窗口图标同步** | eframe 默认用 egui logo 覆盖窗口图标；托盘线程找到主窗口后用同一 HICON 覆盖任务栏/标题栏/Alt-Tab |
 
 ## 构建
 
@@ -100,6 +110,8 @@ Engine (主循环, blocking)
 cargo build --release
 # 输出: target/release/gi-utils.exe (~200KB, headless) + gi-utils-gui.exe (~4MB, GUI)
 ```
+
+自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入两个 exe；文件缺失时跳过并警告，不影响构建。
 
 release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1`
 
@@ -141,6 +153,10 @@ mode = "Once"
 key = "F13"
 func = "连点器"
 mode = "Loop"
+
+# GUI 配置 — icon_path 指向 .ico 托盘图标；留空使用程序生成图标
+[gui]
+icon_path = ""
 ```
 
 ## 移植进度
