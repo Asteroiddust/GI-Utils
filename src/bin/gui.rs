@@ -195,6 +195,10 @@ impl eframe::App for GuiApp {
         }
 
         // 3. 渲染 UI
+        // egui 0.36 的 Panel 在 Ui 内布局（`Panel::show(ui)`）：每个面板 show 后
+        // 会推进父 ui 光标（Top 下压、Right 收缩右边界）。因此**所有面板必须先于
+        // 中央内容** — 否则 ScrollArea 已占满剩余空间，后续 right/bottom 面板
+        // 只剩零高度区域，Log 面板会被挤到窗口底部（位置异常）。
         egui::Panel::top("header").show(central_ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("GI-Utils v1.0.0  Configuration");
@@ -207,13 +211,7 @@ impl eframe::App for GuiApp {
             });
         });
 
-        egui::ScrollArea::vertical().show(central_ui, |ui| {
-            self.show_binding_table(ui);
-            ui.add_space(8.0);
-            self.show_action_buttons(ui);
-        });
-
-        // 4. 右侧日志面板
+        // 4. 右侧日志面板 — 必须先于中央内容（见上）
         if self.log_visible {
             egui::Panel::right("log_panel")
                 .resizable(true)
@@ -231,6 +229,9 @@ impl eframe::App for GuiApp {
                     ui.separator();
                     egui::ScrollArea::vertical()
                         .stick_to_bottom(true)
+                        // 0.36 默认 auto_shrink=true — 不撑满则面板 frame 背景
+                        // 只盖住内容实际区域（min_rect），其余露出黑底
+                        .auto_shrink(false)
                         .show(ui, |ui| {
                             for msg in &self.log_messages {
                                 ui.label(msg.as_str());
@@ -253,7 +254,24 @@ impl eframe::App for GuiApp {
             });
         });
 
-        // 6. 弹窗
+        // 6. 中央内容最后
+        // App::ui 的 root_ui 无背景 frame（0.31 时由 CentralPanel 绘制），
+        // 不补背景则 wgpu 清屏黑直接露出。`Frame::central_panel` 即旧
+        // CentralPanel 的同款 frame（inner_margin 8 + panel_fill 填充）。
+        // Frame 背景按内容 min_rect 绘制，因此 ScrollArea 必须撑满
+        // （auto_shrink(false) — 0.36 默认 true），否则背景只盖住
+        // 内容实际占用区域，其余部分露出黑底。
+        egui::Frame::central_panel(central_ui.style()).show(central_ui, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    self.show_binding_table(ui);
+                    ui.add_space(8.0);
+                    self.show_action_buttons(ui);
+                });
+        });
+
+        // 7. 弹窗
         self.show_capture_dialog(&ctx);
         self.show_error_dialog(&ctx);
     }
