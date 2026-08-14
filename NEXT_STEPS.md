@@ -1,8 +1,8 @@
-# Next Steps — GI-Utils v1.0.0
+# Next Steps — GI-Utils v1.1.0
 
 ## 当前状态
 
-v1.0.0 已发布，10 个功能通过 TOML 配置驱动注册。master 48/48 review 全清；gi-utils-gui 分支 2H/12M/15L 全清（含 L12 核心分离）。
+v1.1.0 — 16 个功能通过 TOML 配置驱动注册。master 48/48 review 全清；gi-utils-gui 分支 2H/12M/15L 全清（含 L12 核心分离）；时间轴调度器 15/15 全清（2026-08-14）。
 
 | 按键 | 功能 | 模式 | 备注 |
 |------|------|------|------|

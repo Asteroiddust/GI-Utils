@@ -60,7 +60,7 @@ fn main() {
         .init();
 
     println!("══════════════════════════════════════════");
-    println!("  GI-Utils v1.0.0");
+    println!("  GI-Utils v{}", env!("CARGO_PKG_VERSION"));
     println!("  Game Input Automation Utility (Rust)");
     println!("══════════════════════════════════════════");
     println!();

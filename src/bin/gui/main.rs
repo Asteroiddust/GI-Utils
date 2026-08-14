@@ -193,7 +193,10 @@ impl eframe::App for GuiApp {
         // 只剩零高度区域，Log 面板会被挤到窗口底部（位置异常）。
         egui::Panel::top("header").show(central_ui, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("GI-Utils v1.0.0  Configuration");
+                ui.heading(format!(
+                    "GI-Utils v{}  Configuration",
+                    env!("CARGO_PKG_VERSION")
+                ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = if self.log_visible { "▸ Log" } else { "▹ Log" };
                     if ui.button(label).clicked() {
@@ -748,7 +751,7 @@ fn main() {
 
     // 启动日志（GUI 无控制台，收集到内存后在日志面板显示）
     let mut startup_log: Vec<String> = vec![
-        "GI-Utils GUI v1.0.0".into(),
+        format!("GI-Utils GUI v{}", env!("CARGO_PKG_VERSION")),
         "Initializing...".into(),
     ];
 
