@@ -38,4 +38,4 @@ path = "src/main.rs"
 
 [[bin]]
 name = "gi-utils-gui"
-path = "src/bin/gui.rs"
+path = "src/bin/gui/main.rs"
