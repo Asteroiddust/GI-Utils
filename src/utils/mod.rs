@@ -16,6 +16,9 @@ pub mod affinity;
 /// 屏幕像素与光标 — Pixel color capture and cursor position via GDI.
 pub mod screen;
 
+/// 全局日志收集 — Global log collection via tracing subscriber (GUI log panel).
+pub mod log;
+
 /// 系统初始化 — Mirrors the original C++ `Utils::Initialize()`.
 ///
 /// Sets DPI awareness, real-time CPU priority/core affinity, and calibrates

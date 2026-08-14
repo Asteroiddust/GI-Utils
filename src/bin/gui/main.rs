@@ -78,6 +78,8 @@ struct GuiApp {
     log_messages: Vec<String>,
     /// 日志面板是否可见。
     log_visible: bool,
+    /// 全局日志收集器 — 每帧 drain 功能线程的 tracing 输出到日志面板。
+    log_collector: gi_utils::utils::log::LogCollector,
 
     /// 托盘消息接收端。
     tray_rx: Receiver<TrayAction>,
@@ -110,6 +112,12 @@ impl eframe::App for GuiApp {
 
         // 回收已退出的功能线程句柄（is_finished 检查，绝不阻塞帧 — L4）
         self.key_bindings.drain_pending_joins();
+
+        // 收集功能线程/共享代码的 tracing 输出（优化游戏、坐标颜色等）—
+        // 全局 subscriber 写入共享 buffer，每帧 drain 进日志面板
+        for line in self.log_collector.drain() {
+            self.log(line);
+        }
 
         // 周期性唤醒：窗口可见时 100ms，隐藏到托盘时 500ms（省电），
         // 确保隐藏窗口时也能收到托盘消息
@@ -747,6 +755,11 @@ fn main() {
     // ── 0. panic hook + 单实例保护（在任何副作用之前）────────
     install_panic_hook();
 
+    // 全局日志收集：功能线程（优化游戏、坐标颜色等）的 tracing 输出
+    // 经全局 subscriber 汇入共享 buffer，GUI 帧循环 drain 到日志面板。
+    // 必须在配置加载（config.rs 首次生成提示）之前安装。
+    let log_collector = gi_utils::utils::log::LogCollector::install(200);
+
     // 单实例：已有实例时激活其窗口并退出。
     // mutex 句柄故意不释放 — 进程退出时由 OS 自动释放，保持排他。
     unsafe {
@@ -882,6 +895,7 @@ fn main() {
         font_loaded: false,
         log_messages: startup_log,
         log_visible: true,
+        log_collector,
         tray_rx,
         should_exit: false,
         // tray_ok 由托盘线程的 TrayAction::Ready 异步置位；

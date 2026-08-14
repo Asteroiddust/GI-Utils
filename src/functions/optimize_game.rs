@@ -6,6 +6,7 @@ use crate::engine::function::KeyFunction;
 use crate::utils;
 use crate::utils::delay;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::{error, info};
 use std::sync::Arc;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{
@@ -52,11 +53,11 @@ impl KeyFunction for 优化游戏 {
         if optimize {
             self.optimize();
         } else {
-            println!("优化游戏: 恢复所有进程 CPU 亲和性");
+            info!("优化游戏: 恢复所有进程 CPU 亲和性");
             if let Err(e) = utils::affinity::restore_all_affinity() {
-                eprintln!("优化游戏: 恢复失败: {}", e);
+                error!("优化游戏: 恢复失败: {}", e);
             }
-            println!("优化游戏: 已恢复");
+            info!("优化游戏: 已恢复");
             utils::beep::beep_async(375, 300);
         }
     }
@@ -71,7 +72,7 @@ impl 优化游戏 {
         }
 
         if !is_valid_window(hwnd) {
-            eprintln!("优化游戏: 找不到游戏窗口！");
+            error!("优化游戏: 找不到游戏窗口！");
             utils::beep::beep_async(1000, 500);
             return;
         }
@@ -80,13 +81,13 @@ impl 优化游戏 {
         let mut pid: u32 = 0;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
         if pid == 0 {
-            eprintln!("优化游戏: 获取进程 ID 失败！");
+            error!("优化游戏: 获取进程 ID 失败！");
             utils::beep::beep_async(1000, 500);
             return;
         }
         let title = get_window_title(hwnd);
 
-        println!(
+        info!(
             "优化游戏: {} (PID: {}, HWND: {:?})",
             if title.is_empty() {
                 "(unknown)"
@@ -101,7 +102,7 @@ impl 优化游戏 {
         let h_process = match unsafe { OpenProcess(PROCESS_SET_INFORMATION, false, pid) } {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("优化游戏: 打开进程失败: {}", e);
+                error!("优化游戏: 打开进程失败: {}", e);
                 return;
             }
         };
@@ -110,16 +111,16 @@ impl 优化游戏 {
         if let Err(e) =
             unsafe { SetProcessAffinityMask(h_process, utils::affinity::GAME_CORES_MASK) }
         {
-            eprintln!("优化游戏: 设置 CPU 亲和性失败: {}", e);
+            error!("优化游戏: 设置 CPU 亲和性失败: {}", e);
         }
         if let Err(e) = utils::affinity::isolate_game_cores(pid) {
-            eprintln!("优化游戏: 隔离其他进程失败: {}", e);
+            error!("优化游戏: 隔离其他进程失败: {}", e);
         }
 
         // ── 5. 提升优先级 ───────────────────────────────
         unsafe { SetPriorityClass(h_process, HIGH_PRIORITY_CLASS) }.ok();
         unsafe { windows::Win32::Foundation::CloseHandle(h_process) }.ok();
-        println!("优化游戏: 进程优先级已提升为高");
+        info!("优化游戏: 进程优先级已提升为高");
 
         // ── 6. 切换到前台 ─────────────────────────────
         // 最多重试 40 次 (× 50ms = 2s)，防止前台锁定导致死循环
@@ -133,7 +134,7 @@ impl 优化游戏 {
                 attempts += 1;
             }
             if attempts >= MAX_RETRIES {
-                eprintln!(
+                error!(
                     "优化游戏: 切换前台超时 ({}ms) — 跳过",
                     MAX_RETRIES * 50
                 );
@@ -141,7 +142,7 @@ impl 优化游戏 {
                 return;
             }
         }
-        println!("优化游戏: 完成");
+        info!("优化游戏: 完成");
         utils::beep::beep_async(750, 300);
     }
 }

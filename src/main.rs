@@ -48,11 +48,15 @@ fn row(key: &str, func: &str, mode: &str) -> String {
 }
 
 fn main() {
-    // 内部日志（debug 构建时 tracing 输出到 stderr）
-    // Internal logging (tracing to stderr, debug builds only)
-    #[cfg(debug_assertions)]
+    // tracing → stderr：功能函数输出（优化游戏、坐标颜色等）经此通道。
+    // debug 构建显示 DEBUG 级内部日志；release 显示 INFO 级 —
+    // 替代原先的功能函数 println（stdout 与 stderr 均可见于控制台）。
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(if cfg!(debug_assertions) {
+            tracing::Level::DEBUG
+        } else {
+            tracing::Level::INFO
+        })
         .init();
 
     println!("══════════════════════════════════════════");

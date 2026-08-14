@@ -289,8 +289,8 @@ pub fn load() -> Result<Vec<Binding>, String> {
     let path = config_path();
 
     if !path.exists() {
-        println!("  No config file detected.");
-        println!("  Generating default config: {}", path.display());
+        tracing::info!("  No config file detected.");
+        tracing::info!("  Generating default config: {}", path.display());
         std::fs::write(&path, DEFAULT_CONFIG)
             .map_err(|e| format!("failed to write default config: {}", e))?;
     }

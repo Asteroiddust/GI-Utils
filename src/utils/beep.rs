@@ -19,8 +19,8 @@ extern "system" {
 /// Frequency must be in 37–32767 Hz range; warns and exits early if out of range.
 pub fn beep(frequency: u32, duration_ms: u32) {
     if frequency < 37 || frequency > 32767 {
-        eprintln!(
-            "Warning: invalid beep frequency {} Hz (valid range: 37–32767)",
+        tracing::warn!(
+            "invalid beep frequency {} Hz (valid range: 37–32767)",
             frequency
         );
         return;
@@ -41,8 +41,8 @@ pub fn beep(frequency: u32, duration_ms: u32) {
 /// Each call spawns an OS thread; do not call in tight loops.
 pub fn beep_async(frequency: u32, duration_ms: u32) {
     if frequency < 37 || frequency > 32767 {
-        eprintln!(
-            "Warning: invalid beep frequency {} Hz (valid range: 37–32767)",
+        tracing::warn!(
+            "invalid beep frequency {} Hz (valid range: 37–32767)",
             frequency
         );
         return;

@@ -4,9 +4,9 @@
 use crate::engine::function::KeyFunction;
 use crate::utils::delay;
 use crate::utils::screen::{self, PixelReader};
-use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tracing::info;
 
 /// 坐标颜色功能 — Loop 模式。
 ///
@@ -32,7 +32,8 @@ impl KeyFunction for 坐标颜色 {
     /// 执行坐标颜色显示循环。
     ///
     /// 每 20ms 获取一次光标位置，调用 `GetPixel` 读取该点 RGB 值，
-    /// 以 `\r` 覆盖方式实时打印到控制台。松开绑定键后输出换行。
+    /// 经 tracing 输出（GUI 版汇入日志面板；headless 版输出到 stderr）。
+    /// 原 `\r` 控制台覆盖式输出不适用于日志通道，改为每次一行。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
         while !stop_requested.load(Ordering::Acquire) {
             if let Some(pos) = screen::get_cursor_pos() {
@@ -42,16 +43,14 @@ impl KeyFunction for 坐标颜色 {
                 .0;
                 if cr != 0xFFFF_FFFF {
                     let color = screen::PixelColor::from_colorref(cr);
-                    print!(
-                        "\r  x:{:>5}  y:{:>5}  R:{:>3} G:{:>3} B:{:>3}  #{:02X}{:02X}{:02X}  raw:0x{:08X}",
+                    info!(
+                        "x:{:>5}  y:{:>5}  R:{:>3} G:{:>3} B:{:>3}  #{:02X}{:02X}{:02X}  raw:0x{:08X}",
                         pos.x, pos.y, color.r, color.g, color.b,
                         color.r, color.g, color.b, cr
                     );
-                    io::stdout().flush().ok();
                 }
             }
             delay::delay_ms_interruptible(20.0, &stop_requested);
         }
-        println!(); // final newline after \r
     }
 }
