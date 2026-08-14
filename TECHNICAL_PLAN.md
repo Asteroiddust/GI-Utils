@@ -6,6 +6,7 @@
 > - 未用 `CancellationToken` — 采用 `stop_requested: Arc<AtomicBool>`（更轻，无 async 依赖）
 > - 未用 edition 2024 — 保持 edition 2021（nightly 工具链）
 > - `EventSequence` 链式 API 已按 2.3 实现；键盘/鼠标事件已按 enum 区分
+> - 时间轴调度器（`engine/timeline.rs`：Timeline/RollingKeys）已按 NEXT_STEPS §3 实现（重构后新增范式，本文未覆盖）
 
 ## 1. 核心依赖选型
 

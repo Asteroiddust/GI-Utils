@@ -1,6 +1,6 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.0.0
 
-> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）
+> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间戳引擎 分支 16 单测 + 2 doctest 通过（未 review）
 > **Build**: O3 + LTO fat + panic=abort + target-cpu=native
 
 ## 项目概述
@@ -41,10 +41,11 @@ src/
 │   ├── mod.rs                 #   Engine — 事件循环 + 按键显示
 │   ├── event.rs               #   InputEvent + EventSequence 链式 API
 │   ├── function.rs            #   KeyFunction trait (1 method)
-│   └── bindings.rs            #   KeyBindings + TriggerMode + ActiveGuard
+│   ├── bindings.rs            #   KeyBindings + TriggerMode + ActiveGuard
+│   └── timeline.rs            #   Timeline/RollingKeys — 绝对时刻编排 (Timestamp 范式)
 
 ├── utils/
-│   ├── delay.rs               #   TSC delay + interruptible + 校准
+│   ├── delay.rs               #   TSC delay (相对/绝对时刻) + interruptible + 校准
 │   ├── beep.rs                #   蜂鸣 (同步 beep + 异步 beep_async)
 │   ├── affinity.rs            #   CPU 亲和性 + 进程迭代
 │   ├── screen.rs              #   PixelReader (cached DC) + 像素取色
@@ -94,6 +95,10 @@ Engine (主循环, blocking)
 | **Mutex 外 join** | stop 不阻塞主事件循环 |
 | **delay_ms_interruptible** | 100μs 检查间隔，Loop/Toggle 即时响应 |
 | **EventSequence 链式 API** | `seq.tap(K).sleep(50).wheel(DOWN)` |
+| **时间轴绝对时刻调度** | deadline = 播放起点 TSC + 条目偏移，无累计漂移，前序超时自然追时 |
+| **已触发即移除 + 增量同步** | 表恒为未触发条目；播放中追加条目在到期帧被 `partition_point` 捕获，不重复不遗漏（MIDI 实时编辑语义） |
+| **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程，无静态表边界缝隙（对应 C++ next_press_time + scheduled_releases） |
+| **挂起键兜底清理** | 停止/播放结束补发 release（活动音符 note-off），防卡键 |
 | **KeyFunction 只有 1 个方法** | `execute(&self, stop_requested: Arc<AtomicBool>)` |
 | **printf 作 release 输出** | 避免 Windows stderr 缓冲问题 |
 | **线程级核心分离** | 进程掩码 12-15，GUI 渲染→12,13 (LOWEST)，输入处理→14,15 (REALTIME) |
@@ -183,5 +188,5 @@ icon_path = ""
 
 | 类型 | 模型 | 代表功能 |
 |------|------|---------|
-| **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器、快速拾取、甘雨走A、双玛头 |
-| **Timestamp** (Time based) | 时间轴调度器 | 鬼畜走路、龙王喷水（未来：多键编排） |
+| **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器、快速拾取、甘雨走A、双玛头、火神跳喷 |
+| **Timestamp** (Time based) | 时间轴调度器 `Timeline`/`RollingKeys`（`engine/timeline.rs`） | 鬼畜走路 ✅、龙王喷水（未来） |

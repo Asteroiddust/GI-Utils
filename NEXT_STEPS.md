@@ -26,6 +26,7 @@ v1.0.0 已发布，10 个功能通过 TOML 配置驱动注册。master 48/48 rev
 - **ActiveGuard panic 防护** — 线程 panic 时自动清理 active 标志
 - **Mutex 外 join** — stop 不阻塞主事件循环
 - **profile: O3 + LTO fat + panic=abort** — 速度优先
+- **时间轴调度器（Timestamp 范式）** — `engine/timeline.rs`：`Timeline`/`TimelinePlayer`（绝对时刻执行器，播放中动态加入）+ `RollingKeys`/`RollingPlayer`（节奏滚动，对应 C++ next_press_time）；鬼畜走路已迁移为滚动播放器
 
 ## 待移植功能
 
@@ -82,9 +83,18 @@ mode = "Loop"
 | **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器、快速拾取、甘雨走A、双玛头、火神跳喷 | 事件严格顺序：A → B → C，无重叠 |
 | **Timestamp** (Time based) | 时间轴调度器 | 鬼畜走路、龙王喷水、未来钢琴模式 | 每个事件带绝对时间戳，多键可重叠 |
 
-Serial 类用 `EventSequence` 构建，无需改动。Timestamp 类是 Phase 4 的重点——需要全新的运行时调度器。
+Serial 类用 `EventSequence` 构建，无需改动。Timestamp 类已落地运行时调度器（见 §3）。
 
-### 3. 基于时间戳的多键编排
+### 3. 基于时间戳的多键编排 ✅ 已实现（2026-08-14，时间戳引擎 分支）
+
+落地于 `src/engine/timeline.rs`（13 单测 + 3 delay 单测，全绿）：
+
+- `Timeline`（Note/At 条目）+ `TimelinePlayer` — 绝对时刻执行器：deadline = 播放起点 TSC + 条目偏移，无累计漂移；播放中可动态加入条目（MIDI 实时编辑语义）
+- `RollingKeys`/`RollingPlayer` — 无限滚动调度：按下实时产生、释放动态排程，对应 C++ `next_press_time + scheduled_releases`
+- 挂起键兜底清理：停止/播放结束补发 release，防卡键
+- 鬼畜走路已迁移到 `RollingPlayer`；龙王喷水将使用 `TimelinePlayer`
+
+原设计背景：
 
 当前 `EventSequence` 是严格顺序的——一个事件接一个事件。无法表达"整个序列中 W 键按下并持续 200ms，期间 A/S/D 交错出现"这类重叠时序。
 
@@ -110,11 +120,13 @@ struct KeyScheduler {
 - 支持多键重叠和精确时序控制
 - 可用于模拟钢琴演奏、复杂技能连招等场景
 
-**实现难度**：★★★★。需要重新设计事件模型和运行时调度器。
+**实现难度**：★★★★。已实现（见上）。
 
 ### 5. 通用 held-key 清理
 
-当前鬼畜走路用单 `held` 变量，适合所有有序序列功能。提取为通用 pattern：
+**部分落地**：时间轴执行器已内置挂起键清理（`TimelinePlayer::release_pending` / `RollingPlayer` 退出补发 release）。EventSequence 侧的多键 `HeldTracker` 仍待需要时再做。
+
+原设计背景（鬼畜走路迁移前用单 `held` 变量，适合所有有序序列功能）：
 
 ```rust
 // engine/event.rs 或 engine/execute.rs
@@ -145,4 +157,4 @@ impl HeldTracker {
 
 ## 已知问题
 
-无残留 — master 48/48 与 gi-utils-gui 2H/12M/15L review 全部清零（含 L12，2026-08-10）。后续 review 结论请更新 CLAUDE.md 顶部状态行。
+master 48/48 与 gi-utils-gui 2H/12M/15L review 全部清零（含 L12，2026-08-10）。时间戳引擎 分支（f762e86 + 6ab3ee1）cargo test 全绿（16 单测 + 2 doctest）、release 构建通过，未 review。后续 review 结论请更新 CLAUDE.md 顶部状态行。
