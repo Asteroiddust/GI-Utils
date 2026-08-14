@@ -16,11 +16,16 @@
 //! composed by the caller from these primitives.
 //!
 //! ```
+//! use gi_utils::engine::event::{EventSequence, ScrollDir};
+//! use gi_utils::key::Key;
+//!
+//! let mut seq = EventSequence::new();
+//!
 //! // 按键一次 (按下, hold 50ms, 释放)
-//! seq.press(ScanCode::F).sleep(50.0).release(ScanCode::F);
+//! seq.press(Key::F).sleep(50.0).release(Key::F);
 //!
 //! // 长按 500ms
-//! seq.press(ScanCode::W).sleep(500.0).release(ScanCode::W);
+//! seq.press(Key::W).sleep(500.0).release(Key::W);
 //!
 //! // 点击然后滚轮
 //! seq.left_click().sleep(80.0).wheel(ScrollDir::DOWN).sleep(5.0);
@@ -211,10 +216,13 @@ impl InputEvent {
 /// # 示例 — Example
 ///
 /// ```
+/// use gi_utils::engine::event::{EventSequence, ScrollDir};
+/// use gi_utils::key::Key;
+///
 /// let mut seq = EventSequence::new();
-/// seq.press(ScanCode::F)
+/// seq.press(Key::F)
 ///    .sleep(50.0)
-///    .release(ScanCode::F)
+///    .release(Key::F)
 ///    .sleep(30.0)
 ///    .left_click()
 ///    .sleep(10.0)
