@@ -1,6 +1,6 @@
 [build]
 rustflags = [
+    # target-cpu=native 已同时设定目标特性与调优 — tune-cpu=native 冗余
     "-C", "target-cpu=native",
-    "-Z", "tune-cpu=native",
     "-Z", "plt=no",
 ]

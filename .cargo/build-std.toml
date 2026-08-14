@@ -1,0 +1,13 @@
+# Release-only build-std 配置 — 通过 --config 显式引入：
+#   cargo build --release --config .cargo/build-std.toml
+#
+# std 用 panic_abort 变体 + .cargo/config.toml 的 rustflags/O3 重编（含 native
+# 特性）：热路径（Mutex/atomic/格式化）与主程序同档优化。不用
+# panic_immediate_abort — 它会跳过 panic hook，破坏 GUI 的亲和性恢复兜底。
+#
+# 不能放进全局 config.toml：[unstable] 为全局配置，cargo test 会为 dev+test
+# 两个 profile 各编一份 std，两份 core 同时链接报 duplicate lang item（cargo
+# 已知问题）。因此仅在 release 构建时按需引入。
+# 工具链升级后首次 release 构建会重编 std（~1 分钟），之后命中缓存。
+[unstable]
+build-std = ["std", "panic_abort"]

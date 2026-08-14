@@ -11,7 +11,7 @@
 
 ## 技术栈
 
-- **Rust 1.98 nightly** (edition 2021, -Z tune-cpu=native -Z plt=no)
+- **Rust 1.98 nightly** (edition 2021, -Z plt=no, build-std release-only)
 - **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入
 - **windows-rs 0.62** — Win32 API (GDI、Threading、ToolHelp)
 - **toml + serde** — TOML 配置文件解析
@@ -113,15 +113,23 @@ Engine (主循环, blocking)
 ## 构建
 
 ```bash
-cargo build --release
-# 输出: target/release/gi-utils.exe (~200KB, headless) + gi-utils-gui.exe (~4MB, GUI)
+# release（含 build-std：std 以 panic_abort + native/O3 重编，见 .cargo/build-std.toml）
+cargo build --release --config .cargo/build-std.toml
+# 测试（不带 build-std — 全局 build-std 会让 cargo test 为 dev+test 双 profile
+# 各编一份 std，两份 core 链接报 duplicate lang item（cargo 已知问题））
+cargo test
+# 输出: target/release/gi-utils.exe (~880KB, headless) + gi-utils-gui.exe (~5.8MB, GUI)
 ```
 
 自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入两个 exe；文件缺失时跳过并警告，不影响构建。
 
-release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1`
+release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1, panic=abort`
 
-rustflags: `-C target-cpu=native -C remark=all -Z tune-cpu=native -Z plt=no`
+rustflags: `-C target-cpu=native -Z plt=no`（target-cpu 已含 native 调优，tune-cpu 冗余已移除）
+
+依赖裁剪：eframe 仅 `default_fonts` + `glow`（无 wgpu/accesskit/links — GUI -46%）；tracing-subscriber 仅 `fmt`。
+
+build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，破坏 GUI 亲和性恢复兜底。
 
 ## 运行
 

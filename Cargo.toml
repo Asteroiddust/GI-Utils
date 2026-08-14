@@ -18,8 +18,15 @@ windows = { version = "0.62", features = [
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 tracing = "0.1"
-tracing-subscriber = "0.3"
-eframe = "0.36"
+# 只用 fmt 订阅器 — 关闭默认的 ansi/tracing-log/smallvec
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+# GUI 只需 glow 渲染后端（Renderer::default 优先 Glow，代码不显式设 renderer）
+# + 内置字体。关闭默认的 wgpu、accesskit（无障碍）、links（超链接）、
+# persistence（窗口状态持久化，本项目用 config.toml 自行保存）、x11/wayland。
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
 
 [build-dependencies]
 embed-resource = "3"
