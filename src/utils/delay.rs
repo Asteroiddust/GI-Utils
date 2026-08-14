@@ -91,17 +91,48 @@ pub fn delay_ms(ms: f64) {
 /// Precision is identical to [`delay_ms`]: the TSC target is fixed,
 /// and neither the extra `RDTSC` nor the flag check changes the
 /// exit moment.
+///
+/// 实现为 [`wait_until_interruptible`] 的包装（同一公式、同一检查节奏）。
 pub fn delay_ms_interruptible(ms: f64, stop_requested: &AtomicBool) {
     if ms <= 0.0 {
         return;
     }
-    let freq = tsc_freq();
-    let target = read_tsc() + (ms * freq / 1000.0) as u64;
+    wait_until_interruptible(tsc_now() + ms_to_ticks(ms), stop_requested);
+}
 
+/// 当前 TSC 值 — 绝对时刻调度的时钟源。
+/// Current TSC value — the clock source for absolute-time scheduling
+/// (monotonic with nanosecond-level resolution on invariant-TSC CPUs).
+#[inline(always)]
+pub fn tsc_now() -> u64 {
+    read_tsc()
+}
+
+/// 毫秒 → TSC 周期数（基于已校准频率）。`ms <= 0` 归零。
+/// Convert milliseconds to TSC ticks using the calibrated frequency.
+#[inline(always)]
+pub fn ms_to_ticks(ms: f64) -> u64 {
+    if ms <= 0.0 {
+        0
+    } else {
+        (ms * tsc_freq() / 1000.0) as u64
+    }
+}
+
+/// 忙等直到 TSC 达到绝对时刻 `target_ticks`，每 ~100us 检查停止标志。
+/// Busy-wait until the TSC reaches the absolute moment `target_ticks`,
+/// checking the stop flag every ~100us.
+///
+/// 与 [`delay_ms_interruptible`] 精度与响应节奏相同，区别是目标以绝对 TSC
+/// 时刻给出——时间轴执行器对齐整个时间线只需换算一次。
+/// Same precision and stop-response cadence as [`delay_ms_interruptible`],
+/// but the target is an absolute TSC moment — the timeline player
+/// converts its schedule to absolute ticks once at playback start.
+pub fn wait_until_interruptible(target_ticks: u64, stop_requested: &AtomicBool) {
     let interval = check_interval();
     let mut next_check = read_tsc().wrapping_add(interval);
 
-    while read_tsc() < target {
+    while read_tsc() < target_ticks {
         if read_tsc() >= next_check {
             if stop_requested.load(Ordering::Acquire) {
                 return;
@@ -177,4 +208,32 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> (f64, Vec<String>) {
         median, sample_count, duration_ms
     ));
     (median, lines)
+}
+
+// ── Tests ─────────────────────────────────────────────────────
+// 全部瞬时完成，不等待真实时间；不触碰驱动（SendContext::create）。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ms_to_ticks_clamps_nonpositive() {
+        assert_eq!(ms_to_ticks(0.0), 0);
+        assert_eq!(ms_to_ticks(-3.0), 0);
+        assert!(ms_to_ticks(1.0) > 0);
+    }
+
+    #[test]
+    fn wait_until_past_target_returns_immediately() {
+        // 目标已到期（= 现在）— 忙等循环体不执行，立即返回
+        wait_until_interruptible(tsc_now(), &AtomicBool::new(false));
+    }
+
+    #[test]
+    fn wait_until_pre_set_stop_returns_early() {
+        // stop 预置 true + 目标在未来 — 首个检查点即返回
+        let future = tsc_now() + ms_to_ticks(1000.0);
+        wait_until_interruptible(future, &AtomicBool::new(true));
+    }
 }

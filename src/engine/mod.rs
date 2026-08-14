@@ -7,6 +7,7 @@
 pub mod bindings;
 pub mod event;
 pub mod function;
+pub mod timeline;
 
 pub use bindings::TriggerMode;
 
