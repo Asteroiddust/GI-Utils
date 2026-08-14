@@ -211,10 +211,7 @@ fn parse_key(name: &str) -> Result<Key, String> {
 /// 反向查找：Key → 配置名。用于序列化时把 Key 转回 "F13" / "NumpadAdd" 等。
 /// Reverse lookup: Key → config name. Used when serializing bindings.
 pub fn key_to_config_name(key: Key) -> Option<&'static str> {
-    KEY_PAIRS
-        .iter()
-        .find(|(_, k)| *k == key)
-        .map(|(s, _)| *s)
+    KEY_PAIRS.iter().find(|(_, k)| *k == key).map(|(s, _)| *s)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -295,7 +292,7 @@ mode = "Once"
 
 # GUI 配置 — icon_path 指向 .ico 托盘图标；留空使用程序生成图标
 [gui]
-icon_path = ""
+icon_path = "E:/Projects/Rust/GI-Utils/assets/icon.ico"
 "#;
 
 /// 加载并解析配置文件 — Load and parse the config file. Generates a default if missing.
@@ -376,9 +373,7 @@ pub fn save(bindings: &[Binding]) -> Result<(), String> {
     let raw_bindings: Vec<RawBinding> = bindings
         .iter()
         .map(|b| RawBinding {
-            key: key_to_config_name(b.key)
-                .unwrap_or("?")
-                .to_string(),
+            key: key_to_config_name(b.key).unwrap_or("?").to_string(),
             func: b.func.clone(),
             mode: format!("{:?}", b.mode),
         })
@@ -388,10 +383,7 @@ pub fn save(bindings: &[Binding]) -> Result<(), String> {
         gui: RawGuiConfig::default(),
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;
-    let content = format!(
-        "# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}",
-        toml_str
-    );
+    let content = format!("# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}", toml_str);
     std::fs::write(config_path(), content).map_err(|e| format!("failed to write config: {}", e))
 }
 
