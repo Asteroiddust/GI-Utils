@@ -379,13 +379,27 @@ pub fn save(bindings: &[Binding]) -> Result<(), String> {
             mode: format!("{:?}", b.mode),
         })
         .collect();
+    // [gui] 段从磁盘原样读回并保留 — 若写回 RawGuiConfig::default() 会清空
+    // 用户手工配置的 icon_path 等（GUI 保存一次即永久丢失，review 发现）。
+    // GUI 保存只负责 bindings；[gui] 段属用户配置，必须原样保留。
+    let gui = read_gui_section_from_disk();
     let toml_str = toml::to_string_pretty(&RawConfig {
         bindings: raw_bindings,
-        gui: RawGuiConfig::default(),
+        gui,
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;
     let content = format!("# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}", toml_str);
     std::fs::write(config_path(), content).map_err(|e| format!("failed to write config: {}", e))
+}
+
+/// 读回磁盘上 [gui] 段的原样内容 — 解析失败/缺段回退默认值（与
+/// load_gui_config 同语义，绝不因 GUI 段损坏而失败）。
+fn read_gui_section_from_disk() -> RawGuiConfig {
+    std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|content| toml::from_str::<RawConfig>(&content).ok())
+        .map(|raw| raw.gui)
+        .unwrap_or_default()
 }
 
 /// 返回所有可用功能名称 — List all available function names.

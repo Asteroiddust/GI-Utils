@@ -1,202 +1,45 @@
 //! Win32 托盘子系统 — Tray icon (Shell_NotifyIconW) subsystem.
 //!
 //! 独立于 GUI 状态：托盘线程通过 `Sender<TrayAction>` 与主线程通信，
-//! 不引用 `GuiApp`/egui。包括托盘图标像素生成、消息窗口与消息泵。
+//! 不引用 `GuiApp`/egui。本文件只含托盘线程（消息窗口 + 消息泵）与
+//! `TrayAction`；图标原料/共享句柄在 `tray_icon`，HWND 操作在 `window_ops`
+//! （本文件只调用，不重复实现）。
+//!
+//! 模块依赖：main.rs 需声明同级模块 `mod tray_icon; mod window_ops;`
+//! （与 `mod tray;` 同层）。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use std::sync::Arc;
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NOTIFYICONDATAW, NOTIFYICON_VERSION_4, NIF_ICON, NIF_MESSAGE, NIF_TIP,
     NIM_ADD, NIM_DELETE, NIM_SETVERSION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos,
-    GetMessageW, GetWindowLongPtrW, IsWindow, PostQuitMessage, RegisterClassW,
-    SetForegroundWindow, SetWindowLongPtrW, SendMessageW, ShowWindow, TrackPopupMenu, HICON,
-    ICONINFO, MF_STRING, MSG, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
-    WM_SETICON, WM_USER, GWLP_USERDATA, ICON_BIG, ICON_SMALL,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
+    DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, GetWindowLongPtrW,
+    PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu,
+    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HWND_MESSAGE, MF_STRING, MSG,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_DESTROY,
+    WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_USER, WNDCLASSW,
 };
 
 /// 托盘 → GUI 的消息类型。
 pub enum TrayAction {
+    /// 双击 / 菜单 "Show Panel" → GUI 帧：hidden=false + SW_SHOW。
     Show,
+    /// 菜单 "Exit" → GUI 帧：should_exit=true + ViewportCommand::Close。
     Exit,
-    /// 托盘图标创建结果（NIM_ADD 成功与否）。
+    /// NIM_ADD 结果 → GUI 帧：写 tray_ok；false 时记日志。
     Ready(bool),
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 托盘图标工具
-// ═══════════════════════════════════════════════════════════════════
-
-/// 生成 32x32 RGBA 像素数据（蓝色圆形 + 白色 "G" 字样）。
-pub fn create_tray_icon_pixels() -> (Vec<u8>, u32, u32) {
-    let size = 32u32;
-    let mut pixels = Vec::with_capacity((size * size * 4) as usize);
-    let blue = [0x1Au8, 0x73, 0xE8, 0xFF];
-    let white = [0xFFu8, 0xFF, 0xFF, 0xFF];
-    let transparent = [0x00u8, 0x00, 0x00, 0x00];
-    let g_shape: &[(u32, u32)] = &[
-        (10,6),(11,6),(12,6),(13,6),(14,6),(15,6),(16,6),(17,6),(18,6),(19,6),(20,6),(21,6),
-        (9,7),(9,8),(9,9),(9,10),(9,11),(9,12),(9,13),(9,14),(9,15),(9,16),(9,17),(9,18),(9,19),(9,20),(9,21),(9,22),(9,23),
-        (10,24),(11,24),(12,24),(13,24),(14,24),(15,24),(16,24),(17,24),(18,24),(19,24),(20,24),(21,24),
-        (22,19),(22,20),(22,21),(22,22),(22,23),
-        (16,15),(17,15),(18,15),(19,15),(20,15),(21,15),(22,15),
-    ];
-    for y in 0..size {
-        for x in 0..size {
-            let is_g = g_shape.contains(&(x, y));
-            let dx = x as f32 - 15.5f32;
-            let dy = y as f32 - 15.5f32;
-            let in_circle = (dx * dx + dy * dy).sqrt() < 14.5f32;
-            if is_g {
-                pixels.extend_from_slice(&white);
-            } else if in_circle {
-                pixels.extend_from_slice(&blue);
-            } else {
-                pixels.extend_from_slice(&transparent);
-            }
-        }
-    }
-    (pixels, size, size)
-}
-
-/// 从 RGBA 像素创建 HICON（在托盘线程内调用，HICON 非 Send）。
-/// 失败返回 None — 调用方负责发送 TrayAction::Ready(false) 并退出。
-unsafe fn create_hicon_from_rgba(
-    rgba: &[u8],
-    w: u32,
-    h: u32,
-) -> Option<windows::Win32::UI::WindowsAndMessaging::HICON> {
-    // RGBA → BGRA + 翻转
-    let mut bgra = Vec::with_capacity((w * h * 4) as usize);
-    for row in (0..h).rev() {
-        let start = (row * w * 4) as usize;
-        let end = start + (w * 4) as usize;
-        for px in rgba[start..end].chunks(4) {
-            bgra.push(px[2]); // B
-            bgra.push(px[1]); // G
-            bgra.push(px[0]); // R
-            bgra.push(px[3]); // A
-        }
-    }
-    // AND mask 全 0（1bpp）：hbmColor 是 32bpp BGRA，alpha 通道已承载
-    // 透明度。全 0xFF 会按"掩蔽"语义渲染 — 图标呈不透明方形（L1）。
-    // All-zero AND mask: the 32bpp color bitmap carries alpha; an
-    // all-0xFF mask would mask out every pixel and show a square icon.
-    let mask_bits: Vec<u8> = vec![0; ((w * h) as usize + 7) / 8];
-    let hbm_mask = windows::Win32::Graphics::Gdi::CreateBitmap(
-        w as i32, h as i32, 1, 1, Some(mask_bits.as_ptr() as *const std::ffi::c_void),
-    );
-    let hbm_color = windows::Win32::Graphics::Gdi::CreateBitmap(
-        w as i32, h as i32, 1, 32, Some(bgra.as_ptr() as *const std::ffi::c_void),
-    );
-    use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
-
-    // CreateBitmap 失败或资源不足 → 不进入 panic 路径，返回 None 优雅降级
-    if hbm_mask.is_invalid() || hbm_color.is_invalid() {
-        let _ = DeleteObject(HGDIOBJ(hbm_mask.0));
-        let _ = DeleteObject(HGDIOBJ(hbm_color.0));
-        return None;
-    }
-    let icon_info = ICONINFO {
-        fIcon: true.into(),
-        xHotspot: 0,
-        yHotspot: 0,
-        hbmMask: hbm_mask,
-        hbmColor: hbm_color,
-    };
-    let icon = match CreateIconIndirect(&icon_info) {
-        Ok(icon) if !icon.is_invalid() => Some(icon),
-        _ => None,
-    };
-    // CreateIconIndirect 复制了位图内容 — 释放临时位图（L2：避免泄漏）
-    let _ = DeleteObject(HGDIOBJ(hbm_mask.0));
-    let _ = DeleteObject(HGDIOBJ(hbm_color.0));
-    icon
-}
-
-/// 从 .ico 文件加载 32×32 HICON。任何失败返回 None。
-/// Loads a 32×32 HICON from a .ico file. Returns None on any failure.
-unsafe fn load_ico_from_file(path: &str) -> Option<HICON> {
-    use windows::core::PCWSTR;
-    use windows::Win32::UI::WindowsAndMessaging::{IMAGE_ICON, LR_LOADFROMFILE, LoadImageW};
-
-    let wide: Vec<u16> = path.encode_utf16().collect();
-    // 睡眠唤醒/显示重置后 WIC 成像组件可能瞬时不可用（崩溃恢复轮首次尝试
-    // 失败、数秒后自愈）— 重试 5 次 × 200ms 再放弃，覆盖恢复窗口期。
-    for _ in 0..5 {
-        match LoadImageW(
-            None,
-            PCWSTR(wide.as_ptr()),
-            IMAGE_ICON,
-            32,
-            32,
-            LR_LOADFROMFILE,
-        ) {
-            Ok(handle) if !handle.is_invalid() => return Some(HICON(handle.0)),
-            _ => std::thread::sleep(std::time::Duration::from_millis(200)),
-        }
-    }
-    None
-}
-
-/// 托盘图标加载入口 — 配置了 icon_path 且加载成功时用 .ico，
-/// 否则回退程序生成图标（create_hicon_from_rgba）。绝不失败。
-/// Tray icon entry: uses the configured .ico when it loads successfully,
-/// otherwise falls back to the generated icon. Never fails.
-unsafe fn load_icon(icon_path: &str, pixels: &[u8], w: u32, h: u32) -> Option<HICON> {
-    if !icon_path.is_empty() {
-        if let Some(icon) = load_ico_from_file(icon_path) {
-            return Some(icon);
-        }
-        tracing::warn!(
-            "tray icon '{}' could not be loaded, using generated icon",
-            icon_path
-        );
-    }
-    create_hicon_from_rgba(pixels, w, h)
-}
-
-/// 进程级共享托盘图标 — 主线程启动时预加载（GDI/WIC 健康状态），
-/// 托盘线程跨崩溃恢复轮复用。
-///
-/// 动机：睡眠唤醒的 GL 崩溃会连带污染进程内的 WIC 图标加载（恢复轮的
-/// LoadImageW 永久失败，纯 GDI 的生成图标仍可用）— 恢复轮无法再加载
-/// .ico，必须在启动时预加载共享。
-///
-/// GDI 图标句柄是进程级对象，Shell_NotifyIconW/WM_SETICON 不要求图标与
-/// 调用线程同源；windows-rs 因 HICON 内含裸指针未标记 Send，此包装显式
-/// 声明。所有权纪律：主线程创建与销毁，托盘线程只读使用。
-#[derive(Clone)]
-pub struct SharedIcon(HICON);
-unsafe impl Send for SharedIcon {}
-
-impl SharedIcon {
-    /// 原始 HICON — 供同进程内窗口图标设置（WM_SETICON）等只读使用。
-    pub(crate) fn raw(&self) -> HICON {
-        self.0
-    }
-
-    /// 进程退出时由主线程销毁（托盘线程全部收尾之后）。
-    pub(crate) fn destroy(&self) {
-        unsafe {
-            let _ = DestroyIcon(self.0);
-        }
-    }
-}
-
-/// 启动时预加载托盘图标（主线程调用）。返回 None 时托盘线程回退
-/// 程序生成图标（纯 GDI 路径，崩溃后仍可用）。
-pub fn preload_tray_icon(icon_path: &str, pixels: &[u8], w: u32, h: u32) -> Option<SharedIcon> {
-    unsafe { load_icon(icon_path, pixels, w, h) }.map(SharedIcon)
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Win32 托盘 (Shell_NotifyIconW)
+// 托盘消息窗口
 // ═══════════════════════════════════════════════════════════════════
 
 const WM_TRAY_CALLBACK: u32 = WM_USER + 1;
@@ -205,26 +48,29 @@ const IDM_EXIT: u32 = 2;
 
 struct TrayContext {
     tx: Sender<TrayAction>,
-    /// 主窗口句柄 — Cell：崩溃恢复场景下旧窗口延迟销毁（winit 延迟到
-    /// 下一事件循环），缓存句柄可能失效，每次动作前重校验并按需重搜。
+    /// 缓存主窗口句柄 — Cell：每次动作前 IsWindow 重校验（幽灵窗口，L3）。
     main_hwnd: std::cell::Cell<HWND>,
-}
-
-unsafe fn find_main_window() -> Option<HWND> {
-    FindWindowW(None, windows::core::w!("GI-Utils Configuration"))
-        .ok()
-        .filter(|h| !h.is_invalid())
+    /// 线程退出请求 — stop_tray_thread 置位；⑨ 搜索循环与 ensure_main_window
+    /// 每轮检查立即退出（WM_CLOSE 在搜索期间不泵消息、不可达，必须由标志
+    /// 接管 — L5 的 Ready 守卫只覆盖 ⑦ 之前，review 发现）。
+    quit: Arc<AtomicBool>,
 }
 
 /// 校验缓存的主窗口句柄，失效时重搜（崩溃恢复后旧窗口销毁 → 新窗口同标题）。
+/// 缓存句柄有效（IsWindow）→ 直接返回；否则有界 2s 重搜（40×50ms
+/// find_main_window）；超时返回旧值兜底（调用方是 best-effort 路径）。
 unsafe fn ensure_main_window(ctx: &TrayContext) -> HWND {
     let cur = ctx.main_hwnd.get();
-    if !cur.is_invalid() && IsWindow(Some(cur)).as_bool() {
+    if crate::window_ops::is_valid(cur) {
         return cur;
     }
-    // 旧窗口已销毁 — 重搜当前活窗口（有界 ~2s，超时返回旧值兜底）
+    // 旧窗口已销毁 — 重搜当前活窗口（有界 ~2s，超时返回旧值兜底）；
+    // 每轮检查退出请求 — stop_tray_thread 等待期必须覆盖整个生命周期
     for _ in 0..40 {
-        if let Some(h) = find_main_window() {
+        if ctx.quit.load(Ordering::Acquire) {
+            return cur;
+        }
+        if let Some(h) = crate::window_ops::find_main_window() {
             ctx.main_hwnd.set(h);
             return h;
         }
@@ -233,9 +79,9 @@ unsafe fn ensure_main_window(ctx: &TrayContext) -> HWND {
     cur
 }
 
-unsafe fn show_main_window(main_hwnd: HWND) {
-    let _ = ShowWindow(main_hwnd, SW_SHOW);
-    let _ = SetForegroundWindow(main_hwnd);
+/// show_and_activate(hwnd) 的托盘侧别名（即 SW_SHOW + SetForegroundWindow）。
+unsafe fn show_main_window(hwnd: HWND) {
+    crate::window_ops::show_and_activate(hwnd);
 }
 
 unsafe extern "system" fn tray_wnd_proc(
@@ -244,13 +90,7 @@ unsafe extern "system" fn tray_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if msg == WM_CREATE {
-        let cs = &*(lparam.0 as *const windows::Win32::UI::WindowsAndMessaging::CREATESTRUCTW);
-        let ctx = Box::from_raw(cs.lpCreateParams as *mut TrayContext);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ctx) as isize);
-        return LRESULT(0);
-    }
-
+    // GWLP_USERDATA 空指针 → DefWindowProcW 兜底（窗口创建成功才写指针）
     let ctx_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayContext;
     if ctx_ptr.is_null() {
         return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -259,87 +99,107 @@ unsafe extern "system" fn tray_wnd_proc(
 
     match msg {
         x if x == WM_TRAY_CALLBACK => {
-            let lp = lparam.0 as u32;
-            // Version 4: lParam packs icon ID in HIWORD, mouse msg in LOWORD
-            let mouse_msg = lp & 0xFFFF;
+            // LOWORD(lParam) 是鼠标消息（V4 与降级 V0 一致；HIWORD 是图标 ID）
+            let mouse_msg = (lparam.0 as u32) & 0xFFFF;
             if mouse_msg == WM_LBUTTONDBLCLK {
-                let hwnd = ensure_main_window(ctx);
-                show_main_window(hwnd);
+                // 双击 → 通知 GUI 帧（hidden=false，L11）+ 直接显示窗口
+                let _ = ctx.tx.send(TrayAction::Show);
+                let main_hwnd = ensure_main_window(ctx);
+                show_main_window(main_hwnd);
             }
             if mouse_msg == WM_RBUTTONUP {
                 let mut pos = windows::Win32::Foundation::POINT::default();
                 if GetCursorPos(&mut pos).is_ok() {
                     let _ = SetForegroundWindow(hwnd);
-                    let menu = CreatePopupMenu().expect("CreatePopupMenu");
-                    let _ = AppendMenuW(menu, MF_STRING, IDM_SHOW as usize, windows::core::w!("Show Panel"));
-                    let _ = AppendMenuW(menu, MF_STRING, IDM_EXIT as usize, windows::core::w!("Exit"));
-                    let _ = TrackPopupMenu(
-                        menu,
-                        TPM_BOTTOMALIGN | TPM_LEFTALIGN,
-                        pos.x,
-                        pos.y,
-                        None,
-                        hwnd,
-                        None,
-                    );
-                    let _ = DestroyMenu(menu);
+                    // CreatePopupMenu 失败仅跳过，绝不 panic（不变量 17）
+                    if let Ok(menu) = CreatePopupMenu() {
+                        let _ = AppendMenuW(
+                            menu,
+                            MF_STRING,
+                            IDM_SHOW as usize,
+                            windows::core::w!("Show Panel"),
+                        );
+                        let _ = AppendMenuW(
+                            menu,
+                            MF_STRING,
+                            IDM_EXIT as usize,
+                            windows::core::w!("Exit"),
+                        );
+                        let _ = TrackPopupMenu(
+                            menu,
+                            TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+                            pos.x,
+                            pos.y,
+                            None,
+                            hwnd,
+                            None,
+                        );
+                        let _ = DestroyMenu(menu);
+                    }
                 }
             }
-            return LRESULT(0);
+            LRESULT(0)
         }
         WM_COMMAND => {
             let cmd = (wparam.0 as u32) & 0xFFFF;
             match cmd {
                 IDM_SHOW => {
                     let _ = ctx.tx.send(TrayAction::Show);
-                    let hwnd = ensure_main_window(ctx);
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = SetForegroundWindow(hwnd);
+                    let main_hwnd = ensure_main_window(ctx);
+                    show_main_window(main_hwnd);
                 }
                 IDM_EXIT => {
                     let _ = ctx.tx.send(TrayAction::Exit);
                 }
                 _ => {}
             }
-            return LRESULT(0);
+            LRESULT(0)
         }
         WM_DESTROY => {
+            // 释放 ctx（恰一次 — GWLP_USERDATA 随即清零，防双重释放）
             let _ = Box::from_raw(ctx_ptr);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             PostQuitMessage(0);
-            return LRESULT(0);
+            LRESULT(0)
         }
-        _ => {}
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
-    DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-/// 运行托盘线程 — 创建消息窗口 + 图标，泵消息直到收到 WM_QUIT。
+// ═══════════════════════════════════════════════════════════════════
+// 托盘线程主函数
+// ═══════════════════════════════════════════════════════════════════
+
+/// 托盘线程主函数 — 每轮尝试独立 spawn，独立 channel；线程内绝不 panic
+/// （全部 Win32 调用容错，无 expect）。阶段顺序单一收尾尾（⑪），消除旧
+/// 实现 4 处重复 early-exit 清理块。
 ///
 /// 图标来源：主线程预加载的共享图标（`preloaded`，崩溃恢复轮也能用）；
-/// 预加载失败时回退程序生成图标（`pixels`，纯 GDI 路径）。
+/// 预加载失败时回退程序生成图标（`pixels`，纯 GDI 路径 — WIC 污染后仍可用）。
+///
+/// 线程不显式 pin 核心（继承进程掩码 12-15 即可，非时序关键，减少与渲染
+/// 线程竞争面 — 裁决 #11）。
 pub fn run_tray_thread(
     tx: Sender<TrayAction>,
-    preloaded: Option<SharedIcon>,
+    quit: Arc<AtomicBool>,
+    preloaded: Option<crate::tray_icon::SharedIcon>,
     pixels: Vec<u8>,
     w: u32,
     h: u32,
 ) {
     use std::mem;
     use windows::core::w;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        CS_HREDRAW, CS_VREDRAW, WNDCLASSW, HWND_MESSAGE, CW_USEDEFAULT, FindWindowW,
-    };
 
     unsafe {
-        // 图标来源：优先共享预加载（崩溃恢复轮可用）；否则本线程生成
-        // （纯 GDI 路径，健康状态不依赖）。icon_owned 标记自建图标 —
-        // 只有自建图标由本线程销毁；共享图标由主线程 shutdown 时统一销毁。
+        // ── ① 图标解析 ──────────────────────────────────────────
+        // 优先共享预加载（崩溃恢复轮可用）；否则本线程生成（纯 GDI 路径，
+        // 健康状态不依赖）。icon_owned 标记自建图标 — 只有自建图标由本
+        // 线程销毁（⑦/⑪ 路径）；共享图标由主线程 shutdown 时统一销毁。
         let (icon, icon_owned) = match preloaded {
-            Some(shared) => (shared.0, false),
+            Some(shared) => (shared.raw(), false),
             None => {
-                // 失败 → 通知 GUI 托盘不可用并退出，不 panic
-                let Some(icon) = create_hicon_from_rgba(&pixels, w, h) else {
+                // 失败 → 通知 GUI 托盘不可用并退出；无窗口无图标可清
+                let Some(icon) = crate::tray_icon::create_hicon_from_rgba(&pixels, w, h) else {
                     let _ = tx.send(TrayAction::Ready(false));
                     return;
                 };
@@ -347,42 +207,10 @@ pub fn run_tray_thread(
             }
         };
 
-        // 查找主窗口 HWND（用于 Show/Hide）
-        // 主窗口在 eframe 初始化后创建；最多等 30s（60 × 500ms）。
-        // 标题不匹配时不再无限空转 — 超时按托盘失败处理。
-        let mut main_hwnd = None;
-        for _ in 0..60 {
-            if let Ok(h) = FindWindowW(None, w!("GI-Utils Configuration")) {
-                main_hwnd = Some(h);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        let Some(main_hwnd) = main_hwnd else {
-            let _ = tx.send(TrayAction::Ready(false));
-            if icon_owned {
-                let _ = DestroyIcon(icon);
-            }
-            return;
-        };
-
-        // 窗口图标：eframe 启动时用 egui 默认 logo 设置过 WM_SETICON，
-        // 这里用同一图标源（共享预加载或程序生成）再覆盖一次，
-        // 让任务栏/标题栏/Alt-Tab 与托盘图标一致。自建图标由本线程
-        // 退出时销毁；共享图标由主线程 shutdown 时统一销毁。
-        let _ = SendMessageW(
-            main_hwnd,
-            WM_SETICON,
-            Some(WPARAM(ICON_BIG as usize)),
-            Some(LPARAM(icon.0 as isize)),
-        );
-        let _ = SendMessageW(
-            main_hwnd,
-            WM_SETICON,
-            Some(WPARAM(ICON_SMALL as usize)),
-            Some(LPARAM(icon.0 as isize)),
-        );
-
+        // ── ③ 模块句柄 ──────────────────────────────────────────
+        // 契约②③ 因 hInstance 数据依赖交换执行顺序：RegisterClassW 与
+        // CreateWindowExW 均需 hInstance，GetModuleHandleW 必须先取；
+        // 各阶段的失败语义不变。
         let hinst = match GetModuleHandleW(None) {
             Ok(h) => h,
             Err(_) => {
@@ -394,19 +222,34 @@ pub fn run_tray_thread(
             }
         };
 
+        // ── ② 注册窗口类 ────────────────────────────────────────
+        // ERROR_CLASS_ALREADY_EXISTS 良性继续：detach 宽限期旧类记录可
+        // 复用（同类名同静态 wndproc，行为一致）；其他失败 → Ready(false)
+        // + 自建图标销毁 → return。
         let wc = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(tray_wnd_proc),
-            hInstance: windows::Win32::Foundation::HINSTANCE(hinst.0),
+            hInstance: HINSTANCE(hinst.0),
             lpszClassName: w!("GIUtilsTrayWindow"),
             ..Default::default()
         };
-        RegisterClassW(&wc);
+        // RegisterClassW 返回 ATOM（0 = 失败），失败原因经 GetLastError 区分
+        if RegisterClassW(&wc) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
+            let _ = tx.send(TrayAction::Ready(false));
+            if icon_owned {
+                let _ = DestroyIcon(icon);
+            }
+            return;
+        }
 
-        // tx 克隆进 ctx（Sender Clone）；外层 tx 保留用于 NIM_ADD 后发送 Ready
+        // ── ④ 创建消息窗口（HWND_MESSAGE, lpParam=NULL）─────────
+        // lpParam=NULL：ctx 指针改为创建后经 SetWindowLongPtrW 写入（⑤），
+        // 窗口创建完成前无消息可达（消息窗口消息只经消息泵派发），无竞态。
+        // ctx 是普通 Box — 创建失败时未写入窗口，随作用域 drop，无泄漏。
         let ctx = Box::new(TrayContext {
             tx: tx.clone(),
-            main_hwnd: std::cell::Cell::new(main_hwnd),
+            main_hwnd: std::cell::Cell::new(HWND::default()),
+            quit: quit.clone(),
         });
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -419,13 +262,11 @@ pub fn run_tray_thread(
             CW_USEDEFAULT,
             Some(HWND_MESSAGE),
             None,
-            Some(windows::Win32::Foundation::HINSTANCE(hinst.0)),
-            Some(Box::into_raw(ctx) as *const _ as *const std::ffi::c_void),
+            Some(HINSTANCE(hinst.0)),
+            None, // lpParam = NULL（契约④）
         ) {
             Ok(hwnd) => hwnd,
             Err(_) => {
-                // ctx 已泄漏（无法从失败调用回收指针）— 进程级资源，可接受；
-                // 必须通知 GUI 不可达路径已建立，否则托盘线程死亡后 GUI 无法退出
                 let _ = tx.send(TrayAction::Ready(false));
                 if icon_owned {
                     let _ = DestroyIcon(icon);
@@ -434,6 +275,12 @@ pub fn run_tray_thread(
             }
         };
 
+        // ── ⑤ 写入 ctx 指针（先设指针后 NIM_ADD — 回调不可能早到）─
+        // SetWindowLongPtrW 对有效窗口几乎不失败；失败则 ctx 泄漏（进程级
+        // 单窗口，可接受）。best-effort。
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ctx) as isize);
+
+        // ── ⑥ NIM_ADD ───────────────────────────────────────────
         let mut nid: NOTIFYICONDATAW = mem::zeroed();
         nid.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
@@ -441,25 +288,29 @@ pub fn run_tray_thread(
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.hIcon = icon;
         nid.uCallbackMessage = WM_TRAY_CALLBACK;
-        windows::core::w!("GI-Utils")
-            .as_wide()
-            .iter()
-            .take(127)
-            .enumerate()
-            .for_each(|(i, c)| nid.szTip[i] = *c);
+        // szTip 写 "GI-Utils" 后显式 NUL 终止 — 防 shell 越界读（D2 #8）
+        let tip = w!("GI-Utils");
+        let tip_len = tip.as_wide().len().min(127);
+        nid.szTip[..tip_len].copy_from_slice(&tip.as_wide()[..tip_len]);
+        nid.szTip[tip_len] = 0;
 
         // NIM_ADD 失败 = 托盘图标不可用，但消息窗口仍然有效 —
-        // 退出路径完整（WM_CLOSE → DestroyWindow → PostQuitMessage）。
+        // 退出路径完整（WM_CLOSE → DestroyWindow → PostQuitMessage，L5）。
         let add_ok = Shell_NotifyIconW(NIM_ADD, &nid).as_bool();
-        // Ready 发送失败 = receiver 已断开（GUI 渲染崩溃重建中）。本线程
-        // 可能已误找到重试后的新主窗口（同标题）— 立即清理退出，
-        // 避免双托盘图标与死通道残留。
+
+        // ── ⑦ Ready 发送 ────────────────────────────────────────
+        // 发送失败 = receiver 已断开（GUI 重建中）→ 立即自清理退出（防双
+        // 托盘图标）：自建图标先 clear_window_icon(缓存的 main_hwnd) 再
+        // DestroyIcon → NIM_DELETE → DestroyWindow。共享图标绝不销毁。
         if tx.send(TrayAction::Ready(add_ok)).is_err() {
             if icon_owned {
-                // 自建图标：先移除窗口引用再销毁（防悬空句柄）。
-                // 共享图标不销毁 — 新窗口仍在使用，主线程 shutdown 时统一销毁。
-                let _ = SendMessageW(main_hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), None);
-                let _ = SendMessageW(main_hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), None);
+                let ctx_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayContext;
+                if !ctx_ptr.is_null() {
+                    let cached = (*ctx_ptr).main_hwnd.get();
+                    if crate::window_ops::is_valid(cached) {
+                        crate::window_ops::clear_window_icon(cached);
+                    }
+                }
                 let _ = DestroyIcon(icon);
             }
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
@@ -467,25 +318,80 @@ pub fn run_tray_thread(
             return;
         }
 
-        // NotifyIconVersion 4 (modern Win10+ behavior)
+        // ── ⑧ NIM_SETVERSION ────────────────────────────────────
+        // 失败仅日志：降级 V0（LOWORD 仍为消息，菜单路径不变，双击可能
+        // 失效 — 接受）。
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-        let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
+        if !Shell_NotifyIconW(NIM_SETVERSION, &nid).as_bool() {
+            tracing::warn!(
+                "NIM_SETVERSION failed — falling back to pre-v4 behavior (double-click may not work)"
+            );
+        }
 
-        // 消息泵
+        // ── ⑨ 主窗口查找（有界 30s，60×500ms）— 非致命 ──────────
+        // NIM_ADD 与主窗口解耦（裁决 #2）：超时仅降级 Show/图标重设，由
+        // ensure_main_window 有界重搜 + app 帧循环 deadline 兜底。
+        // 每轮检查 quit — stop_tray_thread 置位后立即 break 走收尾，2s 有界
+        // 等待才能覆盖整个线程生命周期（review 发现双托盘图标根因）。
+        let mut main_hwnd = HWND::default();
+        let mut quit_requested = false;
+        for _ in 0..60 {
+            if quit.load(Ordering::Acquire) {
+                quit_requested = true;
+                break;
+            }
+            if let Some(h) = crate::window_ops::find_main_window() {
+                main_hwnd = h;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        // 缓存进 ctx（供 wndproc 的 ensure_main_window 复用）+ 窗口图标重设
+        // （best-effort：幽灵窗口期可能设到旧窗口，app 帧循环兜底重设真窗口；
+        // set_window_icon 已改为 PostMessageW 异步 — 不阻塞退出路径）。
+        let ctx_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayContext;
+        if !ctx_ptr.is_null() {
+            let ctx = &*ctx_ptr;
+            ctx.main_hwnd.set(main_hwnd);
+            if !main_hwnd.is_invalid() {
+                crate::window_ops::set_window_icon(main_hwnd, icon);
+            }
+        }
+        if main_hwnd.is_invalid() && !quit_requested {
+            tracing::warn!(
+                "main window not found within 30s — tray Show/icon degraded (app frame deadline covers)"
+            );
+        }
+        // ⑪ 收尾需读缓存句柄，但消息泵退出时窗口已销毁（WM_DESTROY 已释放
+        // ctx）— 泵前快照，避免 use-after-free。
+        let cached_main_hwnd = main_hwnd;
+
+        // ── ⑩ 消息泵 ────────────────────────────────────────────
         let mut msg: MSG = mem::zeroed();
         loop {
             let ret = GetMessageW(&mut msg, None, 0, 0);
-            if ret.0 <= 0 {
+            if ret.0 < 0 {
+                // 异常终止 — 仍走清理尾（L5）
+                tracing::warn!("GetMessageW returned {} — terminating tray thread", ret.0);
                 break;
+            }
+            if ret.0 == 0 {
+                break; // WM_QUIT（WM_DESTROY → PostQuitMessage）
             }
             DispatchMessageW(&msg);
         }
 
-        // 清理（共享图标不销毁 — 主线程 shutdown 时统一处理）
-        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+        // ── ⑪ 单一收尾尾 ────────────────────────────────────────
+        // 自建图标先 clear_window_icon(缓存的 main_hwnd，IsWindow 校验后)
+        // 再 DestroyIcon → NIM_DELETE → DestroyWindow。共享图标绝不销毁
+        // （主线程 shutdown 时统一处理）。
         if icon_owned {
+            if crate::window_ops::is_valid(cached_main_hwnd) {
+                crate::window_ops::clear_window_icon(cached_main_hwnd);
+            }
             let _ = DestroyIcon(icon);
         }
+        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
         let _ = DestroyWindow(hwnd);
     }
 }

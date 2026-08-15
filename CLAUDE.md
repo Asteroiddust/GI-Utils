@@ -25,8 +25,10 @@ src/
 ├── lib.rs                     # 库根 — headless 与 GUI 共享全部模块
 ├── bin/
 │   └── gui/
-│       ├── main.rs            # GUI 入口 (egui 配置面板 + live-apply → gi-utils-gui.exe)
-│       └── tray.rs            # 托盘子系统 (Shell_NotifyIconW + WM_SETICON 窗口图标)
+│       ├── main.rs            # GUI 入口 (egui 配置面板 + live-apply + 崩溃自愈重试 → gi-utils-gui.exe)
+│       ├── tray.rs            # 托盘线程 (Shell_NotifyIconW + 消息窗口/泵 + quit 标志收尾)
+│       ├── tray_icon.rs       # 图标原料 + SharedIcon 共享句柄 (启动预加载, L4 WIC 污染防御)
+│       └── window_ops.rs      # HWND 安全包装唯一入口 (IsWindow 重校验 + 跨进程 pid 过滤, L3 幽灵窗口防御)
 ├── config.rs                  # TOML 配置解析 + 函数工厂 + [gui] 图标配置
 ├── build.rs                   # 链接 interception.lib + 嵌入 assets/icon.ico
 ├── key.rs                     # Key (ScanCode + is_e0) + 90+ 常量

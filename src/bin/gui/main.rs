@@ -19,15 +19,17 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use windows::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, LPARAM, SetLastError, WPARAM,
+    ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, SetLastError,
 };
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, MessageBoxW, PostMessageW, SendMessageW, SetForegroundWindow, ShowWindow,
-    ICON_BIG, ICON_SMALL, MB_ICONERROR, MB_OK, SW_HIDE, SW_SHOW, WM_CLOSE, WM_SETICON,
-};
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
+// 模块拆分：tray（托盘线程）+ tray_icon（图标原料/共享句柄）+ window_ops
+// （HWND 安全包装，幽灵窗口防御唯一入口）。tray.rs 通过 crate:: 路径引用
+// tray_icon / window_ops — 三者必须同级声明。
 mod tray;
+mod tray_icon;
+mod window_ops;
 use tray::TrayAction;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -86,6 +88,10 @@ struct GuiApp {
     /// 否则恢复后关窗会直接退出而非隐藏）。
     /// false 时窗口关闭直接退出而非隐藏 — 否则图标不可用、窗口永远无法恢复。
     tray_ok: Arc<AtomicBool>,
+    /// 本轮尝试是否已收到托盘线程的 Ready。tray_ok 是进程级继承值（崩溃前
+    /// 轮的写入），关窗隐藏必须 tray_ok 与 tray_ready 同时为真 — 崩溃恢复轮
+    /// spawn 失败时继承的 true 会误导隐藏判定（无图标可唤回窗口），review 发现。
+    tray_ready: bool,
     /// 配置是否成功加载。false 时禁用保存 — 防止用空列表覆盖损坏的 config.toml。
     config_ok: bool,
     /// 主窗口是否隐藏到托盘 — 进程级共享（崩溃恢复继承隐藏态，窗口不弹回桌面）。
@@ -100,7 +106,7 @@ struct GuiApp {
     /// 共享窗口图标（主线程预加载）— 本 app 每轮尝试给自己的窗口重设
     /// WM_SETICON：恢复轮托盘线程可能把图标设到了幽灵窗口上（winit
     /// 延迟销毁），app 帧循环运行于新窗口存续期，重设必达真窗口。
-    window_icon: Option<tray::SharedIcon>,
+    window_icon: Option<tray_icon::SharedIcon>,
     /// 本 app 实例是否已应用过窗口图标。
     icon_applied: bool,
     /// 窗口图标应用重试截止时刻（与 hidden 同模式，~2s）。
@@ -145,6 +151,11 @@ impl eframe::App for GuiApp {
         match self.tray_rx.try_recv() {
             Ok(TrayAction::Show) => {
                 self.hidden.store(false, Ordering::Release);
+                // 托盘线程的 SW_SHOW 可能打在幽灵窗口上（L3）— 帧内主动补
+                // SW_SHOW + 前台化，一次托盘点击不因幽灵窗口静默丢失。
+                if let Some(hwnd) = window_ops::find_main_window() {
+                    window_ops::show_and_activate(hwnd);
+                }
                 ctx.request_repaint();
             }
             Ok(TrayAction::Exit) => {
@@ -153,6 +164,8 @@ impl eframe::App for GuiApp {
             }
             Ok(TrayAction::Ready(ok)) => {
                 self.tray_ok.store(ok, Ordering::Release);
+                // 本轮已收到 Ready — 关窗隐藏判定从此刻起可用（见 tray_ready）
+                self.tray_ready = true;
                 if !ok {
                     self.log("WARNING: tray icon creation failed — closing will exit instead of hiding.");
                 }
@@ -174,10 +187,9 @@ impl eframe::App for GuiApp {
                 .hidden_apply_deadline
                 .get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
             if std::time::Instant::now() < deadline {
-                unsafe {
-                    if let Ok(hwnd) = FindWindowW(None, windows::core::w!("GI-Utils Configuration")) {
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                    }
+                // window_ops::find_main_window 自带 IsWindow 重校验（L3 纪律）
+                if let Some(hwnd) = window_ops::find_main_window() {
+                    window_ops::hide_window(hwnd);
                 }
             } else {
                 self.hidden_applied = true;
@@ -193,22 +205,11 @@ impl eframe::App for GuiApp {
                 .icon_apply_deadline
                 .get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
             if std::time::Instant::now() < deadline {
-                unsafe {
-                    if let Ok(hwnd) = FindWindowW(None, windows::core::w!("GI-Utils Configuration")) {
-                        let icon = self.window_icon.as_ref().unwrap().raw();
-                        let _ = SendMessageW(
-                            hwnd,
-                            WM_SETICON,
-                            Some(WPARAM(ICON_BIG as usize)),
-                            Some(LPARAM(icon.0 as isize)),
-                        );
-                        let _ = SendMessageW(
-                            hwnd,
-                            WM_SETICON,
-                            Some(WPARAM(ICON_SMALL as usize)),
-                            Some(LPARAM(icon.0 as isize)),
-                        );
-                    }
+                // IsWindow 重校验（L3）+ set_window_icon（PostMessageW 异步，
+                // 同线程向自己窗口投递，事件循环随即处理）
+                if let Some(hwnd) = window_ops::find_main_window() {
+                    let icon = self.window_icon.as_ref().unwrap().raw();
+                    window_ops::set_window_icon(hwnd, icon);
                 }
             } else {
                 self.icon_applied = true;
@@ -217,8 +218,10 @@ impl eframe::App for GuiApp {
 
         // -0.5. 窗口关闭 → 隐藏到托盘（除非托盘菜单或 F12 触发退出）
         if ctx.input(|i| i.viewport().close_requested()) && !self.should_exit {
-            // 托盘图标不可用时隐藏 = 应用永远无法恢复 — 直接退出
-            if !self.tray_ok.load(Ordering::Acquire) {
+            // 托盘图标不可用时隐藏 = 应用永远无法恢复 — 直接退出。
+            // tray_ready 要求本轮已收到 Ready：崩溃恢复轮 spawn 失败时继承的
+            // tray_ok=true 不得让关窗走隐藏路径（无图标可唤回窗口），review 发现。
+            if !(self.tray_ok.load(Ordering::Acquire) && self.tray_ready) {
                 self.should_exit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
@@ -227,10 +230,8 @@ impl eframe::App for GuiApp {
             // 用原生 ShowWindow(SW_HIDE) 替代 egui 的 Visible(false)
             // egui 的 Visible(false) 会导致 update() 停止调用，托盘消息无法处理
             self.hidden.store(true, Ordering::Release);
-            unsafe {
-                if let Ok(hwnd) = FindWindowW(None, windows::core::w!("GI-Utils Configuration")) {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
+            if let Some(hwnd) = window_ops::find_main_window() {
+                window_ops::hide_window(hwnd);
             }
         }
 
@@ -705,6 +706,20 @@ impl GuiApp {
     fn save_config(&self) -> Result<(), String> {
         self.validate_bindings()?;
 
+        // 校验每个键可序列化为配置名 — KEY_PAIRS 之外的捕获键（异形键盘宏键/
+        // 厂商扩展码）拒绝保存，绝不写 "?"（写了下次启动解析失败、Save 被禁用
+        // 且无法自愈，review 发现）。
+        for g in &self.bindings_list {
+            if let Some(key) = g.key {
+                if config::key_to_config_name(key).is_none() {
+                    return Err(format!(
+                        "key '{}' cannot be serialized to config — rebind it to a supported key",
+                        key.name()
+                    ));
+                }
+            }
+        }
+
         let bindings: Vec<Binding> = self
             .bindings_list
             .iter()
@@ -738,11 +753,12 @@ impl Drop for GuiApp {
 
 /// 完整关机序列 — 仅在正常退出与重试耗尽时由 main 显式调用。
 /// 顺序：托盘收尾 → 停引擎 → stop_all（先于亲和性恢复，防优化游戏竞态）
-/// → 蜂鸣 → 恢复亲和性（决策 21）。
+/// → 蜂鸣 → 恢复亲和性（决策 21）→ 共享图标销毁（最后，确认托盘线程已退出）。
 fn shutdown_all(
     engine_handle: Option<JoinHandle<()>>,
     tray_handle: Option<JoinHandle<()>>,
-    tray_icon: Option<tray::SharedIcon>,
+    tray_quit: &AtomicBool,
+    tray_icon: Option<tray_icon::SharedIcon>,
     stop_flag: &AtomicBool,
     key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
 ) {
@@ -753,7 +769,8 @@ fn shutdown_all(
         let _ = handle.join();
     }
 
-    stop_tray_thread(tray_handle);
+    // 有界等待托盘线程退出；返回值 = 线程已确认退出（共享图标引用方清零）。
+    let tray_exited = stop_tray_thread(tray_handle, tray_quit);
 
     // 显式停止所有功能线程 — 必须在亲和性恢复**之前**（决策 21）
     key_bindings.stop_all();
@@ -764,33 +781,43 @@ fn shutdown_all(
     // 恢复所有进程的完整 CPU 亲和性（best-effort，静默吞错误）
     let _ = gi_utils::utils::affinity::restore_all_affinity();
 
-    // 共享托盘图标最后销毁 — 所有托盘线程已收尾（含 detach 宽限期），
-    // 窗口已随 eframe 退出销毁，不再有引用方。
+    // 共享托盘图标最后销毁 — 仅当托盘线程已确认退出（"所有引用方已退出"
+    // 由 is_finished 实证而非时序假设，review 发现）；未退出则跳过销毁：
+    // 进程即将退出，GDI 对象由 OS 随进程回收，绝不带着存活引用方销毁句柄。
     if let Some(icon) = tray_icon {
-        icon.destroy();
+        if tray_exited {
+            icon.destroy();
+        } else {
+            tracing::warn!(
+                "tray thread still alive after 2s wait — skipping shared icon destroy (OS reclaims at process exit)"
+            );
+        }
     }
 }
 
-/// 停止托盘线程：投递 WM_CLOSE 触发 DestroyWindow → PostQuitMessage，
-/// 然后**有界等待**（最多 ~2s）。线程可能处于创建期或阻塞在跨线程
-/// SendMessageW 上 — 绝不无限 join（渲染 panic 收尾路径不能悬挂）。
-/// 超时放弃：WM_CLOSE 已投递，线程解除阻塞后自行退出，最坏随进程终止。
-fn stop_tray_thread(handle: Option<JoinHandle<()>>) {
-    let Some(handle) = handle else { return };
-    unsafe {
-        // windows-rs 0.62：FindWindowW 参数为 `impl Param<PCWSTR>`，
-        // `Option<&PCWSTR>`（而非 `Option<PCWSTR>`）满足该 bound。
-        if let Ok(hwnd) = FindWindowW(Some(&windows::core::w!("GIUtilsTrayWindow")), None) {
-            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-        }
+/// 停止托盘线程：置位退出标志（⑨ 搜索循环每轮检查，立即 break 走收尾）+
+/// 投递 WM_CLOSE 触发 DestroyWindow → PostQuitMessage，然后**有界等待**
+/// （最多 ~2s）。线程可能处于创建期 — 绝不无限 join（渲染 panic 收尾路径
+/// 不能悬挂）。返回线程是否在等待期内确认退出（共享图标销毁的前提）。
+fn stop_tray_thread(handle: Option<JoinHandle<()>>, quit: &AtomicBool) -> bool {
+    let Some(handle) = handle else { return true };
+    // 先置 quit 再投 WM_CLOSE — 线程若卡在 ⑨ 30s 搜索（不泵消息）也能在
+    // 下一轮搜索 tick 感知退出请求，立即 break（L5 只覆盖 ⑦ 之前的守卫，
+    // 搜索期必须由 quit 标志接管，review 发现）。
+    quit.store(true, Ordering::Release);
+    // window_ops::find_tray_window 带 IsWindow + 进程 pid 过滤 — 防跨进程
+    // 同名类窗口误收 WM_CLOSE（window_ops 已实现却未被使用的死代码，review 发现）
+    if let Some(hwnd) = window_ops::find_tray_window() {
+        window_ops::post_close(hwnd);
     }
     for _ in 0..40 {
         if handle.is_finished() {
-            return;
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     tracing::warn!("tray thread did not exit within 2s — detaching");
+    handle.is_finished()
 }
 
 /// 把绑定列表注册到注册表（startup 与崩溃恢复共用的唯一注册路径）。
@@ -917,12 +944,24 @@ fn main() {
     unsafe {
         SetLastError(ERROR_SUCCESS);
         let _single_instance_mutex = CreateMutexW(None, true, w!("GIUtilsSingleInstance"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            if let Ok(hwnd) = FindWindowW(None, w!("GI-Utils Configuration")) {
-                let _ = ShowWindow(hwnd, SW_SHOW);
-                let _ = SetForegroundWindow(hwnd);
+        match GetLastError() {
+            ERROR_ALREADY_EXISTS => {
+                // 激活既有实例：find_main_window 自带 IsWindow 校验 — 持有者
+                // 若处崩溃恢复的幽灵窗口期（同标题仍是有效 HWND），打中幽灵
+                // 的 SW_SHOW 是静默空操作，不伪造"已激活"（review 发现）。
+                if let Some(hwnd) = window_ops::find_main_window() {
+                    window_ops::show_and_activate(hwnd);
+                }
+                return;
             }
-            return;
+            ERROR_SUCCESS => {} // 本实例持有互斥体
+            err => {
+                // 其他失败（权限/跨会话等）— best-effort：记录并继续运行，
+                // 单实例保护降级但功能不受影响（review 发现）。
+                startup_log.push(format!(
+                    "Single-instance mutex failed (error {err:?}) — running anyway"
+                ));
+            }
         }
     }
 
@@ -939,7 +978,9 @@ fn main() {
     }
 
     // ── 2. 加载配置 ─────────────────────────────────────────
-    let (config_bindings, config_ok) = match config::load() {
+    // config_ok 可变 — 崩溃恢复轮重载成功后同步更新（Save 可用性与磁盘
+    // 可解析性保持一致，review 发现）。
+    let (config_bindings, mut config_ok) = match config::load() {
         Ok(b) => {
             startup_log.push(format!("Loaded {} bindings from config.toml", b.len()));
             (b, true)
@@ -981,9 +1022,9 @@ fn main() {
     // LoadImageW 永久失败），必须在启动时完成加载。预加载失败回退程序
     // 生成图标（纯 GDI 路径，恢复轮仍可用）。
     let gui_cfg = config::load_gui_config();
-    let (tray_pixels, tray_w, tray_h) = tray::create_tray_icon_pixels();
+    let (tray_pixels, tray_w, tray_h) = tray_icon::create_tray_icon_pixels();
     let mut preloaded_icon =
-        tray::preload_tray_icon(&gui_cfg.icon_path, &tray_pixels, tray_w, tray_h);
+        tray_icon::preload_tray_icon(&gui_cfg.icon_path, &tray_pixels, tray_w, tray_h);
     if gui_cfg.icon_path.is_empty() {
         startup_log.push("Tray icon: generated".into());
     } else if preloaded_icon.is_some() {
@@ -1025,8 +1066,14 @@ fn main() {
     // 崩溃前的值（否则恢复后关窗直接退出、隐藏态弹回桌面）
     let tray_ok_shared = Arc::new(AtomicBool::new(false));
     let hidden_shared = Arc::new(AtomicBool::new(false));
+    // 托盘线程退出请求标志 — 每轮尝试独立（stop_tray_thread 置位后，旧线程
+    // ⑨ 搜索循环感知并立即收尾；新线程必须用新标志，否则会被旧 quit 误伤）
+    let mut tray_quit = Arc::new(AtomicBool::new(false));
 
     for attempt in 0..MAX_GUI_RETRIES {
+        // 本轮独立 quit 标志（见上）
+        tray_quit = Arc::new(AtomicBool::new(false));
+
         // 绑定来源：首次尝试用启动快照；重试从磁盘重载 — 快照可能落后于
         // 用户已保存的修改（review #2），恢复必须以磁盘为准
         let attempt_bindings: Vec<Binding> = if attempt == 0 {
@@ -1035,6 +1082,8 @@ fn main() {
             match config::load() {
                 Ok(b) => {
                     startup_log.push("配置已从 config.toml 重新加载（崩溃恢复）".into());
+                    // 磁盘可解析 → 恢复 Save 可用性（与重载结果一致，review 发现）
+                    config_ok = true;
                     b
                 }
                 Err(e) => {
@@ -1059,19 +1108,24 @@ fn main() {
             ));
         }
 
-        // 托盘：每轮尝试独立 channel + 线程（上一轮的旧线程在 panic 路径已收尾）
+        // 托盘：每轮尝试独立 channel + quit 标志 + 线程（上一轮的旧线程在
+        // panic 路径已收尾）
         let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
         tray_handle = match std::thread::Builder::new()
             .name("tray".into())
             .spawn({
                 let icon = preloaded_icon.clone();
                 let pixels = tray_pixels.clone();
-                move || tray::run_tray_thread(tray_tx, icon, pixels, tray_w, tray_h)
+                let quit = tray_quit.clone();
+                move || tray::run_tray_thread(tray_tx, quit, icon, pixels, tray_w, tray_h)
             }) {
             Ok(h) => Some(h),
             Err(e) => {
-                // tray_ok 保持 false（关闭窗口直接退出），GUI 仍可用
                 startup_log.push(format!("Tray thread spawn failed: {}", e));
+                // 显式重置 tray_ok — 崩溃恢复轮这里继承的是崩溃前的 true，
+                // 若不重置，用户关窗走隐藏路径却没有任何托盘图标可唤回
+                // （review 发现）；GUI 仍可用
+                tray_ok_shared.store(false, Ordering::Release);
                 None
             }
         };
@@ -1116,6 +1170,8 @@ fn main() {
             // tray_ok / hidden 为进程级共享标志 — 继承崩溃前的值；
             // hidden_applied 每轮尝试各自执行（把新窗口藏起来）
             tray_ok: tray_ok_shared.clone(),
+            // 本轮 Ready 尚未收到 — 关窗隐藏判定需 tray_ok && tray_ready
+            tray_ready: false,
             config_ok,
             hidden: hidden_shared.clone(),
             hidden_applied: false,
@@ -1132,8 +1188,11 @@ fn main() {
             ..Default::default()
         };
 
-        IN_GUI_RETRY.store(true, Ordering::Relaxed);
+        // 标志窗口与 catch_unwind 范围精确对齐：store(true) 在闭包内、
+        // store(false) 紧随 catch_unwind 返回 — 闭包外的 GUI 主线程 panic
+        // 不被 hook 静默（走完整兜底：弹窗 + 恢复亲和性），review 发现。
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            IN_GUI_RETRY.store(true, Ordering::Relaxed);
             eframe::run_native(
                 "GI-Utils Configuration",
                 options,
@@ -1148,6 +1207,7 @@ fn main() {
                 shutdown_all(
                     engine_handle.take(),
                     tray_handle.take(),
+                    &tray_quit,
                     preloaded_icon.take(),
                     &stop_flag,
                     &key_bindings,
@@ -1164,9 +1224,9 @@ fn main() {
             Err(payload) => {
                 let msg = panic_message(&payload);
                 startup_log.push(format!("GUI 渲染线程 panic：{}", msg));
-                // 主线程已恢复 — 旧托盘线程安全收尾（WM_CLOSE + 有界等待，
-                // 防止误找到新窗口造成双托盘图标）
-                stop_tray_thread(tray_handle.take());
+                // 主线程已恢复 — 旧托盘线程安全收尾（quit 置位 + WM_CLOSE +
+                // 有界等待，防止误找到新窗口造成双托盘图标）
+                stop_tray_thread(tray_handle.take(), &tray_quit);
                 if attempt + 1 >= MAX_GUI_RETRIES {
                     last_error = Some(msg);
                     break;
@@ -1180,6 +1240,7 @@ fn main() {
     shutdown_all(
         engine_handle.take(),
         tray_handle.take(),
+        &tray_quit,
         preloaded_icon.take(),
         &stop_flag,
         &key_bindings,
