@@ -8,6 +8,12 @@
 //! 模块依赖：main.rs 需声明同级模块 `mod tray_icon; mod window_ops;`
 //! （与 `mod tray;` 同层）。
 
+// edition 2024 lint 豁免（模块级而非 crate 级 — window_ops 等模块保持
+// lint 生效）：tray_wnd_proc 是 Win32 回调（unsafe extern "system" fn），
+// 其 unsafe 边界即回调签名本身 — 内部裸操作（from_raw/SetWindowLongPtrW/
+// 原始指针解引用）逐调用嵌套 unsafe {} 只增噪音。
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -59,7 +65,9 @@ struct TrayContext {
 /// 校验缓存的主窗口句柄，失效时重搜（崩溃恢复后旧窗口销毁 → 新窗口同标题）。
 /// 缓存句柄有效（IsWindow）→ 直接返回；否则有界 2s 重搜（40×50ms
 /// find_main_window）；超时返回旧值兜底（调用方是 best-effort 路径）。
-unsafe fn ensure_main_window(ctx: &TrayContext) -> HWND {
+/// 安全函数 — unsafe 边界全部在 window_ops 内部（review：unsafe fn 空壳
+/// 会把审查精力引向没有不安全内容的地方）。
+fn ensure_main_window(ctx: &TrayContext) -> HWND {
     let cur = ctx.main_hwnd.get();
     if crate::window_ops::is_valid(cur) {
         return cur;
@@ -81,7 +89,8 @@ unsafe fn ensure_main_window(ctx: &TrayContext) -> HWND {
 
 /// 统一 Show 动作：通知 GUI 帧 + 校验/显示主窗口。
 /// 双击与菜单 Show 共用此入口 — 两处复制曾导致修复漂移（review #11）。
-unsafe fn handle_show(ctx: &TrayContext) {
+/// 安全函数 — unsafe 边界在 window_ops 内部。
+fn handle_show(ctx: &TrayContext) {
     let _ = ctx.tx.send(TrayAction::Show);
     let main_hwnd = ensure_main_window(ctx);
     crate::window_ops::show_and_activate(main_hwnd);

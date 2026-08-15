@@ -216,6 +216,8 @@ fn cmp_items(a: &ScheduleItem, b: &ScheduleItem) -> Ordering {
 }
 
 fn sort_items(items: &mut [ScheduleItem]) {
+    // sort_by 按 std 契约是稳定排序（sort_unstable_by 才不稳定）—
+    // 同刻同优先级条目（和弦的多个 Down）保持插入序，是作曲契约的一部分。
     items.sort_by(cmp_items);
 }
 

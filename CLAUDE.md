@@ -37,7 +37,7 @@ src/
 ├── scan_code.rs               # ScanCode(u16) FFI 新类型
 
 ├── interception/              # Interception FFI 绑定
-│   ├── ffi.rs                 #   extern "C" 声明、常量、repr(C) struct
+│   ├── ffi.rs                 #   unsafe extern "C" 声明、常量、repr(C) struct
 │   ├── context.rs             #   InterceptionContext (recv) + SendContext (send)
 │   └── strokes.rs             #   read/write unaligned 安全转换
 

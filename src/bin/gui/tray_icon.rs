@@ -6,6 +6,11 @@
 //!
 //! 所有权契约（L4）：主线程创建与销毁共享图标，托盘线程与各轮 app 只读使用。
 
+// edition 2024 lint 豁免（模块级）：本模块的 unsafe fn 是纯 Win32/GDI
+// 区段（LoadImageW/CreateBitmap/CreateIconIndirect），unsafe 边界即函数
+// 签名本身 — 内部逐调用嵌套 unsafe {} 只增噪音。
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
 
 // ═══════════════════════════════════════════════════════════════════
@@ -118,7 +123,10 @@ unsafe fn load_ico_from_file(path: &str) -> Option<HICON> {
     use windows::core::PCWSTR;
     use windows::Win32::UI::WindowsAndMessaging::{IMAGE_ICON, LR_LOADFROMFILE, LoadImageW};
 
-    let wide: Vec<u16> = path.encode_utf16().collect();
+    let mut wide: Vec<u16> = path.encode_utf16().collect();
+    // LoadImageW 扫描至 0x0000 — 显式 NUL 终止，防越界读（review 发现，
+    // 与 tray.rs szTip 同类的边界纪律）
+    wide.push(0);
     // 睡眠唤醒/显示重置后 WIC 成像组件可能瞬时不可用（崩溃恢复轮首次尝试
     // 失败、数秒后自愈）— 重试 5 次 × 200ms 再放弃，覆盖恢复窗口期。
     for _ in 0..5 {
