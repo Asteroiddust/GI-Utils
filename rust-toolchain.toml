@@ -1,6 +1,0 @@
-# 工具链固定 — 项目依赖 nightly 特性（-Z plt=no、build-std、edition 2024
-# 语法），未固定时新克隆/新机器默认 stable 会构建失败（review 发现）。
-[toolchain]
-channel = "nightly-2026-08-14"
-# build-std（release 构建 std 重编）需要 rust-src 组件
-components = ["rust-src"]
