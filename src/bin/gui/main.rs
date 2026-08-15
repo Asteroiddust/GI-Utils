@@ -153,8 +153,10 @@ impl eframe::App for GuiApp {
             self.log(line);
         }
 
-        // 周期性唤醒：窗口可见时 100ms，隐藏到托盘时 500ms（省电），
-        // 确保隐藏窗口时也能收到托盘消息
+        // 周期性唤醒：可见时 100ms。隐藏态下 winit 挂起 redraw、周期帧
+        // 实际不触发（review 实证 — 旧注释"500ms 确保隐藏时收托盘消息"
+        // 与 F12 隐藏退出 bug 的存在互相矛盾）：托盘动作（Show/Exit）与
+        // 引擎退出的 WM_CLOSE 走原生窗口消息通道，不依赖周期帧。
         let interval = if self.hidden.load(Ordering::Acquire) {
             std::time::Duration::from_millis(500)
         } else {
@@ -250,15 +252,10 @@ impl eframe::App for GuiApp {
         }
 
         // -0.5. 窗口关闭 → 隐藏到托盘（除非托盘菜单或 F12 触发退出）
+        // F12 触发的 WM_CLOSE 无需在此处理：帧监视器（-0.8）先于本块运行，
+        // stop_flag 置位时 should_exit 已为 true、close 直接放行（review：
+        // 曾在此加 stop_flag 分支 — 实测不可达，删除）。
         if ctx.input(|i| i.viewport().close_requested()) && !self.should_exit {
-            // F12（停止退出）触发的 WM_CLOSE 不得被吞：隐藏窗口下没有帧
-            // 循环执行 CancelClose（winit 挂起 redraw，默认行为即关闭 —
-            // 托盘线程投递的 WM_CLOSE 直接生效）；可见窗口下此处显式放行
-            // （双保险）。
-            if self.stop_flag.load(Ordering::Acquire) {
-                self.should_exit = true;
-                return;
-            }
             // 托盘图标不可用时隐藏 = 应用永远无法恢复 — 直接退出。
             // tray_ready 要求本轮已收到 Ready：崩溃恢复轮 spawn 失败时继承的
             // tray_ok=true 不得让关窗走隐藏路径（无图标可唤回窗口），review 发现。
@@ -834,7 +831,7 @@ fn shutdown_all(
     }
 }
 
-/// 停止托盘线程：置位 quit 标志（唯一可靠退出通道 — 托盘泵每 ~10ms 检查；
+/// 停止托盘线程：置位 quit 标志（托盘自身唯一退出通道 — 泵每 ~200ms 检查；
 /// ⑨ 搜索循环每轮检查），然后**有界等待**（最多 ~2s）。绝不无限 join
 /// （渲染 panic 收尾路径不能悬挂）。返回线程是否在等待期内确认退出
 /// （共享图标销毁的前提）。
@@ -1075,6 +1072,15 @@ fn main() {
             .name("engine".into())
             .spawn(move || {
                 engine.run();
+                // run() 仅因 stop_flag 置位返回（"停止退出"热键的语义标志，
+                // 按键由 config 绑定）— 此处直接向主窗口投 WM_CLOSE。
+                // 真实机制（review 实证）：CloseRequested → egui-winit 强制
+                // 同步 update（隐藏窗口也执行）→ 帧监视器驱动退出。隐藏态
+                // 下没有周期帧（winit 挂起 redraw），窗口消息是唯一即时
+                // 通道 — 退出不再延迟到窗口唤出，也不依赖托盘线程存活。
+                if let Some(hwnd) = window_ops::find_main_window() {
+                    window_ops::post_close(hwnd);
+                }
             })
             .expect("Failed to spawn engine thread"),
     );
@@ -1149,18 +1155,7 @@ fn main() {
                 let icon = preloaded_icon.clone();
                 let pixels = tray_pixels.clone();
                 let quit = tray_quit.clone();
-                let stop_flag = stop_flag.clone();
-                move || {
-                    tray::run_tray_thread(
-                        tray_tx,
-                        quit,
-                        stop_flag,
-                        icon,
-                        pixels,
-                        tray_w,
-                        tray_h,
-                    )
-                }
+                move || tray::run_tray_thread(tray_tx, quit, icon, pixels, tray_w, tray_h)
             }) {
             Ok(h) => Some(h),
             Err(e) => {

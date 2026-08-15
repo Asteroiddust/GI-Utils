@@ -70,9 +70,14 @@ pub fn set_window_icon(hwnd: HWND, icon: HICON) {
 }
 
 /// PostMessageW(WM_CLOSE)，异步不阻塞，忽略返回值。
+/// 投递前 IsWindow 校验 — PostMessageW(HWND(0)) 会按 Win32 语义投到
+/// 调用线程自身队列并返回成功，空句柄静默吞掉（review 发现）。
 /// 仅用于**顶层主窗口**（FindWindowW 可找到）；托盘窗口是 HWND_MESSAGE
 /// 消息窗口、不在顶层枚举内 — 其退出通道必须走 quit 标志（review 实证教训）。
 pub fn post_close(hwnd: HWND) {
+    if !is_valid(hwnd) {
+        return;
+    }
     unsafe {
         let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
