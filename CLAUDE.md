@@ -1,6 +1,6 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.2.0
 
-> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）+ 25 单测 + 2 doctest 通过
+> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 25 单测 + 2 doctest 通过
 > **Build**: O3 + LTO fat + panic=unwind + target-cpu=native
 
 ## 项目概述
@@ -178,22 +178,52 @@ icon_path = ""
 
 ## 移植进度
 
-| 功能 | 状态 |
-|------|------|
-| 停止退出 | ✅ |
-| 连点器 | ✅ |
-| 快速拾取 | ✅ |
-| 鬼畜走路 | ✅ |
-| 火神跳喷 | ✅ |
-| 甘雨走A | ✅ |
-| 双玛头 | ✅ |
-| 坐标颜色 | ✅ |
-| 优化游戏 | ✅ |
-| 甘雨加特林 | ⬜ |
-| 克洛琳德 | ⬜ |
-| 添加好友 | ⬜ |
-| 申请加入 | ⬜ |
-| 2048 系列 | ⬜ |
+| 功能 | 状态 | 优先级 | 难度 | 备注 |
+|------|:----:|:------:|:----:|------|
+| 停止退出 | ✅ | — | — | |
+| 连点器 | ✅ | — | — | |
+| 快速拾取 | ✅ | — | — | |
+| 鬼畜走路 | ✅ | — | — | |
+| 火神跳喷 | ✅ | — | — | |
+| 甘雨走A | ✅ | — | — | |
+| 双玛头 | ✅ | — | — | |
+| 坐标颜色 | ✅ | — | — | |
+| 优化游戏 | ✅ | — | — | |
+| 甘雨加特林 | ⬜ | 1 | ★★ | R+鼠标移动序列 |
+| 克洛琳德 | ⬜ | 2 | ★★★ | 像素颜色检测触发 |
+| 添加好友 | ⬜ | 3 | ★★★ | 屏幕坐标+绝对鼠标 |
+| 申请加入 | ⬜ | 4 | ★★ | 鼠标序列 |
+| 2048 系列 | ⬜ | 5 | ★ | 纯按键序列 |
+
+### 移植流程（C++ 参考模板）
+
+1. 从 `E:\Projects\fmttest\main.cpp` 找到对应类的 EventSequence 构造逻辑
+2. 在 `src/functions/` 下新建文件，中文 struct 名照搬原项目
+3. 实现 `KeyFunction` trait
+4. 在 `src/config.rs` 的 `create_function` 和 `DEFAULT_CONFIG` 各加一行
+5. 无需改 `main.rs` — 全部走配置驱动
+
+参考模板: `auto_clicker.rs` (Loop), `ganyu_aim_cancel.rs` (Once), `mavuika_jump.rs` (on_activate+Loop)
+
+## 路线图
+
+### 组合键注册（★★）
+
+支持修饰键+功能键的组合注册，如 `Ctrl+F13`、`Alt+E`：
+
+```toml
+[[bindings]]
+key = "F13"
+modifier = "Ctrl"        # None / Ctrl / Alt / Shift / Win
+func = "连点器"
+mode = "Loop"
+```
+
+**设计要点**：`KeyBindings` 跟踪所有键的实时按下/松开状态；`process_key_down` 时检查修饰键是否已按住；组合键按下时触发功能，修饰键松开时不影响功能运行；兼容现有单键注册（modifier=None）。主要改动在 `bindings.rs`（状态追踪）和 `config.rs`（解析）。
+
+### 通用 held-key 清理（部分落地）
+
+时间轴执行器已内置挂起键清理（`TimelinePlayer::release_pending` / `RollingPlayer` 退出补发 release）。EventSequence 侧的多键 `HeldTracker` 仍待需要时再做 — 触发时机：功能需要多键同时按下（如 MIDI 键盘模拟）。
 
 ## 事件类型
 
