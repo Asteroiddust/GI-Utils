@@ -87,6 +87,13 @@ struct GuiApp {
     /// 崩溃恢复重建 app 时继承崩溃前的值（新实例 Ready 前沿用旧判定，
     /// 否则恢复后关窗会直接退出而非隐藏）。
     /// false 时窗口关闭直接退出而非隐藏 — 否则图标不可用、窗口永远无法恢复。
+    ///
+    /// 可用性判定 = tray_ok（共享继承）&& tray_ready（本轮已收到 Ready）。
+    /// 三重机制（共享 + per-attempt + spawn 失败重置）是有意设计：共享继承
+    /// 解决"恢复后 Ready 窗口期关窗直接退出"（review 二轮 #5）；tray_ready
+    /// 防止"继承 true 但本轮无图标"误入隐藏路径；spawn 失败重置兜底。
+    /// 三者缺一不可 — 改动前先读这段（review：曾提议 per-attempt 化，
+    /// 会回归恢复窗口期关窗即退出）。
     tray_ok: Arc<AtomicBool>,
     /// 本轮尝试是否已收到托盘线程的 Ready。tray_ok 是进程级继承值（崩溃前
     /// 轮的写入），关窗隐藏必须 tray_ok 与 tray_ready 同时为真 — 崩溃恢复轮
@@ -111,6 +118,14 @@ struct GuiApp {
     icon_applied: bool,
     /// 窗口图标应用重试截止时刻（与 hidden 同模式，~2s）。
     icon_apply_deadline: Option<std::time::Instant>,
+
+    /// 托盘 Show 重试截止时刻 — Show 是单击动作，落在幽灵窗口期会被吞
+    /// （review #5）；与 hide/icon 同模式，~2s 内每帧重试 show_and_activate。
+    show_until: Option<std::time::Instant>,
+
+    /// 启动时加载的 [gui] 配置 — save() 需原样写回（fail-closed：不读磁盘，
+    /// 读回失败静默回退默认会清空用户 icon_path — review #3）。
+    gui_config: gi_utils::config::GuiConfig,
 }
 
 /// 按键捕获状态。
@@ -151,11 +166,11 @@ impl eframe::App for GuiApp {
         match self.tray_rx.try_recv() {
             Ok(TrayAction::Show) => {
                 self.hidden.store(false, Ordering::Release);
-                // 托盘线程的 SW_SHOW 可能打在幽灵窗口上（L3）— 帧内主动补
-                // SW_SHOW + 前台化，一次托盘点击不因幽灵窗口静默丢失。
-                if let Some(hwnd) = window_ops::find_main_window() {
-                    window_ops::show_and_activate(hwnd);
-                }
+                // 单次 show_and_activate 可能打在幽灵窗口上（L3）— 记录
+                // 截止时刻，由下方 deadline 块每帧重试直到 ~2s（review #5）
+                self.show_until = Some(
+                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                );
                 ctx.request_repaint();
             }
             Ok(TrayAction::Exit) => {
@@ -193,6 +208,19 @@ impl eframe::App for GuiApp {
                 }
             } else {
                 self.hidden_applied = true;
+            }
+        }
+
+        // -0.65. 托盘 Show 重试：deadline 内每帧 show_and_activate（幽灵
+        // 窗口期点击被吞后自动补发 — review #5）
+        if let Some(deadline) = self.show_until {
+            if std::time::Instant::now() < deadline {
+                if let Some(hwnd) = window_ops::find_main_window() {
+                    window_ops::show_and_activate(hwnd);
+                }
+                ctx.request_repaint();
+            } else {
+                self.show_until = None;
             }
         }
 
@@ -611,9 +639,7 @@ impl GuiApp {
                     return;
                 }
 
-                let name = config::key_to_config_name(key)
-                    .unwrap_or_else(|| key.name())
-                    .to_string();
+                let name = config::key_display_name(key);
 
                 // 按 id 定位行 — 捕获期间增删行不导致写错行
                 if let Some(id) = self.capture.binding_id {
@@ -732,7 +758,7 @@ impl GuiApp {
             })
             .collect();
 
-        config::save(&bindings)
+        config::save(&bindings, &self.gui_config)
     }
 }
 
@@ -795,21 +821,13 @@ fn shutdown_all(
     }
 }
 
-/// 停止托盘线程：置位退出标志（⑨ 搜索循环每轮检查，立即 break 走收尾）+
-/// 投递 WM_CLOSE 触发 DestroyWindow → PostQuitMessage，然后**有界等待**
-/// （最多 ~2s）。线程可能处于创建期 — 绝不无限 join（渲染 panic 收尾路径
-/// 不能悬挂）。返回线程是否在等待期内确认退出（共享图标销毁的前提）。
+/// 停止托盘线程：置位 quit 标志（唯一可靠退出通道 — 托盘泵每 ~10ms 检查；
+/// ⑨ 搜索循环每轮检查），然后**有界等待**（最多 ~2s）。绝不无限 join
+/// （渲染 panic 收尾路径不能悬挂）。返回线程是否在等待期内确认退出
+/// （共享图标销毁的前提）。
 fn stop_tray_thread(handle: Option<JoinHandle<()>>, quit: &AtomicBool) -> bool {
     let Some(handle) = handle else { return true };
-    // 先置 quit 再投 WM_CLOSE — 线程若卡在 ⑨ 30s 搜索（不泵消息）也能在
-    // 下一轮搜索 tick 感知退出请求，立即 break（L5 只覆盖 ⑦ 之前的守卫，
-    // 搜索期必须由 quit 标志接管，review 发现）。
     quit.store(true, Ordering::Release);
-    // window_ops::find_tray_window 带 IsWindow + 进程 pid 过滤 — 防跨进程
-    // 同名类窗口误收 WM_CLOSE（window_ops 已实现却未被使用的死代码，review 发现）
-    if let Some(hwnd) = window_ops::find_tray_window() {
-        window_ops::post_close(hwnd);
-    }
     for _ in 0..40 {
         if handle.is_finished() {
             return true;
@@ -1067,7 +1085,8 @@ fn main() {
     let tray_ok_shared = Arc::new(AtomicBool::new(false));
     let hidden_shared = Arc::new(AtomicBool::new(false));
     // 托盘线程退出请求标志 — 每轮尝试独立（stop_tray_thread 置位后，旧线程
-    // ⑨ 搜索循环感知并立即收尾；新线程必须用新标志，否则会被旧 quit 误伤）
+    // ⑨ 搜索循环/泵感知并立即收尾；新线程必须用新标志，否则会被旧 quit 误伤）。
+    // 此初值仅满足定义，循环首行立即覆盖（review 记录的潜在误读点）。
     let mut tray_quit = Arc::new(AtomicBool::new(false));
 
     for attempt in 0..MAX_GUI_RETRIES {
@@ -1137,9 +1156,7 @@ fn main() {
             .map(|(i, b)| GuiBinding {
                 id: i,
                 key: Some(b.key),
-                key_name: config::key_to_config_name(b.key)
-                    .unwrap_or_else(|| b.key.name())
-                    .to_string(),
+                key_name: config::key_display_name(b.key),
                 func: b.func.clone(),
                 mode: b.mode,
             })
@@ -1179,6 +1196,8 @@ fn main() {
             window_icon: preloaded_icon.clone(),
             icon_applied: false,
             icon_apply_deadline: None,
+            show_until: None,
+            gui_config: gui_cfg.clone(),
         };
 
         let options = eframe::NativeOptions {

@@ -147,7 +147,7 @@ build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，
 物理核 7    [14,15]  TOOL   (Engine 输入处理 + 功能线程, REALTIME)
 ```
 
-进程掩码 12-15（GUI 版）。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用）。headless 版进程掩码保持 14,15，无需扩展。
+进程掩码 12-15（GUI 版）。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`；托盘线程 → 12,13（普通优先级，GUI 侧）；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用）。headless 版进程掩码保持 14,15，无需扩展。
 
 ## 部署
 

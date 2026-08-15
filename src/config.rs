@@ -370,36 +370,42 @@ pub fn load_gui_config() -> GuiConfig {
 }
 
 /// 保存绑定列表到 config.toml — Serialize bindings back to config.toml.
-pub fn save(bindings: &[Binding]) -> Result<(), String> {
+///
+/// [gui] 段由调用方传入的 `gui` 原样写回 — **fail-closed**：绝不读磁盘
+/// 回填（读回失败静默回退默认值会清空用户 icon_path — review #3）。
+/// 无法序列化的键返回错误（不写 "?" — "?" 下次启动解析失败会拖垮全部绑定）。
+pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
     let raw_bindings: Vec<RawBinding> = bindings
         .iter()
-        .map(|b| RawBinding {
-            key: key_to_config_name(b.key).unwrap_or("?").to_string(),
-            func: b.func.clone(),
-            mode: format!("{:?}", b.mode),
+        .map(|b| {
+            Ok(RawBinding {
+                key: key_to_config_name(b.key)
+                    .ok_or_else(|| {
+                        format!("key '{}' cannot be serialized to config", b.key.name())
+                    })?
+                    .to_string(),
+                func: b.func.clone(),
+                mode: format!("{:?}", b.mode),
+            })
         })
-        .collect();
-    // [gui] 段从磁盘原样读回并保留 — 若写回 RawGuiConfig::default() 会清空
-    // 用户手工配置的 icon_path 等（GUI 保存一次即永久丢失，review 发现）。
-    // GUI 保存只负责 bindings；[gui] 段属用户配置，必须原样保留。
-    let gui = read_gui_section_from_disk();
+        .collect::<Result<_, String>>()?;
     let toml_str = toml::to_string_pretty(&RawConfig {
         bindings: raw_bindings,
-        gui,
+        gui: RawGuiConfig {
+            icon_path: gui.icon_path.clone(),
+        },
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;
     let content = format!("# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}", toml_str);
     std::fs::write(config_path(), content).map_err(|e| format!("failed to write config: {}", e))
 }
 
-/// 读回磁盘上 [gui] 段的原样内容 — 解析失败/缺段回退默认值（与
-/// load_gui_config 同语义，绝不因 GUI 段损坏而失败）。
-fn read_gui_section_from_disk() -> RawGuiConfig {
-    std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|content| toml::from_str::<RawConfig>(&content).ok())
-        .map(|raw| raw.gui)
-        .unwrap_or_default()
+/// 键的显示名 — 优先配置名（"F13"/"NumpadAdd"），未收录回退扫描码名。
+/// GUI 显示路径共用的唯一实现（review：三份拷贝漂移风险）。
+pub fn key_display_name(key: Key) -> String {
+    key_to_config_name(key)
+        .map(str::to_string)
+        .unwrap_or_else(|| key.name().to_string())
 }
 
 /// 返回所有可用功能名称 — List all available function names.

@@ -7,8 +7,8 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetWindowThreadProcessId, ICON_BIG, ICON_SMALL, IsWindow, PostMessageW,
-    SetForegroundWindow, ShowWindow, HICON, SW_HIDE, SW_SHOW, WM_CLOSE, WM_SETICON,
+    FindWindowW, ICON_BIG, ICON_SMALL, IsIconic, IsWindow, PostMessageW, SetForegroundWindow,
+    ShowWindow, HICON, SW_HIDE, SW_RESTORE, SW_SHOW, WM_SETICON,
 };
 
 /// FindWindowW(None, "GI-Utils Configuration") + IsWindow 校验。
@@ -21,24 +21,9 @@ pub fn find_main_window() -> Option<HWND> {
     }
 }
 
-/// FindWindowW(Some("GIUtilsTrayWindow"), None) + IsWindow
-/// + GetWindowThreadProcessId == 本进程 pid（跨进程同类名防御）。
-pub fn find_tray_window() -> Option<HWND> {
-    unsafe {
-        let me = std::process::id();
-        FindWindowW(Some(&windows::core::w!("GIUtilsTrayWindow")), None)
-            .ok()
-            .filter(|h| !h.is_invalid())
-            .filter(|h| is_valid(*h))
-            .filter(|h| {
-                let mut pid: u32 = 0;
-                GetWindowThreadProcessId(*h, Some(&mut pid));
-                pid == me
-            })
-    }
-}
-
 /// !hwnd.is_invalid() && IsWindow(Some(hwnd)).as_bool()。
+/// 与 lib 侧 optimize_game::is_valid_window 语义相同（一行谓词，
+/// 独立维护可接受 — review 记录）。
 pub fn is_valid(hwnd: HWND) -> bool {
     unsafe { !hwnd.is_invalid() && IsWindow(Some(hwnd)).as_bool() }
 }
@@ -50,10 +35,13 @@ pub fn hide_window(hwnd: HWND) {
     }
 }
 
-/// ShowWindow(hwnd, SW_SHOW) + SetForegroundWindow（best-effort）。
+/// ShowWindow + SetForegroundWindow（best-effort）。
+/// SW_SHOW 不能还原最小化窗口（实证：IsIconic 不变）— 最小化时用
+/// SW_RESTORE，否则 SW_SHOW（review #2，托盘 Show 静默丢失的根因）。
 pub fn show_and_activate(hwnd: HWND) {
     unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        let minimized = IsIconic(hwnd).as_bool();
+        let _ = ShowWindow(hwnd, if minimized { SW_RESTORE } else { SW_SHOW });
         let _ = SetForegroundWindow(hwnd);
     }
 }
@@ -81,19 +69,3 @@ pub fn set_window_icon(hwnd: HWND, icon: HICON) {
     }
 }
 
-/// WM_SETICON ICON_BIG/SMALL → None（自建图标销毁前必调 — 窗口不得持有悬空
-/// 句柄）。同样异步投递：消息落在已销毁窗口上即丢弃，窗口已无引用者，无害。
-pub fn clear_window_icon(hwnd: HWND) {
-    unsafe {
-        // lParam = 0（NULL）：移除窗口图标（WM_SETICON 语义）
-        let _ = PostMessageW(Some(hwnd), WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(0));
-        let _ = PostMessageW(Some(hwnd), WM_SETICON, WPARAM(ICON_SMALL as usize), LPARAM(0));
-    }
-}
-
-/// PostMessageW(WM_CLOSE)，异步不阻塞，忽略返回值。
-pub fn post_close(hwnd: HWND) {
-    unsafe {
-        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-    }
-}
