@@ -126,17 +126,22 @@ unsafe fn load_ico_from_file(path: &str) -> Option<HICON> {
     use windows::Win32::UI::WindowsAndMessaging::{IMAGE_ICON, LR_LOADFROMFILE, LoadImageW};
 
     let wide: Vec<u16> = path.encode_utf16().collect();
-    match LoadImageW(
-        None,
-        PCWSTR(wide.as_ptr()),
-        IMAGE_ICON,
-        32,
-        32,
-        LR_LOADFROMFILE,
-    ) {
-        Ok(handle) if !handle.is_invalid() => Some(HICON(handle.0)),
-        _ => None,
+    // 睡眠唤醒/显示重置后 WIC 成像组件可能瞬时不可用（崩溃恢复轮首次尝试
+    // 失败、数秒后自愈）— 重试 5 次 × 200ms 再放弃，覆盖恢复窗口期。
+    for _ in 0..5 {
+        match LoadImageW(
+            None,
+            PCWSTR(wide.as_ptr()),
+            IMAGE_ICON,
+            32,
+            32,
+            LR_LOADFROMFILE,
+        ) {
+            Ok(handle) if !handle.is_invalid() => return Some(HICON(handle.0)),
+            _ => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
     }
+    None
 }
 
 /// 托盘图标加载入口 — 配置了 icon_path 且加载成功时用 .ico，
