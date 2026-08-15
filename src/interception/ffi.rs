@@ -210,7 +210,7 @@ pub type InterceptionStroke = [u8; STROKE_SIZE];
 // ── FFI function declarations ────────────────────────────────
 
 #[link(name = "interception")]
-extern "C" {
+unsafe extern "C" {
     /// 创建 Interception 上下文，分配驱动资源。
     pub fn interception_create_context() -> InterceptionContext;
     /// 销毁 Interception 上下文，释放驱动资源。

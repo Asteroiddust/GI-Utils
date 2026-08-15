@@ -11,11 +11,13 @@
 
 ## 技术栈
 
-- **Rust 1.98 nightly** (edition 2021, -Z plt=no, build-std release-only)
+- **Rust 1.99 nightly** (edition 2024, -Z plt=no, build-std release-only)
 - **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入
-- **windows-rs 0.62** — Win32 API (GDI、Threading、ToolHelp)
-- **toml + serde** — TOML 配置文件解析
-- **tracing** — debug 构建的结构化日志
+- **windows 0.62** — Win32 API（Threading、ToolHelp、Gdi、WindowsAndMessaging、Shell、LibraryLoader、Media、HiDpi、Security）
+- **eframe 0.36**（egui，仅 glow + default_fonts）— GUI 配置面板与托盘窗口
+- **toml 1.1 + serde 1.0** — TOML 配置解析/序列化
+- **tracing 0.1 + tracing-subscriber 0.3**（仅 fmt）— 结构化日志 → GUI 日志面板桥
+- **embed-resource 3**（构建期）— exe 图标资源嵌入
 
 ## 项目结构
 

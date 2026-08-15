@@ -5,6 +5,8 @@
 //! live-apply changes, save to config.toml.
 
 #![windows_subsystem = "windows"]
+// edition 2024 lint 豁免：与 lib.rs 同约定 — Win32 区段整段 unsafe fn 为边界
+#![allow(unsafe_op_in_unsafe_fn)]
 
 use eframe::egui;
 use gi_utils::config::{self, Binding};

@@ -9,7 +9,7 @@
 use std::thread;
 
 // Direct FFI — avoids windows-rs version churn for this trivial API.
-extern "system" {
+unsafe extern "system" {
     fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
 }
 
