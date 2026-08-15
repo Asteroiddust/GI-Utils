@@ -176,6 +176,11 @@ pub struct SharedIcon(HICON);
 unsafe impl Send for SharedIcon {}
 
 impl SharedIcon {
+    /// 原始 HICON — 供同进程内窗口图标设置（WM_SETICON）等只读使用。
+    pub(crate) fn raw(&self) -> HICON {
+        self.0
+    }
+
     /// 进程退出时由主线程销毁（托盘线程全部收尾之后）。
     pub(crate) fn destroy(&self) {
         unsafe {

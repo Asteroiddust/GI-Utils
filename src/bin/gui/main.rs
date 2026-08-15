@@ -23,8 +23,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, MessageBoxW, PostMessageW, SetForegroundWindow, ShowWindow, MB_ICONERROR, MB_OK,
-    SW_HIDE, SW_SHOW, WM_CLOSE,
+    FindWindowW, MessageBoxW, PostMessageW, SendMessageW, SetForegroundWindow, ShowWindow,
+    ICON_BIG, ICON_SMALL, MB_ICONERROR, MB_OK, SW_HIDE, SW_SHOW, WM_CLOSE, WM_SETICON,
 };
 
 mod tray;
@@ -96,6 +96,15 @@ struct GuiApp {
     /// 隐藏态应用重试截止时刻 — 幽灵窗口延迟销毁期间 FindWindowW 可能
     /// 匹配到旧窗口，本实例在截止前每帧重试 SW_HIDE（~2s）。
     hidden_apply_deadline: Option<std::time::Instant>,
+
+    /// 共享窗口图标（主线程预加载）— 本 app 每轮尝试给自己的窗口重设
+    /// WM_SETICON：恢复轮托盘线程可能把图标设到了幽灵窗口上（winit
+    /// 延迟销毁），app 帧循环运行于新窗口存续期，重设必达真窗口。
+    window_icon: Option<tray::SharedIcon>,
+    /// 本 app 实例是否已应用过窗口图标。
+    icon_applied: bool,
+    /// 窗口图标应用重试截止时刻（与 hidden 同模式，~2s）。
+    icon_apply_deadline: Option<std::time::Instant>,
 }
 
 /// 按键捕获状态。
@@ -172,6 +181,37 @@ impl eframe::App for GuiApp {
                 }
             } else {
                 self.hidden_applied = true;
+            }
+        }
+
+        // -0.6. 窗口图标重设（任务栏/标题栏/Alt-Tab）：恢复轮的托盘线程
+        // 可能把 WM_SETICON 发到了幽灵窗口（延迟销毁）— 本 app 的帧循环
+        // 运行于新窗口存续期（幽灵已在事件循环启动时销毁），从首帧起重试
+        // 设置直到 ~2s 截止，保证真窗口拿到图标。
+        if self.window_icon.is_some() && !self.icon_applied {
+            let deadline = *self
+                .icon_apply_deadline
+                .get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
+            if std::time::Instant::now() < deadline {
+                unsafe {
+                    if let Ok(hwnd) = FindWindowW(None, windows::core::w!("GI-Utils Configuration")) {
+                        let icon = self.window_icon.as_ref().unwrap().raw();
+                        let _ = SendMessageW(
+                            hwnd,
+                            WM_SETICON,
+                            Some(WPARAM(ICON_BIG as usize)),
+                            Some(LPARAM(icon.0 as isize)),
+                        );
+                        let _ = SendMessageW(
+                            hwnd,
+                            WM_SETICON,
+                            Some(WPARAM(ICON_SMALL as usize)),
+                            Some(LPARAM(icon.0 as isize)),
+                        );
+                    }
+                }
+            } else {
+                self.icon_applied = true;
             }
         }
 
@@ -1080,6 +1120,9 @@ fn main() {
             hidden: hidden_shared.clone(),
             hidden_applied: false,
             hidden_apply_deadline: None,
+            window_icon: preloaded_icon.clone(),
+            icon_applied: false,
+            icon_apply_deadline: None,
         };
 
         let options = eframe::NativeOptions {
