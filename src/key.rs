@@ -15,6 +15,14 @@
 //!
 //! `Key` 将两个字段捆绑在一起，在注册热键或构造输入事件时不会遗漏 E0 标志。
 //! For the raw scan code value without E0 context, see [`ScanCode`].
+//!
+//! ## E1 前缀不支持（设计省略）
+//!
+//! PS/2 Set 1 中唯一带 E1 前缀的键是 PAUSE（E1.1D.45）— 其三字节序列的最后
+//! 一字节 0x45 恰好是 NumLock 的扫描码，任何"PAUSE 占位常量"都会与
+//! `Key::NUM_LOCK` 逐字节混同。本项目不用 PAUSE 键，因此**不提供 PAUSE 常量**，
+//! 省去 E1 前缀的编码、识别与 parse 支持。E1 support is omitted by design —
+//! PAUSE (the only E1-prefixed key) is never used by this tool.
 
 #![allow(dead_code)]
 
@@ -261,18 +269,6 @@ impl Key {
         code: ScanCode(0x46),
         is_e0: false,
     };
-    /// 暂停键是 PS/2 中**唯一带 E1 前缀**的键（E1.1D.45），无法用标准 Key（仅 E0
-    /// 二态）表示。本项目不用此键 — 省去了 E1 前缀的编码、识别与 parse 支持，
-    /// 此常量仅为占位。The only E1-prefixed PS/2 key (E1.1D.45) — E1 support is
-    /// omitted by design since this tool never uses PAUSE; placeholder only.
-    #[deprecated(
-        note = "PAUSE is the only E1-prefixed PS/2 key (E1.1D.45), not representable as Key. E1 encoding/recognition/parsing omitted by design — this tool doesn't use PAUSE. Placeholder only."
-    )]
-    pub const PAUSE: Self = Self {
-        code: ScanCode(0x45),
-        is_e0: false,
-    };
-
     // ── Row 2 ──────────────────────────────────────────────
     pub const GRAVE: Self = Self {
         code: ScanCode(0x29),

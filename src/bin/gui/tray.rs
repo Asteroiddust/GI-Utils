@@ -370,9 +370,17 @@ pub fn run_tray_thread(
             .for_each(|(i, c)| nid.szTip[i] = *c);
 
         // NIM_ADD 失败 = 托盘图标不可用，但消息窗口仍然有效 —
-        // Drop 的 PostMessageW(WM_CLOSE) 依然能结束消息泵，退出路径完整。
+        // 退出路径完整（WM_CLOSE → DestroyWindow → PostQuitMessage）。
         let add_ok = Shell_NotifyIconW(NIM_ADD, &nid).as_bool();
-        let _ = tx.send(TrayAction::Ready(add_ok));
+        // Ready 发送失败 = receiver 已断开（GUI 渲染崩溃重建中）。本线程
+        // 可能已误找到重试后的新主窗口（同标题）— 立即清理退出，
+        // 避免双托盘图标与死通道残留。
+        if tx.send(TrayAction::Ready(add_ok)).is_err() {
+            let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+            let _ = DestroyIcon(icon);
+            let _ = DestroyWindow(hwnd);
+            return;
+        }
 
         // NotifyIconVersion 4 (modern Win10+ behavior)
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;

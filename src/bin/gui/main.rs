@@ -61,10 +61,6 @@ struct GuiApp {
     send_ctx: Arc<SendContext>,
     /// 停止 Engine 的信号。
     stop_flag: Arc<AtomicBool>,
-    /// Engine 后台线程句柄。
-    engine_handle: Option<JoinHandle<()>>,
-    /// 托盘线程句柄（Drop 时投递 WM_CLOSE 后 join，确保 NIM_DELETE 清理执行）。
-    tray_handle: Option<JoinHandle<()>>,
 
     /// 按键捕获状态。
     capture: CaptureState,
@@ -665,49 +661,92 @@ impl GuiApp {
 
 impl Drop for GuiApp {
     fn drop(&mut self) {
-        // 取消按键捕获
+        // 只做无害清理。完整关机序列（托盘收尾/停引擎/stop_all/亲和性恢复）
+        // 已移至 main 的 shutdown_all — Drop 在渲染 panic 回卷时也会执行：
+        // 若此处执行关机序列，catch_unwind 捕获之前引擎已被杀死、stop_flag
+        // 被锁死为 true，自愈重试拿到的是死引擎（review 发现）。因此这里
+        // 绝不能包含任何破坏性动作。
         self.key_bindings.disable_capture();
-
-        // 通知托盘线程退出消息泵：GetMessageW 需要 WM_QUIT 才返回，
-        // 而 WM_QUIT 由 WM_DESTROY → PostQuitMessage 发出 — 必须显式
-        // 投递 WM_CLOSE 触发 DestroyWindow，否则 NIM_DELETE/DestroyIcon
-        // 永不执行（托盘图标残留到进程死亡）
-        unsafe {
-            // windows-rs 0.62：FindWindowW 参数为 `impl Param<PCWSTR>`，
-            // `Option<&PCWSTR>`（而非 `Option<PCWSTR>`）满足该 bound。
-            if let Ok(hwnd) = FindWindowW(
-                Some(&windows::core::w!("GIUtilsTrayWindow")),
-                None,
-            ) {
-                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
-        }
-        // 等待托盘线程完成清理（NIM_DELETE/DestroyIcon/DestroyWindow）
-        if let Some(handle) = self.tray_handle.take() {
-            let _ = handle.join();
-        }
-
-        // 信号 Engine 停止
-        self.stop_flag.store(true, Ordering::Release);
-
-        // 等待 Engine 线程退出
-        if let Some(handle) = self.engine_handle.take() {
-            let _ = handle.join();
-        }
-
-        // 显式停止所有功能线程 — 必须在亲和性恢复**之前**：
-        // 优化游戏（isolate_game_cores）线程可能正在运行，若先恢复亲和性
-        // 再 stop_all，线程停止时可能再次隔离核心、无人恢复。
-        // （此前依赖 Engine/KeyBindings Drop 链的 stop_all，顺序颠倒 — L9-agentA）
-        self.key_bindings.stop_all();
-
-        // 退出蜂鸣 — 异步播放（~300ms），由随后的亲和性恢复耗时（遍历进程）
-        // 覆盖；同步 beep 会阻塞 Drop 300ms（L5）。
-        gi_utils::utils::beep::beep_async(375, 300);
-
-        // 恢复所有进程的完整 CPU 亲和性（best-effort，静默吞错误）
-        let _ = gi_utils::utils::affinity::restore_all_affinity();
     }
+}
+
+/// 完整关机序列 — 仅在正常退出与重试耗尽时由 main 显式调用。
+/// 顺序：托盘收尾 → 停引擎 → stop_all（先于亲和性恢复，防优化游戏竞态）
+/// → 蜂鸣 → 恢复亲和性（决策 21）。
+fn shutdown_all(
+    engine_handle: Option<JoinHandle<()>>,
+    tray_handle: Option<JoinHandle<()>>,
+    stop_flag: &AtomicBool,
+    key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
+) {
+    stop_tray_thread(tray_handle);
+
+    // 信号 Engine 停止
+    stop_flag.store(true, Ordering::Release);
+
+    // 等待 Engine 线程退出
+    if let Some(handle) = engine_handle {
+        let _ = handle.join();
+    }
+
+    // 显式停止所有功能线程 — 必须在亲和性恢复**之前**（决策 21）
+    key_bindings.stop_all();
+
+    // 退出蜂鸣 — 异步播放（~300ms），由随后的亲和性恢复耗时覆盖
+    gi_utils::utils::beep::beep_async(375, 300);
+
+    // 恢复所有进程的完整 CPU 亲和性（best-effort，静默吞错误）
+    let _ = gi_utils::utils::affinity::restore_all_affinity();
+}
+
+/// 停止托盘线程：投递 WM_CLOSE 触发 DestroyWindow → PostQuitMessage，
+/// 然后**有界等待**（最多 ~2s）。线程可能处于创建期或阻塞在跨线程
+/// SendMessageW 上 — 绝不无限 join（渲染 panic 收尾路径不能悬挂）。
+/// 超时放弃：WM_CLOSE 已投递，线程解除阻塞后自行退出，最坏随进程终止。
+fn stop_tray_thread(handle: Option<JoinHandle<()>>) {
+    let Some(handle) = handle else { return };
+    unsafe {
+        // windows-rs 0.62：FindWindowW 参数为 `impl Param<PCWSTR>`，
+        // `Option<&PCWSTR>`（而非 `Option<PCWSTR>`）满足该 bound。
+        if let Ok(hwnd) = FindWindowW(Some(&windows::core::w!("GIUtilsTrayWindow")), None) {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+    for _ in 0..40 {
+        if handle.is_finished() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    tracing::warn!("tray thread did not exit within 2s — detaching");
+}
+
+/// 从 config.toml 重建注册表（渲染崩溃恢复路径）。
+/// 共享 KeyBindings 可能保留崩溃前 live-apply 的未保存编辑 — 重建使引擎
+/// 行为与 UI 表格一致（未保存修改被丢弃并记录）。
+fn rebuild_bindings(
+    key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
+    stop_func: &Arc<dyn KeyFunction>,
+    config_bindings: &[Binding],
+    send_ctx: &Arc<SendContext>,
+) -> Vec<String> {
+    let mut log = vec!["绑定已从 config.toml 重建（未保存的 live-apply 修改已丢弃）".to_string()];
+    key_bindings.clear_all();
+    for b in config_bindings {
+        let func: Arc<dyn KeyFunction> = if b.func == "停止退出" {
+            stop_func.clone()
+        } else {
+            match config::create_function(&b.func, send_ctx.clone()) {
+                Ok(f) => f,
+                Err(e) => {
+                    log.push(format!("  ERROR: '{}' -> '{}': {}", b.key.name(), b.func, e));
+                    continue;
+                }
+            }
+        };
+        key_bindings.register(b.key, b.mode, func);
+    }
+    log
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -732,13 +771,23 @@ fn show_message_box(title: &str, msg: &str) {
 /// panic=abort 时 Drop 不执行（`restore_all_affinity` 在 Drop 路径中），
 /// 若 panic 前已隔离游戏核心，其它进程会停留在受限核心 — hook 兜底恢复。
 /// 必须在任何可能 panic 的代码之前安装。
-/// GUI 渲染重试上下文的 panic 标记 — 此期间的 panic 由 catch_unwind 恢复：
-/// hook 不弹窗、不恢复亲和性（引擎仍在运行，恢复会破坏游戏优化）。
+/// GUI 渲染重试上下文的 panic 标记 — 仅当 panic 发生在 **GUI 主线程** 且处于
+/// run_native 期间（catch_unwind 会恢复）时 hook 静默；引擎/功能/托盘线程的
+/// panic 仍走完整兜底（弹窗 + 恢复亲和性）。
 static IN_GUI_RETRY: AtomicBool = AtomicBool::new(false);
+
+/// GUI 主线程 id — 与 IN_GUI_RETRY 组合判断 panic 是否属于可恢复的渲染 panic。
+static GUI_MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
 
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        if IN_GUI_RETRY.load(Ordering::Relaxed) {
+        let on_gui_thread = GUI_MAIN_THREAD
+            .get()
+            .map(|id| std::thread::current().id() == *id)
+            .unwrap_or(false);
+        if IN_GUI_RETRY.load(Ordering::Relaxed) && on_gui_thread {
+            // 渲染 panic 由 catch_unwind 恢复 — 不弹窗、不恢复亲和性
+            // （引擎仍在运行，恢复会破坏游戏优化）。
             return;
         }
         let _ = utils::affinity::restore_all_affinity();
@@ -826,7 +875,8 @@ fn main() {
     let stop_flag = engine.stop_flag();
 
     // ── 4. 注册初始绑定 ─────────────────────────────────────
-    let stop_func = Arc::new(gi_utils::functions::stop::停止退出::new(stop_flag.clone()));
+    let stop_func: Arc<dyn KeyFunction> =
+        Arc::new(gi_utils::functions::stop::停止退出::new(stop_flag.clone()));
     startup_log.push("Registered functions:".into());
     for b in &config_bindings {
         let func: Arc<dyn KeyFunction> = if b.func == "停止退出" {
@@ -864,36 +914,48 @@ fn main() {
     }
 
     // ── 6. 启动 Engine 后台线程（只 spawn 一次 — 重试循环之外）──
-    let engine_handle = std::thread::Builder::new()
-        .name("engine".into())
-        .spawn(move || {
-            engine.run();
-        })
-        .expect("Failed to spawn engine thread");
+    // 句柄留在 main（shutdown_all 需要），app 不再持有 — 渲染 panic 回卷时
+    // Drop 不会碰它（见 GuiApp::drop 的注释）。
+    let mut engine_handle = Some(
+        std::thread::Builder::new()
+            .name("engine".into())
+            .spawn(move || {
+                engine.run();
+            })
+            .expect("Failed to spawn engine thread"),
+    );
     startup_log.push("Engine running.".into());
+
+    // 记录 GUI 主线程 id — panic hook 据此区分"渲染 panic（可恢复）"
+    // 与"其他线程 panic（弹窗 + 恢复亲和性）"。
+    let _ = GUI_MAIN_THREAD.set(std::thread::current().id());
 
     // ── 7. GUI 事件循环（崩溃自愈重试，最多 MAX_GUI_RETRIES 次）──
     // 睡眠唤醒/显示变更会使 wgl 上下文失效，eframe 在 glow_integration 的
-    // make_current 处 unwrap panic。catch_unwind 捕获后等 1s 重建 app 与
-    // GL 上下文 — 引擎/输入处理线程全程不受影响（进程存活，热键持续工作）。
-    // 首次尝试持 Engine JoinHandle（正常退出时 join）；重试尝试 detach —
-    // 引擎经 stop_flag 自行退出。托盘每轮尝试独立 channel/线程（panic 后
-    // 旧线程因 receiver 断开而退出，短暂双图标窗口可接受）。
+    // make_current 处 unwrap panic。catch_unwind 捕获后：收尾旧托盘线程 →
+    // 重建注册表与 app → 重试 — 引擎全程存活（关机序列已移出 Drop）。
     const MAX_GUI_RETRIES: u32 = 3;
     let function_names = config::list_function_names();
-    let mut engine_handle = Some(engine_handle);
+    let mut tray_handle: Option<JoinHandle<()>> = None;
     let mut last_error: Option<String> = None;
 
     for attempt in 0..MAX_GUI_RETRIES {
+        // 托盘：每轮尝试独立 channel + 线程（上一轮的旧线程在 panic 路径已收尾）
         let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
-        let tray_handle = std::thread::Builder::new()
+        tray_handle = match std::thread::Builder::new()
             .name("tray".into())
             .spawn({
                 let icon_path = gui_cfg.icon_path.clone();
                 let pixels = tray_pixels.clone();
                 move || tray::run_tray_thread(tray_tx, icon_path, pixels, tray_w, tray_h)
-            })
-            .ok(); // 失败时 tray_ok 保持 false（关闭窗口直接退出），GUI 仍可用
+            }) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                // tray_ok 保持 false（关闭窗口直接退出），GUI 仍可用
+                startup_log.push(format!("Tray thread spawn failed: {}", e));
+                None
+            }
+        };
 
         // GUI 状态重建：绑定表从 config_bindings 重建，共享句柄全部 Clone
         let gui_bindings: Vec<GuiBinding> = config_bindings
@@ -919,8 +981,6 @@ fn main() {
             key_bindings: key_bindings.clone(),
             send_ctx: send_ctx.clone(),
             stop_flag: stop_flag.clone(),
-            engine_handle: engine_handle.take(),
-            tray_handle,
             capture: CaptureState {
                 active: false,
                 binding_id: None,
@@ -928,11 +988,8 @@ fn main() {
             },
             function_names: function_names.clone(),
             font_loaded: false,
-            log_messages: if attempt == 0 {
-                startup_log.clone()
-            } else {
-                vec![format!("GUI 已从渲染崩溃中恢复（第 {} 次重试）", attempt)]
-            },
+            // 每轮尝试都携带完整启动历史（panic 消息可见于日志面板）
+            log_messages: startup_log.clone(),
             log_visible: true,
             log_collector: log_collector.clone(),
             tray_rx,
@@ -962,17 +1019,36 @@ fn main() {
         IN_GUI_RETRY.store(false, Ordering::Relaxed);
 
         match result {
-            // 正常退出（窗口关闭 / 托盘退出）
-            Ok(Ok(())) => return,
+            // 正常退出（窗口关闭 / 托盘退出）— 完整关机序列
+            Ok(Ok(())) => {
+                shutdown_all(
+                    engine_handle.take(),
+                    tray_handle.take(),
+                    &stop_flag,
+                    &key_bindings,
+                );
+                return;
+            }
             // 启动错误（非 panic）— 不可恢复
             Ok(Err(e)) => {
                 last_error = Some(e.to_string());
                 break;
             }
-            // 渲染线程 panic — 等显示状态稳定后重建重试
+            // 渲染线程 panic — 收尾旧托盘线程、重建注册表后重试
             Err(payload) => {
                 let msg = panic_message(&payload);
                 startup_log.push(format!("GUI 渲染线程 panic：{}", msg));
+                // 主线程已恢复 — 旧托盘线程安全收尾（WM_CLOSE + 有界等待，
+                // 防止误找到新窗口造成双托盘图标）
+                stop_tray_thread(tray_handle.take());
+                // 注册表可能残留崩溃前的未保存 live-apply 编辑 — 重建使其
+                // 与 UI 表格一致（修改被丢弃并记录）
+                startup_log.extend(rebuild_bindings(
+                    &key_bindings,
+                    &stop_func,
+                    &config_bindings,
+                    &send_ctx,
+                ));
                 if attempt + 1 >= MAX_GUI_RETRIES {
                     last_error = Some(msg);
                     break;
@@ -982,8 +1058,13 @@ fn main() {
         }
     }
 
-    // 重试耗尽 / 启动失败 — 恢复亲和性并提示退出
-    let _ = utils::affinity::restore_all_affinity();
+    // 重试耗尽 / 启动失败 — 完整关机后提示退出
+    shutdown_all(
+        engine_handle.take(),
+        tray_handle.take(),
+        &stop_flag,
+        &key_bindings,
+    );
     show_message_box(
         "GI-Utils 启动失败",
         &format!("GUI 初始化失败：\n\n{}", last_error.unwrap_or_default()),
