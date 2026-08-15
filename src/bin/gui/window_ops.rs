@@ -8,7 +8,7 @@
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, ICON_BIG, ICON_SMALL, IsIconic, IsWindow, PostMessageW, SetForegroundWindow,
-    ShowWindow, HICON, SW_HIDE, SW_RESTORE, SW_SHOW, WM_SETICON,
+    ShowWindow, HICON, SW_HIDE, SW_RESTORE, SW_SHOW, WM_CLOSE, WM_SETICON,
 };
 
 /// FindWindowW(None, "GI-Utils Configuration") + IsWindow 校验。
@@ -66,6 +66,15 @@ pub fn set_window_icon(hwnd: HWND, icon: HICON) {
             WPARAM(ICON_SMALL as usize),
             LPARAM(icon.0 as isize),
         );
+    }
+}
+
+/// PostMessageW(WM_CLOSE)，异步不阻塞，忽略返回值。
+/// 仅用于**顶层主窗口**（FindWindowW 可找到）；托盘窗口是 HWND_MESSAGE
+/// 消息窗口、不在顶层枚举内 — 其退出通道必须走 quit 标志（review 实证教训）。
+pub fn post_close(hwnd: HWND) {
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
 }
 

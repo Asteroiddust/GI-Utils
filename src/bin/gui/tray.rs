@@ -158,6 +158,11 @@ unsafe extern "system" fn tray_wnd_proc(
                 }
                 IDM_EXIT => {
                     let _ = ctx.tx.send(TrayAction::Exit);
+                    // 隐藏窗口下帧循环冻结、channel 无人消费 — 直接向主窗口
+                    // 投 WM_CLOSE（窗口消息不依赖可见性），托盘 Exit 不再
+                    // 延迟到窗口唤出。
+                    let main_hwnd = ensure_main_window(ctx);
+                    crate::window_ops::post_close(main_hwnd);
                 }
                 _ => {}
             }
@@ -185,12 +190,18 @@ unsafe extern "system" fn tray_wnd_proc(
 /// 图标来源：主线程预加载的共享图标（`preloaded`，崩溃恢复轮也能用）；
 /// 预加载失败时回退程序生成图标（`pixels`，纯 GDI 路径 — WIC 污染后仍可用）。
 ///
-/// 退出通道：**quit 标志是唯一可靠退出信号**（消息泵每 ~10ms 检查）。
+/// 退出通道：**quit 标志是唯一可靠的托盘退出信号**（消息泵每 ~200ms 检查）。
 /// 外部 WM_CLOSE 依赖 FindWindowW 找到托盘窗口投递，而 HWND_MESSAGE 消息
 /// 窗口不在顶层窗口枚举内（review 实证）— 不再依赖外部投递。
+///
+/// 反向职责：本线程同时是**隐藏窗口期的退出转发器** — 轮询 `stop_flag`
+/// （"停止退出"热键的语义标志，按键由 config 绑定、绝不硬编码），置位时向
+/// 顶层主窗口投递 WM_CLOSE：隐藏窗口下 winit 挂起 redraw、GUI 帧循环冻结、
+/// stop_flag 无人消费 — 窗口消息不依赖可见性，退出不再延迟到窗口唤出。
 pub fn run_tray_thread(
     tx: Sender<TrayAction>,
     quit: Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
     preloaded: Option<crate::tray_icon::SharedIcon>,
     pixels: Vec<u8>,
     w: u32,
@@ -356,12 +367,13 @@ pub fn run_tray_thread(
             );
         }
 
-        // ── ⑩ 消息泵（quit 感知）────────────────────────────────
-        // GetMessageW 阻塞无法感知 quit；改 PeekMessageW 轮询：每 ~10ms
-        // 检查 quit（stop_tray_thread 置位）。外部 WM_CLOSE 依赖 FindWindowW
-        // 投递，而 FindWindowW 找不到 HWND_MESSAGE 消息窗口（review 实证）—
-        // quit 标志是唯一可靠退出通道。
+        // ── ⑩ 消息泵（quit/stop 感知，~200ms 节拍）───────────────
+        // GetMessageW 阻塞无法感知标志；改 PeekMessageW 轮询。quit 是托盘
+        // 自身唯一可靠退出通道（stop_tray_thread 置位）。stop_flag 置位时
+        // 向顶层主窗口投递一次 WM_CLOSE — 隐藏窗口期 GUI 帧循环冻结，
+        // 退出由窗口消息原生送达（不依赖可见性/redraw）。
         let mut msg: MSG = mem::zeroed();
+        let mut stop_posted = false;
         'pump: loop {
             // 泵空全部排队消息
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -373,7 +385,13 @@ pub fn run_tray_thread(
             if quit.load(Ordering::Acquire) {
                 break 'pump;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            if stop_flag.load(Ordering::Acquire) && !stop_posted {
+                stop_posted = true;
+                if let Some(hwnd) = crate::window_ops::find_main_window() {
+                    crate::window_ops::post_close(hwnd);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
 
         // ── ⑪ 单一收尾尾 ────────────────────────────────────────

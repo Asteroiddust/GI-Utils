@@ -251,6 +251,14 @@ impl eframe::App for GuiApp {
 
         // -0.5. 窗口关闭 → 隐藏到托盘（除非托盘菜单或 F12 触发退出）
         if ctx.input(|i| i.viewport().close_requested()) && !self.should_exit {
+            // F12（停止退出）触发的 WM_CLOSE 不得被吞：隐藏窗口下没有帧
+            // 循环执行 CancelClose（winit 挂起 redraw，默认行为即关闭 —
+            // 托盘线程投递的 WM_CLOSE 直接生效）；可见窗口下此处显式放行
+            // （双保险）。
+            if self.stop_flag.load(Ordering::Acquire) {
+                self.should_exit = true;
+                return;
+            }
             // 托盘图标不可用时隐藏 = 应用永远无法恢复 — 直接退出。
             // tray_ready 要求本轮已收到 Ready：崩溃恢复轮 spawn 失败时继承的
             // tray_ok=true 不得让关窗走隐藏路径（无图标可唤回窗口），review 发现。
@@ -1141,7 +1149,18 @@ fn main() {
                 let icon = preloaded_icon.clone();
                 let pixels = tray_pixels.clone();
                 let quit = tray_quit.clone();
-                move || tray::run_tray_thread(tray_tx, quit, icon, pixels, tray_w, tray_h)
+                let stop_flag = stop_flag.clone();
+                move || {
+                    tray::run_tray_thread(
+                        tray_tx,
+                        quit,
+                        stop_flag,
+                        icon,
+                        pixels,
+                        tray_w,
+                        tray_h,
+                    )
+                }
             }) {
             Ok(h) => Some(h),
             Err(e) => {
