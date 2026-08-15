@@ -702,6 +702,7 @@ impl Drop for GuiApp {
 fn shutdown_all(
     engine_handle: Option<JoinHandle<()>>,
     tray_handle: Option<JoinHandle<()>>,
+    tray_icon: Option<tray::SharedIcon>,
     stop_flag: &AtomicBool,
     key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
 ) {
@@ -722,6 +723,12 @@ fn shutdown_all(
 
     // 恢复所有进程的完整 CPU 亲和性（best-effort，静默吞错误）
     let _ = gi_utils::utils::affinity::restore_all_affinity();
+
+    // 共享托盘图标最后销毁 — 所有托盘线程已收尾（含 detach 宽限期），
+    // 窗口已随 eframe 退出销毁，不再有引用方。
+    if let Some(icon) = tray_icon {
+        icon.destroy();
+    }
 }
 
 /// 停止托盘线程：投递 WM_CLOSE 触发 DestroyWindow → PostQuitMessage，
@@ -929,13 +936,23 @@ fn main() {
         ));
     }
 
-    // ── 5. 托盘图标（像素生成一次，线程按尝试轮重建）────────
+    // ── 5. 托盘图标：主线程预加载一次（健康 GDI/WIC 状态），跨崩溃恢复
+    // 轮共享 — 睡眠唤醒的 GL 崩溃会连带污染进程内 WIC 图标加载（恢复轮
+    // LoadImageW 永久失败），必须在启动时完成加载。预加载失败回退程序
+    // 生成图标（纯 GDI 路径，恢复轮仍可用）。
     let gui_cfg = config::load_gui_config();
     let (tray_pixels, tray_w, tray_h) = tray::create_tray_icon_pixels();
+    let mut preloaded_icon =
+        tray::preload_tray_icon(&gui_cfg.icon_path, &tray_pixels, tray_w, tray_h);
     if gui_cfg.icon_path.is_empty() {
         startup_log.push("Tray icon: generated".into());
+    } else if preloaded_icon.is_some() {
+        startup_log.push(format!("Tray icon: {} (preloaded)", gui_cfg.icon_path));
     } else {
-        startup_log.push(format!("Tray icon: {}", gui_cfg.icon_path));
+        startup_log.push(format!(
+            "Tray icon: {} (preload failed — generated fallback)",
+            gui_cfg.icon_path
+        ));
     }
 
     // ── 6. 启动 Engine 后台线程（只 spawn 一次 — 重试循环之外）──
@@ -1007,9 +1024,9 @@ fn main() {
         tray_handle = match std::thread::Builder::new()
             .name("tray".into())
             .spawn({
-                let icon_path = gui_cfg.icon_path.clone();
+                let icon = preloaded_icon.clone();
                 let pixels = tray_pixels.clone();
-                move || tray::run_tray_thread(tray_tx, icon_path, pixels, tray_w, tray_h)
+                move || tray::run_tray_thread(tray_tx, icon, pixels, tray_w, tray_h)
             }) {
             Ok(h) => Some(h),
             Err(e) => {
@@ -1088,6 +1105,7 @@ fn main() {
                 shutdown_all(
                     engine_handle.take(),
                     tray_handle.take(),
+                    preloaded_icon.take(),
                     &stop_flag,
                     &key_bindings,
                 );
@@ -1119,6 +1137,7 @@ fn main() {
     shutdown_all(
         engine_handle.take(),
         tray_handle.take(),
+        preloaded_icon.take(),
         &stop_flag,
         &key_bindings,
     );

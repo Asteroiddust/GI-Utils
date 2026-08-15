@@ -161,6 +161,35 @@ unsafe fn load_icon(icon_path: &str, pixels: &[u8], w: u32, h: u32) -> Option<HI
     create_hicon_from_rgba(pixels, w, h)
 }
 
+/// 进程级共享托盘图标 — 主线程启动时预加载（GDI/WIC 健康状态），
+/// 托盘线程跨崩溃恢复轮复用。
+///
+/// 动机：睡眠唤醒的 GL 崩溃会连带污染进程内的 WIC 图标加载（恢复轮的
+/// LoadImageW 永久失败，纯 GDI 的生成图标仍可用）— 恢复轮无法再加载
+/// .ico，必须在启动时预加载共享。
+///
+/// GDI 图标句柄是进程级对象，Shell_NotifyIconW/WM_SETICON 不要求图标与
+/// 调用线程同源；windows-rs 因 HICON 内含裸指针未标记 Send，此包装显式
+/// 声明。所有权纪律：主线程创建与销毁，托盘线程只读使用。
+#[derive(Clone)]
+pub struct SharedIcon(HICON);
+unsafe impl Send for SharedIcon {}
+
+impl SharedIcon {
+    /// 进程退出时由主线程销毁（托盘线程全部收尾之后）。
+    pub(crate) fn destroy(&self) {
+        unsafe {
+            let _ = DestroyIcon(self.0);
+        }
+    }
+}
+
+/// 启动时预加载托盘图标（主线程调用）。返回 None 时托盘线程回退
+/// 程序生成图标（纯 GDI 路径，崩溃后仍可用）。
+pub fn preload_tray_icon(icon_path: &str, pixels: &[u8], w: u32, h: u32) -> Option<SharedIcon> {
+    unsafe { load_icon(icon_path, pixels, w, h) }.map(SharedIcon)
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Win32 托盘 (Shell_NotifyIconW)
 // ═══════════════════════════════════════════════════════════════════
@@ -282,11 +311,11 @@ unsafe extern "system" fn tray_wnd_proc(
 
 /// 运行托盘线程 — 创建消息窗口 + 图标，泵消息直到收到 WM_QUIT。
 ///
-/// `icon_path` 非空且文件存在时用 `LoadImageW` 加载 .ico；否则回退
-/// 程序生成图标（`pixels`）。
+/// 图标来源：主线程预加载的共享图标（`preloaded`，崩溃恢复轮也能用）；
+/// 预加载失败时回退程序生成图标（`pixels`，纯 GDI 路径）。
 pub fn run_tray_thread(
     tx: Sender<TrayAction>,
-    icon_path: String,
+    preloaded: Option<SharedIcon>,
     pixels: Vec<u8>,
     w: u32,
     h: u32,
@@ -298,14 +327,18 @@ pub fn run_tray_thread(
     };
 
     unsafe {
-        // 在托盘线程内创建 HICON（HICON 不 Send）
-        // 失败 → 通知 GUI 托盘不可用并退出，不 panic（panic 会留下
-        // 无托盘的 GUI 且 close_requested 无 NIM_DELETE — 不可达）
-        let icon = match load_icon(&icon_path, &pixels, w, h) {
-            Some(icon) => icon,
+        // 图标来源：优先共享预加载（崩溃恢复轮可用）；否则本线程生成
+        // （纯 GDI 路径，健康状态不依赖）。icon_owned 标记自建图标 —
+        // 只有自建图标由本线程销毁；共享图标由主线程 shutdown 时统一销毁。
+        let (icon, icon_owned) = match preloaded {
+            Some(shared) => (shared.0, false),
             None => {
-                let _ = tx.send(TrayAction::Ready(false));
-                return;
+                // 失败 → 通知 GUI 托盘不可用并退出，不 panic
+                let Some(icon) = create_hicon_from_rgba(&pixels, w, h) else {
+                    let _ = tx.send(TrayAction::Ready(false));
+                    return;
+                };
+                (icon, true)
             }
         };
 
@@ -322,14 +355,16 @@ pub fn run_tray_thread(
         }
         let Some(main_hwnd) = main_hwnd else {
             let _ = tx.send(TrayAction::Ready(false));
-            let _ = DestroyIcon(icon);
+            if icon_owned {
+                let _ = DestroyIcon(icon);
+            }
             return;
         };
 
         // 窗口图标：eframe 启动时用 egui 默认 logo 设置过 WM_SETICON，
-        // 这里用同一图标源（config icon_path 或程序生成）再覆盖一次，
-        // 让任务栏/标题栏/Alt-Tab 与托盘图标一致。HICON 由本线程持有
-        // 到退出（消息泵后才 DestroyIcon），窗口引用期间始终有效。
+        // 这里用同一图标源（共享预加载或程序生成）再覆盖一次，
+        // 让任务栏/标题栏/Alt-Tab 与托盘图标一致。自建图标由本线程
+        // 退出时销毁；共享图标由主线程 shutdown 时统一销毁。
         let _ = SendMessageW(
             main_hwnd,
             WM_SETICON,
@@ -347,7 +382,9 @@ pub fn run_tray_thread(
             Ok(h) => h,
             Err(_) => {
                 let _ = tx.send(TrayAction::Ready(false));
-                let _ = DestroyIcon(icon);
+                if icon_owned {
+                    let _ = DestroyIcon(icon);
+                }
                 return;
             }
         };
@@ -385,7 +422,9 @@ pub fn run_tray_thread(
                 // ctx 已泄漏（无法从失败调用回收指针）— 进程级资源，可接受；
                 // 必须通知 GUI 不可达路径已建立，否则托盘线程死亡后 GUI 无法退出
                 let _ = tx.send(TrayAction::Ready(false));
-                let _ = DestroyIcon(icon);
+                if icon_owned {
+                    let _ = DestroyIcon(icon);
+                }
                 return;
             }
         };
@@ -411,8 +450,14 @@ pub fn run_tray_thread(
         // 可能已误找到重试后的新主窗口（同标题）— 立即清理退出，
         // 避免双托盘图标与死通道残留。
         if tx.send(TrayAction::Ready(add_ok)).is_err() {
+            if icon_owned {
+                // 自建图标：先移除窗口引用再销毁（防悬空句柄）。
+                // 共享图标不销毁 — 新窗口仍在使用，主线程 shutdown 时统一销毁。
+                let _ = SendMessageW(main_hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), None);
+                let _ = SendMessageW(main_hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), None);
+                let _ = DestroyIcon(icon);
+            }
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-            let _ = DestroyIcon(icon);
             let _ = DestroyWindow(hwnd);
             return;
         }
@@ -431,9 +476,11 @@ pub fn run_tray_thread(
             DispatchMessageW(&msg);
         }
 
-        // 清理
+        // 清理（共享图标不销毁 — 主线程 shutdown 时统一处理）
         let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-        let _ = DestroyIcon(icon);
+        if icon_owned {
+            let _ = DestroyIcon(icon);
+        }
         let _ = DestroyWindow(hwnd);
     }
 }
