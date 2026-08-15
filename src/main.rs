@@ -48,6 +48,14 @@ fn row(key: &str, func: &str, mode: &str) -> String {
 }
 
 fn main() {
+    // panic 即致命：unwind 语义下功能线程 panic 只会静默死亡（热键变死绑定），
+    // 进程存活毫无意义 — hook 输出后立即终止，恢复 fail-fast 语义
+    // （GUI 版在 hook 弹框后同样 exit；headless 直接打印退出）。
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("fatal panic: {}", info);
+        std::process::exit(1);
+    }));
+
     // tracing → stderr：功能函数输出（优化游戏、坐标颜色等）经此通道。
     // debug 构建显示 DEBUG 级内部日志；release 显示 INFO 级 —
     // 替代原先的功能函数 println（stdout 与 stderr 均可见于控制台）。

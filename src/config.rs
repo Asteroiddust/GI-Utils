@@ -46,6 +46,7 @@ pub struct GuiConfig {
 }
 
 /// 解析后的绑定项 — A parsed binding ready to register.
+#[derive(Clone)]
 pub struct Binding {
     pub key: Key,
     pub func: String,

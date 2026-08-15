@@ -12,12 +12,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
-    SendMessageW, ShowWindow, TrackPopupMenu, HICON, ICONINFO, MF_STRING, MSG, SW_SHOW,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
-    WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_SETICON, WM_USER, GWLP_USERDATA, ICON_BIG,
-    ICON_SMALL,
+    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos,
+    GetMessageW, GetWindowLongPtrW, IsWindow, PostQuitMessage, RegisterClassW,
+    SetForegroundWindow, SetWindowLongPtrW, SendMessageW, ShowWindow, TrackPopupMenu, HICON,
+    ICONINFO, MF_STRING, MSG, SW_SHOW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+    WM_SETICON, WM_USER, GWLP_USERDATA, ICON_BIG, ICON_SMALL,
 };
 
 /// 托盘 → GUI 的消息类型。
@@ -166,7 +166,32 @@ const IDM_EXIT: u32 = 2;
 
 struct TrayContext {
     tx: Sender<TrayAction>,
-    main_hwnd: HWND,
+    /// 主窗口句柄 — Cell：崩溃恢复场景下旧窗口延迟销毁（winit 延迟到
+    /// 下一事件循环），缓存句柄可能失效，每次动作前重校验并按需重搜。
+    main_hwnd: std::cell::Cell<HWND>,
+}
+
+unsafe fn find_main_window() -> Option<HWND> {
+    FindWindowW(None, windows::core::w!("GI-Utils Configuration"))
+        .ok()
+        .filter(|h| !h.is_invalid())
+}
+
+/// 校验缓存的主窗口句柄，失效时重搜（崩溃恢复后旧窗口销毁 → 新窗口同标题）。
+unsafe fn ensure_main_window(ctx: &TrayContext) -> HWND {
+    let cur = ctx.main_hwnd.get();
+    if !cur.is_invalid() && IsWindow(Some(cur)).as_bool() {
+        return cur;
+    }
+    // 旧窗口已销毁 — 重搜当前活窗口（有界 ~2s，超时返回旧值兜底）
+    for _ in 0..40 {
+        if let Some(h) = find_main_window() {
+            ctx.main_hwnd.set(h);
+            return h;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    cur
 }
 
 unsafe fn show_main_window(main_hwnd: HWND) {
@@ -199,7 +224,8 @@ unsafe extern "system" fn tray_wnd_proc(
             // Version 4: lParam packs icon ID in HIWORD, mouse msg in LOWORD
             let mouse_msg = lp & 0xFFFF;
             if mouse_msg == WM_LBUTTONDBLCLK {
-                show_main_window(ctx.main_hwnd);
+                let hwnd = ensure_main_window(ctx);
+                show_main_window(hwnd);
             }
             if mouse_msg == WM_RBUTTONUP {
                 let mut pos = windows::Win32::Foundation::POINT::default();
@@ -227,8 +253,9 @@ unsafe extern "system" fn tray_wnd_proc(
             match cmd {
                 IDM_SHOW => {
                     let _ = ctx.tx.send(TrayAction::Show);
-                    let _ = ShowWindow(ctx.main_hwnd, SW_SHOW);
-                    let _ = SetForegroundWindow(ctx.main_hwnd);
+                    let hwnd = ensure_main_window(ctx);
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = SetForegroundWindow(hwnd);
                 }
                 IDM_EXIT => {
                     let _ = ctx.tx.send(TrayAction::Exit);
@@ -330,7 +357,10 @@ pub fn run_tray_thread(
         RegisterClassW(&wc);
 
         // tx 克隆进 ctx（Sender Clone）；外层 tx 保留用于 NIM_ADD 后发送 Ready
-        let ctx = Box::new(TrayContext { tx: tx.clone(), main_hwnd });
+        let ctx = Box::new(TrayContext {
+            tx: tx.clone(),
+            main_hwnd: std::cell::Cell::new(main_hwnd),
+        });
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             w!("GIUtilsTrayWindow"),

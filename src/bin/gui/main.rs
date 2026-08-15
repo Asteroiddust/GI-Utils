@@ -81,13 +81,21 @@ struct GuiApp {
     tray_rx: Receiver<TrayAction>,
     /// 真正的退出标志（托盘菜单 Exit 或 F12 触发）。
     should_exit: bool,
-    /// 托盘图标是否已成功创建（NIM_ADD 成功）。
+    /// 托盘图标是否已成功创建（NIM_ADD 成功）— 进程级共享：
+    /// 崩溃恢复重建 app 时继承崩溃前的值（新实例 Ready 前沿用旧判定，
+    /// 否则恢复后关窗会直接退出而非隐藏）。
     /// false 时窗口关闭直接退出而非隐藏 — 否则图标不可用、窗口永远无法恢复。
-    tray_ok: bool,
+    tray_ok: Arc<AtomicBool>,
     /// 配置是否成功加载。false 时禁用保存 — 防止用空列表覆盖损坏的 config.toml。
     config_ok: bool,
-    /// 主窗口是否隐藏到托盘（隐藏时降低重绘频率，托盘消息仍可处理）。
-    hidden: bool,
+    /// 主窗口是否隐藏到托盘 — 进程级共享（崩溃恢复继承隐藏态，窗口不弹回桌面）。
+    /// 隐藏时降低重绘频率，托盘消息仍可处理。
+    hidden: Arc<AtomicBool>,
+    /// 本 app 实例是否已应用过隐藏态（每轮尝试各自把新窗口藏起来一次）。
+    hidden_applied: bool,
+    /// 隐藏态应用重试截止时刻 — 幽灵窗口延迟销毁期间 FindWindowW 可能
+    /// 匹配到旧窗口，本实例在截止前每帧重试 SW_HIDE（~2s）。
+    hidden_apply_deadline: Option<std::time::Instant>,
 }
 
 /// 按键捕获状态。
@@ -117,7 +125,7 @@ impl eframe::App for GuiApp {
 
         // 周期性唤醒：窗口可见时 100ms，隐藏到托盘时 500ms（省电），
         // 确保隐藏窗口时也能收到托盘消息
-        let interval = if self.hidden {
+        let interval = if self.hidden.load(Ordering::Acquire) {
             std::time::Duration::from_millis(500)
         } else {
             std::time::Duration::from_millis(100)
@@ -127,7 +135,7 @@ impl eframe::App for GuiApp {
         // -1. 处理托盘消息
         match self.tray_rx.try_recv() {
             Ok(TrayAction::Show) => {
-                self.hidden = false;
+                self.hidden.store(false, Ordering::Release);
                 ctx.request_repaint();
             }
             Ok(TrayAction::Exit) => {
@@ -135,7 +143,7 @@ impl eframe::App for GuiApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Ok(TrayAction::Ready(ok)) => {
-                self.tray_ok = ok;
+                self.tray_ok.store(ok, Ordering::Release);
                 if !ok {
                     self.log("WARNING: tray icon creation failed — closing will exit instead of hiding.");
                 }
@@ -149,10 +157,28 @@ impl eframe::App for GuiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
+        // -0.7. 崩溃恢复继承隐藏态：新窗口首帧起按 hidden 补做 SW_HIDE。
+        // 幽灵窗口（winit 延迟销毁）期间 FindWindowW 可能匹配到旧窗口 —
+        // 在 ~2s 截止内每帧重试，直至新窗口被真正隐藏。
+        if self.hidden.load(Ordering::Acquire) && !self.hidden_applied {
+            let deadline = *self
+                .hidden_apply_deadline
+                .get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
+            if std::time::Instant::now() < deadline {
+                unsafe {
+                    if let Ok(hwnd) = FindWindowW(None, windows::core::w!("GI-Utils Configuration")) {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    }
+                }
+            } else {
+                self.hidden_applied = true;
+            }
+        }
+
         // -0.5. 窗口关闭 → 隐藏到托盘（除非托盘菜单或 F12 触发退出）
         if ctx.input(|i| i.viewport().close_requested()) && !self.should_exit {
             // 托盘图标不可用时隐藏 = 应用永远无法恢复 — 直接退出
-            if !self.tray_ok {
+            if !self.tray_ok.load(Ordering::Acquire) {
                 self.should_exit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
@@ -160,7 +186,7 @@ impl eframe::App for GuiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             // 用原生 ShowWindow(SW_HIDE) 替代 egui 的 Visible(false)
             // egui 的 Visible(false) 会导致 update() 停止调用，托盘消息无法处理
-            self.hidden = true;
+            self.hidden.store(true, Ordering::Release);
             unsafe {
                 if let Ok(hwnd) = FindWindowW(None, windows::core::w!("GI-Utils Configuration")) {
                     let _ = ShowWindow(hwnd, SW_HIDE);
@@ -679,15 +705,14 @@ fn shutdown_all(
     stop_flag: &AtomicBool,
     key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
 ) {
-    stop_tray_thread(tray_handle);
-
-    // 信号 Engine 停止
+    // 先停引擎（stop_flag → join），再收尾托盘 — 托盘收尾最坏有 2s 有界等待，
+    // 放前面会拖长退出路径（review #14）。
     stop_flag.store(true, Ordering::Release);
-
-    // 等待 Engine 线程退出
     if let Some(handle) = engine_handle {
         let _ = handle.join();
     }
+
+    stop_tray_thread(tray_handle);
 
     // 显式停止所有功能线程 — 必须在亲和性恢复**之前**（决策 21）
     key_bindings.stop_all();
@@ -721,18 +746,24 @@ fn stop_tray_thread(handle: Option<JoinHandle<()>>) {
     tracing::warn!("tray thread did not exit within 2s — detaching");
 }
 
-/// 从 config.toml 重建注册表（渲染崩溃恢复路径）。
-/// 共享 KeyBindings 可能保留崩溃前 live-apply 的未保存编辑 — 重建使引擎
-/// 行为与 UI 表格一致（未保存修改被丢弃并记录）。
-fn rebuild_bindings(
+/// 把绑定列表注册到注册表（startup 与崩溃恢复共用的唯一注册路径）。
+///
+/// `replace_existing = true`（崩溃恢复）：先 `stop_all` 停止旧功能线程 —
+/// clear_all 只移除条目，旧线程若持有 stop_requested 引用会永久失联存活 —
+/// 再全量替换。
+fn register_all_bindings(
     key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
     stop_func: &Arc<dyn KeyFunction>,
-    config_bindings: &[Binding],
+    bindings: &[Binding],
     send_ctx: &Arc<SendContext>,
+    replace_existing: bool,
 ) -> Vec<String> {
-    let mut log = vec!["绑定已从 config.toml 重建（未保存的 live-apply 修改已丢弃）".to_string()];
-    key_bindings.clear_all();
-    for b in config_bindings {
+    if replace_existing {
+        key_bindings.stop_all();
+        key_bindings.clear_all();
+    }
+    let mut log = Vec::new();
+    for b in bindings {
         let func: Arc<dyn KeyFunction> = if b.func == "停止退出" {
             stop_func.clone()
         } else {
@@ -795,6 +826,10 @@ fn install_panic_hook() {
             "GI-Utils 错误",
             &format!("GI-Utils 发生致命错误，即将退出：\n\n{}", info),
         );
+        // 非渲染 panic（引擎/功能/托盘线程）→ 弹框后立即终止进程。
+        // unwind 语义下线程静默死亡会让 Loop 功能继续注入、F12 失效
+        // （僵尸进程）— 恢复 panic=abort 时代的 fail-fast 语义。
+        std::process::exit(1);
     }));
 }
 
@@ -878,24 +913,14 @@ fn main() {
     let stop_func: Arc<dyn KeyFunction> =
         Arc::new(gi_utils::functions::stop::停止退出::new(stop_flag.clone()));
     startup_log.push("Registered functions:".into());
+    startup_log.extend(register_all_bindings(
+        &key_bindings,
+        &stop_func,
+        &config_bindings,
+        &send_ctx,
+        false,
+    ));
     for b in &config_bindings {
-        let func: Arc<dyn KeyFunction> = if b.func == "停止退出" {
-            stop_func.clone()
-        } else {
-            match config::create_function(&b.func, send_ctx.clone()) {
-                Ok(f) => f,
-                Err(e) => {
-                    startup_log.push(format!(
-                        "  ERROR: '{}' -> '{}': {}",
-                        b.key.name(),
-                        b.func,
-                        e
-                    ));
-                    continue;
-                }
-            }
-        };
-        key_bindings.register(b.key, b.mode, func);
         startup_log.push(format!(
             "  {:>12}  {:<12}  {:?}",
             b.key.name(),
@@ -939,7 +964,44 @@ fn main() {
     let mut tray_handle: Option<JoinHandle<()>> = None;
     let mut last_error: Option<String> = None;
 
+    // 托盘可用性 / 窗口隐藏态 — 进程级共享：崩溃恢复重建 app 时继承
+    // 崩溃前的值（否则恢复后关窗直接退出、隐藏态弹回桌面）
+    let tray_ok_shared = Arc::new(AtomicBool::new(false));
+    let hidden_shared = Arc::new(AtomicBool::new(false));
+
     for attempt in 0..MAX_GUI_RETRIES {
+        // 绑定来源：首次尝试用启动快照；重试从磁盘重载 — 快照可能落后于
+        // 用户已保存的修改（review #2），恢复必须以磁盘为准
+        let attempt_bindings: Vec<Binding> = if attempt == 0 {
+            config_bindings.clone()
+        } else {
+            match config::load() {
+                Ok(b) => {
+                    startup_log.push("配置已从 config.toml 重新加载（崩溃恢复）".into());
+                    b
+                }
+                Err(e) => {
+                    startup_log.push(format!(
+                        "config.toml 重载失败（沿用启动快照）: {}",
+                        e
+                    ));
+                    config_bindings.clone()
+                }
+            }
+        };
+
+        // 注册表对齐：重试轮先停旧功能线程（clear_all 只移除条目，旧线程
+        // 会永久失联存活）再全量替换（review #8）
+        if attempt > 0 {
+            startup_log.extend(register_all_bindings(
+                &key_bindings,
+                &stop_func,
+                &attempt_bindings,
+                &send_ctx,
+                true,
+            ));
+        }
+
         // 托盘：每轮尝试独立 channel + 线程（上一轮的旧线程在 panic 路径已收尾）
         let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
         tray_handle = match std::thread::Builder::new()
@@ -957,8 +1019,8 @@ fn main() {
             }
         };
 
-        // GUI 状态重建：绑定表从 config_bindings 重建，共享句柄全部 Clone
-        let gui_bindings: Vec<GuiBinding> = config_bindings
+        // GUI 状态重建：绑定表从 attempt_bindings 重建，共享句柄全部 Clone
+        let gui_bindings: Vec<GuiBinding> = attempt_bindings
             .iter()
             .enumerate()
             .map(|(i, b)| GuiBinding {
@@ -994,11 +1056,13 @@ fn main() {
             log_collector: log_collector.clone(),
             tray_rx,
             should_exit: false,
-            // tray_ok 由托盘线程的 TrayAction::Ready 异步置位；
-            // 在此之前关闭窗口直接退出（不隐藏）。
-            tray_ok: false,
+            // tray_ok / hidden 为进程级共享标志 — 继承崩溃前的值；
+            // hidden_applied 每轮尝试各自执行（把新窗口藏起来）
+            tray_ok: tray_ok_shared.clone(),
             config_ok,
-            hidden: false,
+            hidden: hidden_shared.clone(),
+            hidden_applied: false,
+            hidden_apply_deadline: None,
         };
 
         let options = eframe::NativeOptions {
@@ -1034,21 +1098,14 @@ fn main() {
                 last_error = Some(e.to_string());
                 break;
             }
-            // 渲染线程 panic — 收尾旧托盘线程、重建注册表后重试
+            // 渲染线程 panic — 收尾旧托盘线程后重试（注册表对齐在
+            // 下一轮尝试顶部执行）
             Err(payload) => {
                 let msg = panic_message(&payload);
                 startup_log.push(format!("GUI 渲染线程 panic：{}", msg));
                 // 主线程已恢复 — 旧托盘线程安全收尾（WM_CLOSE + 有界等待，
                 // 防止误找到新窗口造成双托盘图标）
                 stop_tray_thread(tray_handle.take());
-                // 注册表可能残留崩溃前的未保存 live-apply 编辑 — 重建使其
-                // 与 UI 表格一致（修改被丢弃并记录）
-                startup_log.extend(rebuild_bindings(
-                    &key_bindings,
-                    &stop_func,
-                    &config_bindings,
-                    &send_ctx,
-                ));
                 if attempt + 1 >= MAX_GUI_RETRIES {
                     last_error = Some(msg);
                     break;

@@ -92,7 +92,7 @@ Engine (主循环, blocking)
 | **stop_requested 正向语义** | `true`=停止，全项目统一，无双重否定 |
 | **TOML 动态配置** | `config.toml` 驱动热键映射，无需重编译 |
 | **ActiveGuard Drop 防护** | 线程 panic 时自动清理 active 标志（panic=unwind 后真正生效） |
-| **GUI 崩溃自愈** | 睡眠唤醒 wgl 上下文失效 → eframe make_current panic；catch_unwind 捕获后重建 app 重试 ≤3 次（引擎线程无感）；IN_GUI_RETRY 期间 hook 静默 |
+| **GUI 崩溃自愈** | 睡眠唤醒 wgl 上下文失效 → eframe make_current panic；catch_unwind 重建 app 重试 ≤3 次；**关机序列在 Drop 之外**（shutdown_all 显式调用 — 回卷 Drop 执行关机曾杀死引擎）；hook 静默仅限主线程渲染 panic（GUI_MAIN_THREAD 区分），其他线程 panic 弹框后立即退出；恢复时从磁盘重载配置 + stop_all/clear_all 重建注册表；tray_ok/hidden 进程级共享继承 |
 | **Mutex 外 join** | stop 不阻塞主事件循环 |
 | **delay_ms_interruptible** | 100μs 检查间隔，Loop/Toggle 即时响应 |
 | **EventSequence 链式 API** | `seq.tap(K).sleep(50).wheel(DOWN)` |

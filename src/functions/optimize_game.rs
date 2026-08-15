@@ -24,9 +24,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// 支持原神/崩铁/绝区零/终末地 (UnityWndClass) 以及鸣潮/黑猴 (UnrealWindow)。
 pub struct 优化游戏 {
     hwnd: HWND,
-    /// 奇数次 = 优化，偶数次 = 恢复。
-    toggle: AtomicBool,
 }
+
+/// 奇偶切换状态 — 模块级 static（进程级共享）。
+/// 实例会被 live-apply 与崩溃恢复重建：状态若随实例走，重建后奇偶归零，
+/// 已隔离的游戏会被二次隔离而非恢复（review 发现）。
+static OPTIMIZE_TOGGLE: AtomicBool = AtomicBool::new(false);
 
 // 窗口句柄在进程生命周期内有效，跨线程共享是安全的。
 unsafe impl Send for 优化游戏 {}
@@ -40,15 +43,14 @@ impl 优化游戏 {
     pub fn new() -> Self {
         Self {
             hwnd: find_game_window(),
-            toggle: AtomicBool::new(false),
         }
     }
 }
 
 impl KeyFunction for 优化游戏 {
     fn execute(&self, _stop_requested: Arc<AtomicBool>) {
-        // 切换奇偶：odd → 优化，even → 恢复
-        let optimize = !self.toggle.fetch_xor(true, Ordering::AcqRel);
+        // 切换奇偶：odd → 优化，even → 恢复（进程级共享状态）
+        let optimize = !OPTIMIZE_TOGGLE.fetch_xor(true, Ordering::AcqRel);
 
         if optimize {
             self.optimize();
