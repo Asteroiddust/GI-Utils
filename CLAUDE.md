@@ -1,4 +1,4 @@
-# GI-Utils — Rust 游戏输入自动化工具 v1.1.0
+# GI-Utils — Rust 游戏输入自动化工具 v1.1.1
 
 > **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）+ 25 单测 + 2 doctest 通过
 > **Build**: O3 + LTO fat + panic=unwind + target-cpu=native
