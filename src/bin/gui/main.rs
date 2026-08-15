@@ -732,14 +732,32 @@ fn show_message_box(title: &str, msg: &str) {
 /// panic=abort 时 Drop 不执行（`restore_all_affinity` 在 Drop 路径中），
 /// 若 panic 前已隔离游戏核心，其它进程会停留在受限核心 — hook 兜底恢复。
 /// 必须在任何可能 panic 的代码之前安装。
+/// GUI 渲染重试上下文的 panic 标记 — 此期间的 panic 由 catch_unwind 恢复：
+/// hook 不弹窗、不恢复亲和性（引擎仍在运行，恢复会破坏游戏优化）。
+static IN_GUI_RETRY: AtomicBool = AtomicBool::new(false);
+
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        if IN_GUI_RETRY.load(Ordering::Relaxed) {
+            return;
+        }
         let _ = utils::affinity::restore_all_affinity();
         show_message_box(
             "GI-Utils 错误",
             &format!("GI-Utils 发生致命错误，即将退出：\n\n{}", info),
         );
     }));
+}
+
+/// 从 panic payload 提取可读消息（&str / String / 未知）。
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -836,30 +854,16 @@ fn main() {
         ));
     }
 
-    // ── 5. 创建托盘图标 ─────────────────────────────────────
-    let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
+    // ── 5. 托盘图标（像素生成一次，线程按尝试轮重建）────────
     let gui_cfg = config::load_gui_config();
-    let (pixels, w, h) = tray::create_tray_icon_pixels();
+    let (tray_pixels, tray_w, tray_h) = tray::create_tray_icon_pixels();
     if gui_cfg.icon_path.is_empty() {
         startup_log.push("Tray icon: generated".into());
     } else {
         startup_log.push(format!("Tray icon: {}", gui_cfg.icon_path));
     }
 
-    let tray_handle = match std::thread::Builder::new()
-        .name("tray".into())
-        .spawn(move || {
-            tray::run_tray_thread(tray_tx, gui_cfg.icon_path, pixels, w, h);
-        }) {
-        Ok(h) => Some(h),
-        Err(e) => {
-            // 托盘线程创建失败 — tray_ok 保持 false（关闭窗口直接退出），GUI 仍可用
-            startup_log.push(format!("Tray thread spawn failed: {}", e));
-            None
-        }
-    };
-
-    // ── 6. 启动 Engine 后台线程 ─────────────────────────────
+    // ── 6. 启动 Engine 后台线程（只 spawn 一次 — 重试循环之外）──
     let engine_handle = std::thread::Builder::new()
         .name("engine".into())
         .spawn(move || {
@@ -868,71 +872,121 @@ fn main() {
         .expect("Failed to spawn engine thread");
     startup_log.push("Engine running.".into());
 
-    // ── 7. 构建 GUI 状态 ────────────────────────────────────
+    // ── 7. GUI 事件循环（崩溃自愈重试，最多 MAX_GUI_RETRIES 次）──
+    // 睡眠唤醒/显示变更会使 wgl 上下文失效，eframe 在 glow_integration 的
+    // make_current 处 unwrap panic。catch_unwind 捕获后等 1s 重建 app 与
+    // GL 上下文 — 引擎/输入处理线程全程不受影响（进程存活，热键持续工作）。
+    // 首次尝试持 Engine JoinHandle（正常退出时 join）；重试尝试 detach —
+    // 引擎经 stop_flag 自行退出。托盘每轮尝试独立 channel/线程（panic 后
+    // 旧线程因 receiver 断开而退出，短暂双图标窗口可接受）。
+    const MAX_GUI_RETRIES: u32 = 3;
     let function_names = config::list_function_names();
-    let gui_bindings: Vec<GuiBinding> = config_bindings
-        .iter()
-        .enumerate()
-        .map(|(i, b)| GuiBinding {
-            id: i,
-            key: Some(b.key),
-            key_name: config::key_to_config_name(b.key)
-                .unwrap_or_else(|| b.key.name())
-                .to_string(),
-            func: b.func.clone(),
-            mode: b.mode,
-        })
-        .collect();
-    let next_id = gui_bindings.len();
+    let mut engine_handle = Some(engine_handle);
+    let mut last_error: Option<String> = None;
 
-    let app = GuiApp {
-        bindings_list: gui_bindings,
-        next_id,
-        dirty: false,
-        error_msg: None,
-        key_bindings,
-        send_ctx,
-        stop_flag,
-        engine_handle: Some(engine_handle),
-        tray_handle,
-        capture: CaptureState {
-            active: false,
-            binding_id: None,
-            rx: None,
-        },
-        function_names,
-        font_loaded: false,
-        log_messages: startup_log,
-        log_visible: true,
-        log_collector,
-        tray_rx,
-        should_exit: false,
-        // tray_ok 由托盘线程的 TrayAction::Ready 异步置位；
-        // 在此之前关闭窗口直接退出（不隐藏）。
-        tray_ok: false,
-        config_ok,
-        hidden: false,
-    };
+    for attempt in 0..MAX_GUI_RETRIES {
+        let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
+        let tray_handle = std::thread::Builder::new()
+            .name("tray".into())
+            .spawn({
+                let icon_path = gui_cfg.icon_path.clone();
+                let pixels = tray_pixels.clone();
+                move || tray::run_tray_thread(tray_tx, icon_path, pixels, tray_w, tray_h)
+            })
+            .ok(); // 失败时 tray_ok 保持 false（关闭窗口直接退出），GUI 仍可用
 
-    // ── 8. 运行 GUI 事件循环 ────────────────────────────────
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 500.0])
-            .with_min_inner_size([600.0, 300.0]),
-        ..Default::default()
-    };
+        // GUI 状态重建：绑定表从 config_bindings 重建，共享句柄全部 Clone
+        let gui_bindings: Vec<GuiBinding> = config_bindings
+            .iter()
+            .enumerate()
+            .map(|(i, b)| GuiBinding {
+                id: i,
+                key: Some(b.key),
+                key_name: config::key_to_config_name(b.key)
+                    .unwrap_or_else(|| b.key.name())
+                    .to_string(),
+                func: b.func.clone(),
+                mode: b.mode,
+            })
+            .collect();
+        let next_id = gui_bindings.len();
 
-    if let Err(e) = eframe::run_native(
-        "GI-Utils Configuration",
-        options,
-        Box::new(|_cc| Ok(Box::new(app))),
-    ) {
-        // 无控制台 — 用 MessageBox 展示错误而非静默退出
-        let _ = utils::affinity::restore_all_affinity();
-        show_message_box(
-            "GI-Utils 启动失败",
-            &format!("GUI 初始化失败：\n\n{}", e),
-        );
-        std::process::exit(1);
+        let app = GuiApp {
+            bindings_list: gui_bindings,
+            next_id,
+            dirty: false,
+            error_msg: None,
+            key_bindings: key_bindings.clone(),
+            send_ctx: send_ctx.clone(),
+            stop_flag: stop_flag.clone(),
+            engine_handle: engine_handle.take(),
+            tray_handle,
+            capture: CaptureState {
+                active: false,
+                binding_id: None,
+                rx: None,
+            },
+            function_names: function_names.clone(),
+            font_loaded: false,
+            log_messages: if attempt == 0 {
+                startup_log.clone()
+            } else {
+                vec![format!("GUI 已从渲染崩溃中恢复（第 {} 次重试）", attempt)]
+            },
+            log_visible: true,
+            log_collector: log_collector.clone(),
+            tray_rx,
+            should_exit: false,
+            // tray_ok 由托盘线程的 TrayAction::Ready 异步置位；
+            // 在此之前关闭窗口直接退出（不隐藏）。
+            tray_ok: false,
+            config_ok,
+            hidden: false,
+        };
+
+        let options = eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([800.0, 500.0])
+                .with_min_inner_size([600.0, 300.0]),
+            ..Default::default()
+        };
+
+        IN_GUI_RETRY.store(true, Ordering::Relaxed);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            eframe::run_native(
+                "GI-Utils Configuration",
+                options,
+                Box::new(|_cc| Ok(Box::new(app))),
+            )
+        }));
+        IN_GUI_RETRY.store(false, Ordering::Relaxed);
+
+        match result {
+            // 正常退出（窗口关闭 / 托盘退出）
+            Ok(Ok(())) => return,
+            // 启动错误（非 panic）— 不可恢复
+            Ok(Err(e)) => {
+                last_error = Some(e.to_string());
+                break;
+            }
+            // 渲染线程 panic — 等显示状态稳定后重建重试
+            Err(payload) => {
+                let msg = panic_message(&payload);
+                startup_log.push(format!("GUI 渲染线程 panic：{}", msg));
+                if attempt + 1 >= MAX_GUI_RETRIES {
+                    last_error = Some(msg);
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+            }
+        }
     }
+
+    // 重试耗尽 / 启动失败 — 恢复亲和性并提示退出
+    let _ = utils::affinity::restore_all_affinity();
+    show_message_box(
+        "GI-Utils 启动失败",
+        &format!("GUI 初始化失败：\n\n{}", last_error.unwrap_or_default()),
+    );
+    std::process::exit(1);
 }

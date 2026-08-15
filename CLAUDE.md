@@ -1,7 +1,7 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.1.0
 
 > **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）+ 25 单测 + 2 doctest 通过
-> **Build**: O3 + LTO fat + panic=abort + target-cpu=native
+> **Build**: O3 + LTO fat + panic=unwind + target-cpu=native
 
 ## 项目概述
 
@@ -91,7 +91,8 @@ Engine (主循环, blocking)
 | **SendContext 独立类型** | 发送/接收分离，编译器强制禁止并发接收 |
 | **stop_requested 正向语义** | `true`=停止，全项目统一，无双重否定 |
 | **TOML 动态配置** | `config.toml` 驱动热键映射，无需重编译 |
-| **ActiveGuard Drop 防护** | 线程 panic 时自动清理 active 标志 |
+| **ActiveGuard Drop 防护** | 线程 panic 时自动清理 active 标志（panic=unwind 后真正生效） |
+| **GUI 崩溃自愈** | 睡眠唤醒 wgl 上下文失效 → eframe make_current panic；catch_unwind 捕获后重建 app 重试 ≤3 次（引擎线程无感）；IN_GUI_RETRY 期间 hook 静默 |
 | **Mutex 外 join** | stop 不阻塞主事件循环 |
 | **delay_ms_interruptible** | 100μs 检查间隔，Loop/Toggle 即时响应 |
 | **EventSequence 链式 API** | `seq.tap(K).sleep(50).wheel(DOWN)` |
@@ -113,7 +114,7 @@ Engine (主循环, blocking)
 ## 构建
 
 ```bash
-# release（含 build-std：std 以 panic_abort + native/O3 重编，见 .cargo/build-std.toml）
+# release（含 build-std：std 以 panic_unwind + native/O3 重编，见 .cargo/build-std.toml）
 cargo build --release --config .cargo/build-std.toml
 # 测试（不带 build-std — 全局 build-std 会让 cargo test 为 dev+test 双 profile
 # 各编一份 std，两份 core 链接报 duplicate lang item（cargo 已知问题））
@@ -123,7 +124,7 @@ cargo test
 
 自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入两个 exe；文件缺失时跳过并警告，不影响构建。
 
-release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1, panic=abort`
+release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1, panic=unwind`（unwind 是 GUI 崩溃自愈的基础：catch_unwind 捕获渲染 panic 重试；Drop 防护体系全面激活）
 
 rustflags: `-C target-cpu=native -Z plt=no`（target-cpu 已含 native 调优，tune-cpu 冗余已移除）
 

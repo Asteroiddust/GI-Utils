@@ -261,9 +261,12 @@ impl Key {
         code: ScanCode(0x46),
         is_e0: false,
     };
-    /// 暂停键使用 E1 前缀（E1.1D.45），无法用标准 Key 表示。此常量仅为占位。
+    /// 暂停键是 PS/2 中**唯一带 E1 前缀**的键（E1.1D.45），无法用标准 Key（仅 E0
+    /// 二态）表示。本项目不用此键 — 省去了 E1 前缀的编码、识别与 parse 支持，
+    /// 此常量仅为占位。The only E1-prefixed PS/2 key (E1.1D.45) — E1 support is
+    /// omitted by design since this tool never uses PAUSE; placeholder only.
     #[deprecated(
-        note = "PAUSE uses E1 prefix (E1.1D.45), not representable as Key. Use with E1-aware parsing."
+        note = "PAUSE is the only E1-prefixed PS/2 key (E1.1D.45), not representable as Key. E1 encoding/recognition/parsing omitted by design — this tool doesn't use PAUSE. Placeholder only."
     )]
     pub const PAUSE: Self = Self {
         code: ScanCode(0x45),

@@ -25,7 +25,7 @@ v1.1.0 — 10 个功能通过 TOML 配置驱动注册。master 48/48 review 全�
 - **delay_ms_interruptible** — 100μs 检查间隔，Loop/Toggle 即时响应
 - **ActiveGuard panic 防护** — 线程 panic 时自动清理 active 标志
 - **Mutex 外 join** — stop 不阻塞主事件循环
-- **profile: O3 + LTO fat + panic=abort** — 速度优先
+- **profile: O3 + LTO fat + panic=unwind** — 速度优先；unwind 支撑 GUI 崩溃自愈（catch_unwind 重试）与 Drop 防护体系
 - **时间轴调度器（Timestamp 范式）** — `engine/timeline.rs`：`Timeline`/`TimelinePlayer`（绝对时刻执行器，播放中动态加入）+ `RollingKeys`/`RollingPlayer`（节奏滚动，对应 C++ next_press_time）；鬼畜走路已迁移为滚动播放器；code-review max 15 条发现全部清零（2026-08-14）
 
 ## 待移植功能
