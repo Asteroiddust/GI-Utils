@@ -212,9 +212,14 @@ impl eframe::App for GuiApp {
         }
 
         // -0.65. 托盘 Show 重试：deadline 内每帧 show_and_activate（幽灵
-        // 窗口期点击被吞后自动补发 — review #5）
+        // 窗口期点击被吞后自动补发 — review #5）。
+        // 隐藏态立即终止重试：用户 Show 后马上关闭窗口时，close 处理器
+        // 置 hidden + SW_HIDE，若本块继续 show 会把刚藏掉的窗口每帧拉回 —
+        // 关不掉 + 闪烁（实测 bug）。
         if let Some(deadline) = self.show_until {
-            if std::time::Instant::now() < deadline {
+            if self.hidden.load(Ordering::Acquire) {
+                self.show_until = None;
+            } else if std::time::Instant::now() < deadline {
                 if let Some(hwnd) = window_ops::find_main_window() {
                     window_ops::show_and_activate(hwnd);
                 }
