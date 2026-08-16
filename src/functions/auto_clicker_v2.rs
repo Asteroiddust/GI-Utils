@@ -26,7 +26,7 @@ impl 连点器v2 {
     /// `while` 控制。
     pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut sequence = EventSequence::new();
-        sequence.left_down().sleep(5.0).left_up().sleep(5.0);
+        sequence.left_down().sleep(8.0).left_up().sleep(8.0);
         Self { sequence, send_ctx }
     }
 }
