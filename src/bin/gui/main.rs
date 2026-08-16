@@ -501,7 +501,7 @@ impl GuiApp {
                 let id = self.next_id;
                 self.next_id += 1;
                 // 默认功能：第一个未被任何行占用的非停止功能 — 固定
-                // "连点器"在已绑定时，加行后不选功能直接按键会产生重复
+                // "连点器v1"在已绑定时，加行后不选功能直接按键会产生重复
                 // 绑定；"停止退出"永不作默认（直接按键会导致程序退出）
                 // （review 4.6）
                 let used: Vec<&str> = self
@@ -512,7 +512,7 @@ impl GuiApp {
                 let default_func = config::list_function_names()
                     .into_iter()
                     .find(|name| *name != "停止退出" && !used.contains(name))
-                    .unwrap_or("连点器")
+                    .unwrap_or("连点器v1")
                     .to_string();
                 self.bindings_list.push(GuiBinding {
                     id,

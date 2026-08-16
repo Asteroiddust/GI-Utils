@@ -57,7 +57,8 @@ src/
 
 └── functions/
     ├── stop.rs                #   停止退出 (F12, Once)
-    ├── auto_clicker.rs        #   连点器 (F13, Loop)
+    ├── auto_clicker.rs        #   连点器v1 (F13, Loop)
+    ├── auto_clicker_v2.rs     #   连点器v2 — v1 独立复制版，调参互不影响
     ├── quick_pickup.rs        #   快速拾取 (F14, Loop)
     ├── ghost_walk.rs          #   鬼畜走路 (F15, Loop)
     ├── mavuika_jump.rs        #   火神跳喷 (F16, Loop)
@@ -180,7 +181,7 @@ mode = "Once"
 
 [[bindings]]
 key = "F13"
-func = "连点器"
+func = "连点器v1"
 mode = "Loop"
 
 # GUI 配置 — icon_path 指向 .ico 托盘图标；留空使用程序生成图标
@@ -193,7 +194,8 @@ icon_path = ""
 | 功能 | 状态 | 优先级 | 难度 | 备注 |
 |------|:----:|:------:|:----:|------|
 | 停止退出 | ✅ | — | — | |
-| 连点器 | ✅ | — | — | |
+| 连点器v1 | ✅ | — | — | |
+| 连点器v2 | ✅ | — | — | v1 独立复制版（调参互不影响） |
 | 快速拾取 | ✅ | — | — | |
 | 鬼畜走路 | ✅ | — | — | |
 | 火神跳喷 | ✅ | — | — | |
@@ -227,7 +229,7 @@ icon_path = ""
 [[bindings]]
 key = "F13"
 modifier = "Ctrl"        # None / Ctrl / Alt / Shift / Win
-func = "连点器"
+func = "连点器v1"
 mode = "Loop"
 ```
 
@@ -241,5 +243,5 @@ mode = "Loop"
 
 | 类型 | 模型 | 代表功能 |
 |------|------|---------|
-| **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器、快速拾取、甘雨走A、双玛头、火神跳喷 |
+| **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器v1/v2、快速拾取、甘雨走A、双玛头、火神跳喷 |
 | **Timestamp** (Time based) | 时间轴调度器 `Timeline`/`RollingKeys`（`engine/timeline.rs`） | 鬼畜走路 ✅、未来钢琴模式 |
