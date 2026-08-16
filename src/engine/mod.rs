@@ -93,6 +93,10 @@ impl Engine {
         );
 
         while !self.stop_requested.load(Ordering::Acquire) {
+            // headless 版无 GUI 帧循环 — 已结束功能线程的句柄在此回收
+            // （GUI 版由帧循环调用同一方法；is_finished 检查绝不阻塞，
+            //  谁先看到结束谁 join — review 3.3）
+            self.bindings.drain_pending_joins();
             let device = self.recv_ctx.wait_timeout(100);
             if device == 0 {
                 continue; // timeout, recheck stop_requested

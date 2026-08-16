@@ -42,6 +42,17 @@ use crate::scan_code::ScanCode;
 /// Windows 标准鼠标滚轮步进值 (Standard WHEEL_DELTA).
 pub const WHEEL_DELTA: i16 = 120;
 
+/// Interception 绝对坐标虚拟屏幕尺寸（归一化最大值 0..65535）。
+/// Interception virtual screen size for absolute coordinates.
+pub const VIRTUAL_SCREEN_SIZE: i32 = 65535;
+
+/// 屏幕像素坐标 → Interception 归一化绝对坐标。
+/// `pixel * VIRTUAL_SCREEN_SIZE / screen_size`，i64 中间值防溢出。
+#[inline]
+pub fn normalize_absolute(pixel: i32, screen_size: i32) -> i32 {
+    (pixel as i64 * VIRTUAL_SCREEN_SIZE as i64 / screen_size.max(1) as i64) as i32
+}
+
 /// 滚轮方向常量。正数 = 上/右滚动，负数 = 下/左滚动。
 /// Semantic direction constants for `wheel()`.
 /// Positive = scroll up/right, negative = scroll down/left.
@@ -163,7 +174,13 @@ impl InputEvent {
         }
     }
 
-    /// 创建绝对移动事件 (Absolute cursor movement to screen x, y).
+    /// 创建绝对移动事件 — 坐标为 Interception **归一化值 0..65535**
+    /// （虚拟屏幕 u16::MAX），**不是屏幕像素**（review 2.2）。
+    /// 像素换算用 [`normalize_absolute`]：`normalized = pixel * 65535 / screen_size`
+    /// （对应 C++ 原版 `VIRTUAL_SCREEN_WIDTH * x / screen_width`；
+    /// 添加好友/申请加入等绝对定位功能移植时必须照此换算）。
+    /// Creates an absolute movement event with Interception-normalized
+    /// coordinates (0..65535 virtual screen), NOT screen pixels.
     pub fn move_absolute(x: i32, y: i32) -> Self {
         InputEvent::Mouse {
             state: 0,
@@ -360,7 +377,9 @@ impl EventSequence {
     ///
     /// Scroll the mouse wheel by `delta` × `times` notches in a single event.
     pub fn scroll(&mut self, delta: i16, times: usize) -> &mut Self {
-        self.wheel(delta.saturating_mul(times as i16))
+        // times 先 clamp 到 i16 范围再乘 — `usize as i16` 对大值回绕
+        // （review 4.2），例如 times=70000 会绕成 4464 的滚动量
+        self.wheel(delta.saturating_mul(times.min(i16::MAX as usize) as i16))
     }
 
     // ── 时序原语 — Timing primitive ─────────────────────────

@@ -7,16 +7,28 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, ICON_BIG, ICON_SMALL, IsIconic, IsWindow, PostMessageW, SetForegroundWindow,
-    ShowWindow, HICON, SW_HIDE, SW_RESTORE, SW_SHOW, WM_CLOSE, WM_SETICON,
+    FindWindowW, GetWindowThreadProcessId, ICON_BIG, ICON_SMALL, IsIconic, IsWindow,
+    PostMessageW, SetForegroundWindow, ShowWindow, HICON, SW_HIDE, SW_RESTORE, SW_SHOW, WM_CLOSE,
+    WM_SETICON,
 };
 
-/// FindWindowW(None, "GI-Utils Configuration") + IsWindow 校验。
+/// FindWindowW(None, "GI-Utils Configuration") + 进程过滤 + IsWindow 校验。
+///
+/// FindWindowW 返回**第一个**匹配标题的顶层窗口，可能命中其他进程的同名
+/// 窗口（等标题窗口虽罕见，但 hit 后所有 HWND 操作都会打向陌生窗口 —
+/// review 3.7）。GetWindowThreadProcessId 必须等于本进程 id 才可信，
+/// 成本仅一次 API 调用。
 pub fn find_main_window() -> Option<HWND> {
+    let pid = std::process::id();
     unsafe {
         FindWindowW(None, windows::core::w!("GI-Utils Configuration"))
             .ok()
             .filter(|h| !h.is_invalid())
+            .filter(|h| {
+                let mut wpid = 0u32;
+                GetWindowThreadProcessId(*h, Some(&mut wpid));
+                wpid == pid
+            })
             .filter(|h| is_valid(*h))
     }
 }

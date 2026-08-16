@@ -130,6 +130,11 @@ fn main() {
     // Run the main event loop (blocks until F12)
     engine.run();
 
+    // 先停全部功能线程再收尾（与 GUI shutdown_all 同序，review 2.3）：
+    // run() 返回时 Loop/Toggle 线程可能仍在运行，蜂鸣/亲和性恢复期间
+    // 不允许继续注入输入。
+    bindings.stop_all();
+
     // 退出蜂鸣：375 Hz, 300 ms（与原 C++ 版一致）
     // Exit beep: 375 Hz, 300 ms (same as original C++)
     utils::beep::beep(375, 300);

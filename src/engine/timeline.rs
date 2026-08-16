@@ -288,12 +288,15 @@ impl TimelinePlayerState {
     fn sync(&self) {
         let new_entries = {
             let tl = self.timeline.lock().unwrap_or_else(|p| p.into_inner());
-            let base = *self.base.borrow();
             let seen = *self.seen.borrow();
-            if tl.entries.len() <= base + seen {
+            // 守卫/切片只看 seen（当前 Vec 位置）— base 只参与绝对索引
+            // 换算（from）。此前误用 base+seen 作切片起点：前缀清理后
+            // base 平移，切片起点越过当前 Vec 长度，清理后追加的条目被
+            // 永久跳过（review 2.1 高危）。
+            if tl.entries.len() <= seen {
                 return;
             }
-            tl.entries[base + seen..].to_vec()
+            tl.entries[seen..].to_vec()
         };
         let from = *self.base.borrow() + *self.seen.borrow();
         let mut fresh = expand(&new_entries, from);
@@ -834,6 +837,30 @@ mod tests {
 
         state.drain_due(delay::ms_to_ticks(200.0)); // W-up — W 完全回放
         assert!(tl.lock().unwrap().entries.is_empty(), "前缀整体清理");
+    }
+
+    #[test]
+    fn player_state_append_after_prefix_cleanup() {
+        // review 2.1 回归：前缀清理（base 平移）后追加的条目必须被捕获 —
+        // 旧实现在清理后追加会永久跳过新条目
+        let tl = Arc::new(Mutex::new(Timeline::new()));
+        tl.lock().unwrap().note(Key::W, 0.0, 1.0);
+        let state = TimelinePlayerState::new(tl.clone());
+
+        // 完全回放 W → 前缀清理（entries 空、base=1、seen=0）
+        state.drain_due(delay::ms_to_ticks(0.0));
+        state.drain_due(delay::ms_to_ticks(5.0));
+        assert!(tl.lock().unwrap().entries.is_empty());
+        assert_eq!(*state.base.borrow(), 1);
+        assert_eq!(*state.seen.borrow(), 0);
+
+        // 清理后追加 → sync 必须展开新条目（旧实现此处跳过）
+        tl.lock().unwrap().note(Key::A, 10.0, 5.0);
+        state.sync();
+        assert_eq!(state.items.borrow().len(), 2, "清理后追加的条目被跳过");
+        let due = state.drain_due(delay::ms_to_ticks(10.0));
+        assert_eq!(due.len(), 1);
+        assert!(matches!(due[0], ScheduleItem::Down { key, .. } if key == Key::A));
     }
 
     #[test]

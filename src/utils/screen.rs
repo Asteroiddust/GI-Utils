@@ -125,8 +125,14 @@ pub fn get_pixel_color(x: i32, y: i32) -> Option<PixelColor> {
 /// Unlike [`get_pixel_color`], which creates/destroys a DC on every call,
 /// `PixelReader` holds the DC open for the lifetime of the reader.
 /// Use this when reading pixels in a tight loop (e.g. continuous monitoring).
+///
+/// **DC 故意不释放（泄漏策略）**：PixelReader 实例在注册线程（GUI 主线程/
+/// 工厂）创建、在功能线程使用，最后一次 Arc 可能在功能线程 drop —
+/// MSDN 契约要求 ReleaseDC 与 GetDC 同线程，跨线程释放无合法路径；
+/// 泄漏单个桌面 DC 到进程退出由 OS 回收（与托盘自建图标同策略，
+/// review 3.1）。
 pub struct PixelReader {
-    dc: ScreenDC,
+    dc: std::mem::ManuallyDrop<ScreenDC>,
 }
 
 impl PixelReader {
@@ -135,7 +141,7 @@ impl PixelReader {
     /// Returns `None` if the DC cannot be acquired.
     pub fn new() -> Option<Self> {
         Some(Self {
-            dc: ScreenDC::new()?,
+            dc: std::mem::ManuallyDrop::new(ScreenDC::new()?),
         })
     }
 

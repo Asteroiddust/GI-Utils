@@ -184,6 +184,17 @@ impl eframe::App for GuiApp {
                 // 本轮已收到 Ready — 关窗隐藏判定从此刻起可用（见 tray_ready）
                 self.tray_ready = true;
                 if !ok {
+                    // NIM_ADD 失败：隐藏态不可恢复（无图标可唤回）—
+                    // 取消隐藏态并武装 Show 重试把窗口拉回。先置 hidden=false
+                    // 再武装 — deadline 块在 hidden=true 时立即取消重试
+                    // （review 3.6）。
+                    self.hidden.store(false, Ordering::Release);
+                    if self.hidden_applied {
+                        self.show_until = Some(
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        );
+                    }
+                    ctx.request_repaint();
                     self.log("WARNING: tray icon creation failed — closing will exit instead of hiding.");
                 }
             }
@@ -489,13 +500,25 @@ impl GuiApp {
             {
                 let id = self.next_id;
                 self.next_id += 1;
+                // 默认功能：第一个未被任何行占用的非停止功能 — 固定
+                // "连点器"在已绑定时，加行后不选功能直接按键会产生重复
+                // 绑定；"停止退出"永不作默认（直接按键会导致程序退出）
+                // （review 4.6）
+                let used: Vec<&str> = self
+                    .bindings_list
+                    .iter()
+                    .map(|g| g.func.as_str())
+                    .collect();
+                let default_func = config::list_function_names()
+                    .into_iter()
+                    .find(|name| *name != "停止退出" && !used.contains(name))
+                    .unwrap_or("连点器")
+                    .to_string();
                 self.bindings_list.push(GuiBinding {
                     id,
                     key: None,
                     key_name: "...".into(),
-                    // 默认"连点器"而非列表第一项 — 第一项是"停止退出"，
-                    // 用户加行后不选功能直接按键会导致程序退出
-                    func: "连点器".into(),
+                    func: default_func,
                     mode: TriggerMode::Loop,
                 });
                 // 新增行自动进入按键捕获
@@ -1164,6 +1187,10 @@ fn main() {
                 // 若不重置，用户关窗走隐藏路径却没有任何托盘图标可唤回
                 // （review 发现）；GUI 仍可用
                 tray_ok_shared.store(false, Ordering::Release);
+                // 同步重置 hidden — 崩溃前用户已把窗口藏进托盘、恢复轮
+                // 又无图标可唤回时，隐藏态不可恢复。本分支在首帧前执行，
+                // 新窗口不会执行启动隐藏（review 3.6）。
+                hidden_shared.store(false, Ordering::Release);
                 None
             }
         };

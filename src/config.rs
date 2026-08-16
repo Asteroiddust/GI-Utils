@@ -397,7 +397,14 @@ pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;
     let content = format!("# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}", toml_str);
-    std::fs::write(config_path(), content).map_err(|e| format!("failed to write config: {}", e))
+    // 原子写：先写同目录临时文件再 rename 覆盖 — 直接 write 中途崩溃/
+    // 断电会留下截断的 config.toml，下次启动解析失败拖垮全部绑定
+    // （review 4.4）。同目录保证 rename 同卷（Windows rename 即
+    // MoveFileExW REPLACE_EXISTING，可覆盖已存在的目标）。
+    let path = config_path();
+    let tmp_path = path.with_extension("toml.tmp");
+    std::fs::write(&tmp_path, &content).map_err(|e| format!("failed to write config: {}", e))?;
+    std::fs::rename(&tmp_path, &path).map_err(|e| format!("failed to replace config: {}", e))
 }
 
 /// 键的显示名 — 优先配置名（"F13"/"NumpadAdd"），未收录回退扫描码名。

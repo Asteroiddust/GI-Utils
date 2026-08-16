@@ -103,8 +103,21 @@ impl Entry {
 
     /// 为 Once 创建线程：运行至结束，无需取消。
     /// Spawn for Once: runs to completion, no cancellation needed.
-    fn spawn_once(&mut self, key: Key) {
+    /// 返回上一轮已结束的 Once 句柄（交调用方入 pending_joins 回收 —
+    /// review 3.9：Once 句柄此前被丢弃不可回收）。
+    fn spawn_once(&mut self, key: Key) -> Option<JoinHandle<()>> {
         let func = self.func.clone();
+
+        // 上一轮的 Once 线程已结束 → 句柄交给调用方回收；仍在运行 → 保留
+        // （Once 有 is_running 守卫，运行中不会走到此处，理论兜底）
+        let retired = match self.handle.take() {
+            Some(h) if h.is_finished() => Some(h),
+            Some(h) => {
+                self.handle = Some(h);
+                None
+            }
+            None => None,
+        };
 
         self.active.store(true, Ordering::Release);
         let guard = ActiveGuard(self.active.clone());
@@ -120,7 +133,8 @@ impl Entry {
             });
 
         match result {
-            Ok(_) => {
+            Ok(handle) => {
+                self.handle = Some(handle);
                 debug!("Started (once) {:?}", key);
             }
             Err(e) => {
@@ -128,6 +142,7 @@ impl Entry {
                 debug!("Failed to spawn (once) {:?}: {}", key, e);
             }
         }
+        retired
     }
 
     /// 发送停止信号，取出线程句柄用于延迟 join。
@@ -204,6 +219,9 @@ impl KeyBindings {
 
     /// 注册按键绑定：将按键与函数和触发模式关联。
     /// Register a function with a trigger mode and a key.
+    ///
+    /// 替换已占用键时先停旧线程并回收句柄 — 直接 insert 覆盖会让旧线程的
+    /// stop_requested 引用丢失、无人能停止（review 3.8）。
     pub fn register(&self, key: Key, mode: TriggerMode, func: Arc<dyn KeyFunction>) {
         let entry = Entry {
             func,
@@ -212,7 +230,18 @@ impl KeyBindings {
             stop_requested: None,
             handle: None,
         };
-        self.bindings.lock().unwrap().insert(key, entry);
+        let stopped = {
+            let mut bindings = self.bindings.lock().unwrap();
+            let stopped = bindings
+                .get_mut(&key)
+                .and_then(|entry| entry.signal_stop(key));
+            bindings.insert(key, entry);
+            stopped
+        };
+        // 锁序：bindings → pending_joins，与 clear_all 一致
+        if let Some(handle) = stopped {
+            self.pending_joins.lock().unwrap().push(handle);
+        }
         debug!("Registered {:?} ({:?})", key, mode);
     }
 
@@ -246,6 +275,9 @@ impl KeyBindings {
             // 锁序：bindings → pending_joins，与 process_key_down 一致，不嵌套反转
             self.pending_joins.lock().unwrap().extend(handles);
         }
+        // 防抖表同步清空 — 按住某键期间 live-apply 时，旧 held 记录会吞掉
+        // 新绑定下同键的第一次 key-down（review 4.5）
+        self.keys_held.lock().unwrap().clear();
         debug!("Cleared all bindings");
     }
 
@@ -300,7 +332,11 @@ impl KeyBindings {
                         if entry.is_running() {
                             return;
                         }
-                        entry.spawn_once(key);
+                        // 上一轮已结束的 Once 句柄 → 入 pending 队列回收
+                        let retired = entry.spawn_once(key);
+                        if retired.is_some() {
+                            deferred = retired;
+                        }
                     }
                     TriggerMode::Loop => {
                         if entry.is_running() {

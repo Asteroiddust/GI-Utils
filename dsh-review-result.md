@@ -7,6 +7,35 @@
 
 ---
 
+## 0. 处置记录（2026-08-16，dsh-dev）
+
+修复后 `cargo test`：26 单测 + 2 doctest 全部通过。
+
+| 编号 | 处置 | 说明 |
+|---|---|---|
+| 2.1 | ✅ 已修 | `sync` 守卫/切片只看 `seen`；`base + seen` 仅用于绝对索引换算；新增前缀清理后追加回归测试 |
+| 2.2 | ✅ 已修 | `move_absolute` 文档标注归一化语义；新增 `normalize_absolute` 换算辅助 |
+| 2.3 | ✅ 已修 | headless `run()` 返回后先 `stop_all` 再蜂鸣/恢复亲和性（对齐 GUI shutdown 顺序） |
+| 3.1 | ✅ 已修 | `PixelReader` DC 改 `ManuallyDrop` 泄漏策略（跨线程 ReleaseDC 无合法路径，与托盘图标同策略） |
+| 3.2 | ⛔ 不修（有意） | 全核掩码保持。实测缩减游戏可用核心数在部分游戏有较大性能下降和频繁 stutter，缩减 OTHER_CORES_MASK 也有奇怪现象 |
+| 3.3 | ✅ 已修 | `Engine::run` 每轮迭代 `drain_pending_joins`（headless 不再累积句柄） |
+| 3.4 | ⛔ 不修（有意） | 恢复不降优先级：降级需再次 OpenProcess 游戏句柄（反作弊拦截路径），HIGH 留存无害 |
+| 3.5 | ✅ 已修 | NIM_ADD 前 quit 抢先检查 — stop 与图标添加的竞态不再留下孤儿托盘图标 |
+| 3.6 | ✅ 已修 | 托盘 spawn 失败分支 + `Ready(false)` 两处复位 hidden；`Ready(false)` 武装 Show 重试拉回窗口 |
+| 3.7 | ✅ 已修 | `find_main_window` 增加 `GetWindowThreadProcessId` 本进程过滤 |
+| 3.8 | ✅ 已修 | `register` 替换已占用键先 `signal_stop` + 句柄入 pending 队列 |
+| 3.9 | ✅ 已修 | `spawn_once` 存储句柄、退役句柄返回调用方入 pending 回收 |
+| 4.1 | ✅ 已修 | `delay_ms` 饱和加法 |
+| 4.2 | ✅ 已修 | `scroll` 的 `times` 先 clamp 到 `i16::MAX` 再饱和乘 |
+| 4.3 | ✅ 已修 | `WM_DESTROY` 先清 userdata 再 `from_raw` |
+| 4.4 | ✅ 已修 | `config::save` 同目录临时文件 + rename 原子写 |
+| 4.5 | ✅ 已修 | `clear_all` 同步清空 `keys_held` 防抖表 |
+| 4.6 | ✅ 已修 | 新增行默认功能 = 功能列表中首个未被占用的非停止功能 |
+| 4.7 | ❌ 驳回 | AND mask 缓冲区实现为通用尺寸（当前调用固定 32×32），非硬编码 |
+| 4.8 | ✅ 已修 | toggle 仅在分支成功后翻转 — 失败保持原态，下次按下重试同一动作 |
+
+---
+
 ## 1. 验证结果
 
 | 检查 | 结果 |

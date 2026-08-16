@@ -1,6 +1,6 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.2.1
 
-> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 25 单测 + 2 doctest 通过
+> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 26 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16
 > **Build**: O3 + LTO fat + panic=unwind + target-cpu=native
 
 ## 项目概述
@@ -136,6 +136,8 @@ rustflags: `-C target-cpu=native -Z plt=no`（target-cpu 已含 native 调优，
 
 build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，破坏 GUI 亲和性恢复兜底。
 
+已知非目标（有意保持，见 dsh-review-result.md §3）：`cargo clippy -D warnings` 有 13 项风格 lint（缺 `Default` impl、`collapsible_if` 等，无功能错误）；`cargo fmt --check` 不干净（项目为手写格式风格，引入 rustfmt 会产生一次大 diff）。
+
 ## 运行
 
 **必须以管理员身份运行**。首次运行自动生成 `config.toml`。
@@ -148,6 +150,14 @@ build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，
 物理核 6    [12,13]  GUI    (GUI 渲染, 线程级 LOWEST 优先级)
 物理核 7    [14,15]  TOOL   (Engine 输入处理 + 功能线程, REALTIME)
 ```
+
+> ⚠️ **GAME/OTHER 分区是目标设计，当前未落地**（DeepSeek 审查 3.2，有意保持）：
+> `GAME_CORES_MASK` 与 `OTHER_CORES_MASK` 均为全核掩码，「优化游戏」的
+> 核心隔离实际是 no-op，仅优先级提升 + 前台切换生效。实测缩减游戏可用
+> 核心数在部分游戏有较大性能下降和频繁 stutter，缩减 OTHER_CORES_MASK
+> 也有奇怪现象，故暂不改。TOOL/GUI 分区**已落地**（下方进程掩码 + 线程收窄）。
+> 「优化游戏」偶数次恢复**有意不降游戏优先级**（3.4）：降级需再次
+> OpenProcess 游戏句柄（反作弊拦截路径），且 HIGH 留存无害（进程退出即消亡）。
 
 进程掩码 12-15（GUI 版）。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`；托盘线程 → 12,13（普通优先级，GUI 侧）；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用）。headless 版进程掩码保持 14,15，无需扩展。
 

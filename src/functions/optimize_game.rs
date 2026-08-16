@@ -49,24 +49,39 @@ impl 优化游戏 {
 
 impl KeyFunction for 优化游戏 {
     fn execute(&self, _stop_requested: Arc<AtomicBool>) {
-        // 切换奇偶：odd → 优化，even → 恢复（进程级共享状态）
-        let optimize = !OPTIMIZE_TOGGLE.fetch_xor(true, Ordering::AcqRel);
-
-        if optimize {
-            self.optimize();
+        // 切换奇偶：odd → 优化，even → 恢复（进程级共享状态）。
+        // 仅在分支成功后翻转 — 先翻后执行时失败路径会永久卡在错误的
+        // 奇偶相（如找不到窗口，下次按下误走恢复 — review 4.8）。
+        let optimize = !OPTIMIZE_TOGGLE.load(Ordering::Acquire);
+        let succeeded = if optimize {
+            self.optimize()
         } else {
-            info!("优化游戏: 恢复所有进程 CPU 亲和性");
-            if let Err(e) = utils::affinity::restore_all_affinity() {
-                error!("优化游戏: 恢复失败: {}", e);
-            }
-            info!("优化游戏: 已恢复");
-            utils::beep::beep_async(375, 300);
+            self.restore()
+        };
+        if succeeded {
+            OPTIMIZE_TOGGLE.fetch_xor(true, Ordering::AcqRel);
         }
     }
 }
 
 impl 优化游戏 {
-    fn optimize(&self) {
+    /// 恢复所有进程 CPU 亲和性。成功返回 true（供 execute 翻转奇偶）。
+    fn restore(&self) -> bool {
+        info!("优化游戏: 恢复所有进程 CPU 亲和性");
+        if let Err(e) = utils::affinity::restore_all_affinity() {
+            error!("优化游戏: 恢复失败: {}", e);
+            return false;
+        }
+        info!("优化游戏: 已恢复");
+        utils::beep::beep_async(375, 300);
+        true
+    }
+}
+
+impl 优化游戏 {
+    /// 执行优化流程。任何一步失败返回 false（execute 不翻转奇偶，
+    /// 下次按下重试同一动作）。
+    fn optimize(&self) -> bool {
         // ── 1. 窗口验证 / 重新查找 ────────────────────
         let mut hwnd = self.hwnd;
         if !is_valid_window(hwnd) {
@@ -76,7 +91,7 @@ impl 优化游戏 {
         if !is_valid_window(hwnd) {
             error!("优化游戏: 找不到游戏窗口！");
             utils::beep::beep_async(1000, 500);
-            return;
+            return false;
         }
 
         // ── 2. 获取进程 PID + 窗口标题 ─────────────────
@@ -85,7 +100,7 @@ impl 优化游戏 {
         if pid == 0 {
             error!("优化游戏: 获取进程 ID 失败！");
             utils::beep::beep_async(1000, 500);
-            return;
+            return false;
         }
         let title = get_window_title(hwnd);
 
@@ -108,7 +123,7 @@ impl 优化游戏 {
                 // 对应 C++ 原版 SetProcessAffinityMaskAndPriorityClass 失败蜂鸣 —
                 // 游戏反作弊（如 mhyprot）会拦截外部 OpenProcess，此路径不可静默
                 utils::beep::beep_async(1000, 500);
-                return;
+                return false;
             }
         };
 
@@ -144,11 +159,12 @@ impl 优化游戏 {
                     MAX_RETRIES * 50
                 );
                 utils::beep::beep_async(500, 200);
-                return;
+                return false;
             }
         }
         info!("优化游戏: 完成");
         utils::beep::beep_async(750, 300);
+        true
     }
 }
 

@@ -169,9 +169,11 @@ unsafe extern "system" fn tray_wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
-            // 释放 ctx（恰一次 — GWLP_USERDATA 随即清零，防双重释放）
-            let _ = Box::from_raw(ctx_ptr);
+            // 先清 userdata 再释放 ctx — from_raw 的 drop（TrayContext 含
+            // tx Sender）期间任何重入/触达本窗口的路径读到空指针安全跳过；
+            // 顺序反了有双重释放窗口（review 4.3）
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            let _ = Box::from_raw(ctx_ptr);
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -294,6 +296,16 @@ pub fn run_tray_thread(
         // SetWindowLongPtrW 对有效窗口几乎不失败；失败则 ctx 泄漏（进程级
         // 单窗口，可接受）。best-effort。
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(ctx) as isize);
+
+        // ── ⑤½ quit 抢先检查 ───────────────────────────────────
+        // stop_tray_thread 在窗口创建与 NIM_ADD 之间置位时：图标从未添加，
+        // 跳过 ⑥-⑨ 直接 DestroyWindow 收尾（WM_DESTROY 同步释放 ctx 并
+        // PostQuitMessage），否则线程退出后图标残留、无人负责 NIM_DELETE
+        // （review 3.5）。
+        if quit.load(Ordering::Acquire) {
+            let _ = DestroyWindow(hwnd);
+            return;
+        }
 
         // ── ⑥ NIM_ADD ───────────────────────────────────────────
         let mut nid: NOTIFYICONDATAW = mem::zeroed();

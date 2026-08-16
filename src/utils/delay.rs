@@ -75,7 +75,9 @@ pub fn delay_ms(ms: f64) {
         return;
     }
     let freq = tsc_freq();
-    let target = read_tsc() + (ms * freq / 1000.0) as u64;
+    // 饱和加法：极端 ms 值下 read_tsc() + ticks 回绕会变成 ~0ms 的瞬间返回
+    // （review 4.1）；saturating 保证目标是远期时刻而非已过期时刻。
+    let target = read_tsc().saturating_add((ms * freq / 1000.0) as u64);
     while read_tsc() < target {
         cpu_relax();
     }
