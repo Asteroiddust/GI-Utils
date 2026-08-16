@@ -447,9 +447,9 @@ pub fn create_function(
         "连点器v1" => Ok(Arc::new(crate::functions::auto_clicker::连点器v1::new(
             send_ctx,
         ))),
-        "连点器v2" => Ok(Arc::new(
-            crate::functions::auto_clicker_v2::连点器v2::new(send_ctx),
-        )),
+        "连点器v2" => Ok(Arc::new(crate::functions::auto_clicker::连点器v2::new(
+            send_ctx,
+        ))),
         "快速拾取" => Ok(Arc::new(crate::functions::quick_pickup::快速拾取::new(
             send_ctx,
         ))),

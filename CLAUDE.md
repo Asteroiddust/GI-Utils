@@ -57,8 +57,7 @@ src/
 
 └── functions/
     ├── stop.rs                #   停止退出 (F12, Once)
-    ├── auto_clicker.rs        #   连点器v1 (F13, Loop)
-    ├── auto_clicker_v2.rs     #   连点器v2 — v1 独立复制版，调参互不影响
+    ├── auto_clicker.rs        #   连点器v1 (F13, Loop) + 连点器v2（同文件独立复制版）
     ├── quick_pickup.rs        #   快速拾取 (F14, Loop)
     ├── ghost_walk.rs          #   鬼畜走路 (F15, Loop)
     ├── mavuika_jump.rs        #   火神跳喷 (F16, Loop)
@@ -195,7 +194,7 @@ icon_path = ""
 |------|:----:|:------:|:----:|------|
 | 停止退出 | ✅ | — | — | |
 | 连点器v1 | ✅ | — | — | |
-| 连点器v2 | ✅ | — | — | v1 独立复制版（调参互不影响） |
+| 连点器v2 | ✅ | — | — | v1 同文件复制版（调参互不影响） |
 | 快速拾取 | ✅ | — | — | |
 | 鬼畜走路 | ✅ | — | — | |
 | 火神跳喷 | ✅ | — | — | |
