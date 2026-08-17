@@ -31,18 +31,6 @@ eframe = { version = "0.36", default-features = false, features = [
 [build-dependencies]
 embed-resource = "3"
 
-[profile.release]
-opt-level = 3
-lto = "fat"
-strip = true
-codegen-units = 1
-# unwind（GUI 崩溃自愈的基础）：panic 时 Drop 防护体系（ActiveGuard、亲和性
-# 恢复兜底）全部生效；GUI 侧 catch_unwind 捕获渲染线程 panic 并重试 —
-# 睡眠唤醒后 wgl 上下文失效（eframe make_current unwrap）可自愈。
-# 相比 abort 增加几十 KB unwind 表 — 早期"砍 30KB"的决策已被 GUI 体积稀释。
-panic = "unwind"
-debug = false
-
 [[bin]]
 name = "gi-utils"
 path = "src/main.rs"
@@ -50,3 +38,34 @@ path = "src/main.rs"
 [[bin]]
 name = "gi-utils-gui"
 path = "src/bin/gui/main.rs"
+
+# ==============================================================================
+# 1. dev 模式：极限压榨编译速度（用于日常 cargo run / check 快速开发）
+# ==============================================================================
+[profile.dev]
+opt-level = 0                 # 自身代码不做优化，编译速度拉到最快
+debug = 0                     # 彻底关闭调试信息，零 PDB 磁盘写入，链接秒过
+codegen-units = 256           # 最大化代码生成并行度
+incremental = true            # 开启增量编译
+
+# 关键：第三方依赖开启 2 级优化，保证 eframe/glow 界面拖拽丝滑不掉帧，且依赖只需编译一次
+[profile.dev.package."*"]
+opt-level = 2
+debug = 0
+
+# ==============================================================================
+# 2. release 模式：激进极限优化（不惜编译时间，压榨极致体积与执行性能）
+# ==============================================================================
+[profile.release]
+opt-level = 3                 # 最高级别激进优化
+lto = "fat"                   # 全局跨 Crate 胖 LTO，彻底打通内联和死代码剔除
+codegen-units = 1             # 单单元单线程编译，给 LLVM 最完整的全局拓扑视野
+strip = true                  # 彻底剥离符号信息
+
+# unwind（GUI 崩溃自愈的基础）：panic 时 Drop 防护体系（ActiveGuard、亲和性
+# 恢复兜底）全部生效；GUI 侧 catch_unwind 捕获渲染线程 panic 并重试 —
+# 睡眠唤醒后 wgl 上下文失效（eframe make_current unwrap）可自愈。
+# 相比 abort 增加几十 KB unwind 表 — 早期"砍 30KB"的决策已被 GUI 体积稀释。
+panic = "unwind"              
+debug = false                 # 关闭调试符号
+incremental = false           # Release 必须关闭增量，确保最高代码生成质量
