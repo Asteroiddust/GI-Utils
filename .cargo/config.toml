@@ -1,6 +1,9 @@
-[build]
+[target.x86_64-pc-windows-msvc]
 rustflags = [
-    # target-cpu=native 已同时设定目标特性与调优 — tune-cpu=native 冗余
+    # 1. 开启本机 CPU 专属指令集优化（AVX2/FMA/BMI2 等）
     "-C", "target-cpu=native",
-    "-Z", "plt=no",
+    # 2. 强制使用 Rust 内置的 lld-link，彻底替换极慢的 MSVC link.exe
+    "-Zlinker-features=+lld",
+    # 3. 开启 rustc 前端多线程（9800X3D = 8C16T）
+    "-Z", "threads=16",
 ]
