@@ -64,7 +64,9 @@ impl<'a> MakeWriter<'a> for LogWriter {
 
 impl io::Write for LogWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let line = String::from_utf8_lossy(buf).trim_end_matches('\n').to_string();
+        let line = String::from_utf8_lossy(buf)
+            .trim_end_matches('\n')
+            .to_string();
         if !line.is_empty() {
             let mut lines = self.buf.lock().unwrap_or_else(|e| e.into_inner());
             lines.push(line);

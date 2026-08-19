@@ -26,8 +26,8 @@
 //! multi-key holds can overlap naturally.
 
 use crate::engine::event::InputEvent;
-use crate::interception::native::{INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP};
 use crate::interception::SendContext;
+use crate::interception::native::{INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP};
 use crate::key::Key;
 use crate::utils::delay;
 use std::cell::RefCell;
@@ -52,11 +52,7 @@ pub enum TimelineEvent {
     /// 音符：`start` 时刻按下，按住 `duration` 后释放（MIDI Note on/off）。
     /// 重叠由多条 Note 天然表达（多键同按）。
     /// 同一按键的 Note 不可重叠（双按语义未定义）。
-    Note {
-        key: Key,
-        start: f64,
-        duration: f64,
-    },
+    Note { key: Key, start: f64, duration: f64 },
     /// 在指定时刻发送一个任意事件（鼠标、滚轮、位移等；MIDI Control 事件对应）。
     ///
     /// 携带 `InputEvent::Keyboard` 的 At 事件**同样参与挂起键清理**（press 入队、
@@ -173,9 +169,21 @@ fn expand(entries: &[TimelineEvent], from: usize) -> Vec<ScheduleItem> {
 /// `entry` 为源条目在共享时间轴中的会话级绝对索引。
 #[derive(Debug, Clone, Copy)]
 enum ScheduleItem {
-    Down { at: f64, key: Key, entry: usize },
-    Up { at: f64, key: Key, entry: usize },
-    Event { at: f64, event: InputEvent, entry: usize },
+    Down {
+        at: f64,
+        key: Key,
+        entry: usize,
+    },
+    Up {
+        at: f64,
+        key: Key,
+        entry: usize,
+    },
+    Event {
+        at: f64,
+        event: InputEvent,
+        entry: usize,
+    },
 }
 
 impl ScheduleItem {
@@ -212,7 +220,9 @@ impl ScheduleItem {
 /// 共用同一比较器，两条管线的排序契约不会漂移。
 #[inline]
 fn cmp_items(a: &ScheduleItem, b: &ScheduleItem) -> Ordering {
-    a.at().total_cmp(&b.at()).then(a.priority().cmp(&b.priority()))
+    a.at()
+        .total_cmp(&b.at())
+        .then(a.priority().cmp(&b.priority()))
 }
 
 fn sort_items(items: &mut [ScheduleItem]) {
@@ -674,10 +684,18 @@ mod tests {
         tl.note(Key::A, 50.0, 100.0);
         let items = tl.build();
         assert_eq!(items.len(), 4);
-        assert!(matches!(items[0], ScheduleItem::Down { at, key, .. } if at == 0.0 && key == Key::W));
-        assert!(matches!(items[1], ScheduleItem::Down { at, key, .. } if at == 50.0 && key == Key::A));
-        assert!(matches!(items[2], ScheduleItem::Up { at, key, .. } if at == 150.0 && key == Key::A));
-        assert!(matches!(items[3], ScheduleItem::Up { at, key, .. } if at == 200.0 && key == Key::W));
+        assert!(
+            matches!(items[0], ScheduleItem::Down { at, key, .. } if at == 0.0 && key == Key::W)
+        );
+        assert!(
+            matches!(items[1], ScheduleItem::Down { at, key, .. } if at == 50.0 && key == Key::A)
+        );
+        assert!(
+            matches!(items[2], ScheduleItem::Up { at, key, .. } if at == 150.0 && key == Key::A)
+        );
+        assert!(
+            matches!(items[3], ScheduleItem::Up { at, key, .. } if at == 200.0 && key == Key::W)
+        );
     }
 
     #[test]
@@ -833,7 +851,11 @@ mod tests {
         state.drain_due(delay::ms_to_ticks(0.0)); // W-down
         state.drain_due(delay::ms_to_ticks(50.0)); // A-down
         state.drain_due(delay::ms_to_ticks(150.0)); // A-up — A 完全回放
-        assert_eq!(tl.lock().unwrap().entries.len(), 2, "前缀被 W 挡住，不提前清理");
+        assert_eq!(
+            tl.lock().unwrap().entries.len(),
+            2,
+            "前缀被 W 挡住，不提前清理"
+        );
 
         state.drain_due(delay::ms_to_ticks(200.0)); // W-up — W 完全回放
         assert!(tl.lock().unwrap().entries.is_empty(), "前缀整体清理");
@@ -940,12 +962,28 @@ mod tests {
         // 存量 [W-D@0, W-U@10] 与新块 [A-D@5, A-U@10] 归并 —
         // 同刻（10ms）按 Down<Event<Up 优先级排列
         let mut existing = vec![
-            ScheduleItem::Down { at: 0.0, key: Key::W, entry: 0 },
-            ScheduleItem::Up { at: 10.0, key: Key::W, entry: 0 },
+            ScheduleItem::Down {
+                at: 0.0,
+                key: Key::W,
+                entry: 0,
+            },
+            ScheduleItem::Up {
+                at: 10.0,
+                key: Key::W,
+                entry: 0,
+            },
         ];
         let fresh = vec![
-            ScheduleItem::Down { at: 5.0, key: Key::A, entry: 1 },
-            ScheduleItem::Up { at: 10.0, key: Key::A, entry: 1 },
+            ScheduleItem::Down {
+                at: 5.0,
+                key: Key::A,
+                entry: 1,
+            },
+            ScheduleItem::Up {
+                at: 10.0,
+                key: Key::A,
+                entry: 1,
+            },
         ];
         merge_sorted(&mut existing, &fresh);
         let ats: Vec<(f64, u8)> = existing.iter().map(|i| (i.at(), i.priority())).collect();
@@ -973,7 +1011,10 @@ mod tests {
     fn rolling_keys_clamps_invalid_params() {
         // 零/负间隔与 NaN 钳制到 0.5ms（防零间隔输入风暴）；
         // 负时长与 NaN 钳制到 0（同刻按下松开）
-        let rk = RollingKeys::new().interval(0.0).interval(-3.0).interval(f64::NAN);
+        let rk = RollingKeys::new()
+            .interval(0.0)
+            .interval(-3.0)
+            .interval(f64::NAN);
         assert_eq!(rk.interval_ms, 0.5);
         let rk = RollingKeys::new().duration(-1.0).duration(f64::NAN);
         assert_eq!(rk.duration_ms, 0.0);

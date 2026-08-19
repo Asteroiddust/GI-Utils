@@ -14,7 +14,7 @@
 
 use crate::engine::event::InputEvent;
 use crate::interception::native::{
-    self, Device, InterceptionKeyStroke, InterceptionMouseStroke, KeyboardDevice, MouseDevice,
+    self, Device, InterceptionKeyStroke, InterceptionMouseStroke, KeyboardDevice,
 };
 use std::marker::PhantomData;
 
@@ -60,8 +60,9 @@ impl InterceptionContext {
 
     // ── Receive ──────────────────────────────────────────────
 
-    /// 阻塞等待输入到达。返回有待处理数据的设备。
-    pub fn wait(&self) -> Device {
+    /// 阻塞等待输入到达。返回有待处理数据的设备；失败返回 `None`
+    /// （对齐 C 版返回 0 哨兵）。
+    pub fn wait(&self) -> Option<Device> {
         self.raw.wait()
     }
 
@@ -77,21 +78,16 @@ impl InterceptionContext {
 
     /// 从设备批量接收键盘输入，返回实际读到的前缀切片（防误用 API —
     /// 遍历返回值即遍历真实条目，缓冲尾部陈旧数据不可见）。
+    ///
+    /// 鼠标接收不在此暴露：引擎过滤器仅设键盘（鼠标事件 pass-through
+    /// 不进队列）— 鼠标分支为防御性死代码已删（review）；底层协议 API
+    /// 仍在 native.rs 完整保留。
     pub fn receive_keyboard<'a>(
         &self,
         device: KeyboardDevice,
         out: &'a mut [InterceptionKeyStroke],
     ) -> &'a mut [InterceptionKeyStroke] {
         self.raw.receive_keyboard(device, out)
-    }
-
-    /// 从设备批量接收鼠标输入，返回实际读到的前缀切片。
-    pub fn receive_mouse<'a>(
-        &self,
-        device: MouseDevice,
-        out: &'a mut [InterceptionMouseStroke],
-    ) -> &'a mut [InterceptionMouseStroke] {
-        self.raw.receive_mouse(device, out)
     }
 }
 
@@ -151,13 +147,15 @@ impl SendContext {
         }
     }
 
-    /// 引擎转发用：原样转发接收到的键盘 stroke。
+    /// 引擎转发用：整批转发接收到的键盘 stroke（一次 IOCTL_WRITE，
+    /// 与批量接收对称 — review：逐条转发浪费读侧省下的系统调用，
+    /// 且更易与功能线程的发送交错）。
     pub fn forward_keyboard(&self, device: KeyboardDevice, strokes: &[InterceptionKeyStroke]) {
         self.raw.send_keyboard(device, strokes);
     }
-
-    /// 引擎转发用：原样转发接收到的鼠标 stroke。
-    pub fn forward_mouse(&self, device: MouseDevice, strokes: &[InterceptionMouseStroke]) {
-        self.raw.send_mouse(device, strokes);
-    }
 }
+
+// Sync 声明在此层而非 native::Context：SendContext 仅暴露发送方法，
+// 驱动文档明确支持通过同一上下文并发发送（native::Context 不标 Sync —
+// 其 receive 方法若被共享会并发瓜分驱动队列，review）。
+unsafe impl Sync for SendContext {}

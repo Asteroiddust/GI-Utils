@@ -5,13 +5,13 @@
 use crate::engine::function::KeyFunction;
 use crate::utils;
 use crate::utils::delay;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{error, info};
-use std::sync::Arc;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{
-    OpenProcess, SetPriorityClass, SetProcessAffinityMask, HIGH_PRIORITY_CLASS,
-    PROCESS_SET_INFORMATION,
+    HIGH_PRIORITY_CLASS, OpenProcess, PROCESS_SET_INFORMATION, SetPriorityClass,
+    SetProcessAffinityMask,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
@@ -154,10 +154,7 @@ impl 优化游戏 {
                 attempts += 1;
             }
             if attempts >= MAX_RETRIES {
-                error!(
-                    "优化游戏: 切换前台超时 ({}ms) — 跳过",
-                    MAX_RETRIES * 50
-                );
+                error!("优化游戏: 切换前台超时 ({}ms) — 跳过", MAX_RETRIES * 50);
                 utils::beep::beep_async(500, 200);
                 return false;
             }

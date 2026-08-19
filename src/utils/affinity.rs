@@ -12,12 +12,12 @@ use std::fmt;
 use std::process;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, PROCESSENTRY32, Process32First, Process32Next, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentThread, OpenProcess, SetPriorityClass, SetProcessAffinityMask,
-    SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_LOWEST, PROCESS_CREATION_FLAGS,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
+    GetCurrentThread, OpenProcess, PROCESS_CREATION_FLAGS, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS, SetPriorityClass, SetProcessAffinityMask,
+    SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_LOWEST,
 };
 
 // ── Core masks ────────────────────────────────────────────────
@@ -289,8 +289,12 @@ pub fn configure_gui_self() -> Result<(), Error> {
     //    GUI(12,13) 与输入处理(14,15) 才能分别收窄
     let self_pid = process::id();
     let h = open_process(self_pid)?;
-    unsafe { SetProcessAffinityMask(h.raw(), PROCESS_CORES_MASK) }
-        .map_err(|e| Error::SetAffinity { pid: self_pid, source: e })?;
+    unsafe { SetProcessAffinityMask(h.raw(), PROCESS_CORES_MASK) }.map_err(|e| {
+        Error::SetAffinity {
+            pid: self_pid,
+            source: e,
+        }
+    })?;
     // 2. GUI 主线程 → 12,13（渲染与输入处理分离，互不干扰）
     pin_current_thread(GUI_CORES_MASK)?;
     // 3. GUI 线程降为线程级最低优先级（REALTIME base 24 - 2 = 22）：

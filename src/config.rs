@@ -4,8 +4,8 @@
 //! Reads `config.toml` from the exe directory at startup.
 //! If the file is missing, a default config is generated.
 
-use crate::engine::function::KeyFunction;
 use crate::engine::TriggerMode;
+use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
 use serde::{Deserialize, Serialize};

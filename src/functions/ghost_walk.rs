@@ -7,8 +7,8 @@ use crate::engine::function::KeyFunction;
 use crate::engine::timeline::{RollingKeys, RollingPlayer};
 use crate::interception::SendContext;
 use crate::key::Key;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// 鬼畜走路 (Ghost Walk) 功能 — Loop 模式。
 ///

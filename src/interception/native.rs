@@ -13,7 +13,8 @@
 //!   [`InterceptionMouseStroke`] 切片，栈上分批转换 — 消灭 C 版每次
 //!   调用的 HeapAlloc 与字节缓冲往返
 //! - **设备新类型**：[`KeyboardDevice`] / [`MouseDevice`] / [`Device`] —
-//!   错误设备号在编译期不存在（send_keyboard 只接受 KeyboardDevice）
+//!   设备类型混淆在编译期不存在（send_keyboard 只接受 KeyboardDevice）；
+//!   索引越界在构造处 panic（绝不静默截断/错位 — review）
 //! - **批量接收**：一次 IOCTL_READ 可读 [`MAX_STROKES_PER_IOCTL`] 条
 //!   （C 版语义本就支持 nstroke，引擎侧旧实现恒为 1）
 //! - **宽字符 API**：CreateFileW（CreateFileA 是 Win9x 遗留惯例）
@@ -26,7 +27,6 @@
 
 use std::ffi::c_void;
 
-use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_EVENT};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
@@ -34,6 +34,9 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Threading::{CreateEventW, WaitForMultipleObjects};
+use windows::core::{PCWSTR, Result};
+
+use tracing::warn;
 
 // ═══════════════════════════════════════════════════════════════════
 // 设备编号 — 新类型（编译期防呆，替代 C 版的裸 int + 运行时判定）
@@ -48,13 +51,17 @@ pub const MAX_MOUSE: usize = 10;
 /// 最大总设备数（键盘 + 鼠标）。
 pub const MAX_DEVICE: usize = MAX_KEYBOARD + MAX_MOUSE;
 
-/// 键盘设备（索引 0 起）。只能传给键盘专用方法 — 类型层面不可混淆。
+/// 键盘设备（索引 0..10）。只能传给键盘专用方法 — 类型层面不可混淆。
+///
+/// 字段私有：唯一构造途径是 [`keyboard`]，越界索引在构造处立即 panic —
+/// 绝不静默截断或路由错位（review：此前 `pub u8` + `as u8` 截断，
+/// keyboard(256) 会静默命中设备 0）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeyboardDevice(pub u8);
+pub struct KeyboardDevice(u8);
 
-/// 鼠标设备（索引 0 起）。只能传给鼠标专用方法。
+/// 鼠标设备（索引 0..10）。只能传给鼠标专用方法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MouseDevice(pub u8);
+pub struct MouseDevice(u8);
 
 /// 接收路径的设备标识（wait 返回值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,15 +87,18 @@ impl Device {
     }
 }
 
-/// 键盘设备（索引 0 起）。
+/// 键盘设备（索引 0..10）。越界 panic（常量调用在编译期报错；
+/// const fn 无法带格式化消息，运行时 panic 位置即此处断言）。
 #[inline]
 pub const fn keyboard(index: usize) -> KeyboardDevice {
+    assert!(index < MAX_KEYBOARD);
     KeyboardDevice(index as u8)
 }
 
-/// 鼠标设备（索引 0 起）。
+/// 鼠标设备（索引 0..10）。越界 panic（常量调用在编译期报错）。
 #[inline]
 pub const fn mouse(index: usize) -> MouseDevice {
+    assert!(index < MAX_MOUSE);
     MouseDevice(index as u8)
 }
 
@@ -142,8 +152,7 @@ pub const INTERCEPTION_FILTER_KEY_E0: u16 = INTERCEPTION_KEY_E0 << 1;
 pub const INTERCEPTION_FILTER_KEY_E1: u16 = INTERCEPTION_KEY_E1 << 1;
 pub const INTERCEPTION_FILTER_KEY_TERMSRV_SET_LED: u16 = INTERCEPTION_KEY_TERMSRV_SET_LED << 1;
 pub const INTERCEPTION_FILTER_KEY_TERMSRV_SHADOW: u16 = INTERCEPTION_KEY_TERMSRV_SHADOW << 1;
-pub const INTERCEPTION_FILTER_KEY_TERMSRV_VKPACKET: u16 =
-    INTERCEPTION_KEY_TERMSRV_VKPACKET << 1;
+pub const INTERCEPTION_FILTER_KEY_TERMSRV_VKPACKET: u16 = INTERCEPTION_KEY_TERMSRV_VKPACKET << 1;
 
 // ── 鼠标状态标志 — Mouse state flags ────────────────────────────
 
@@ -294,6 +303,58 @@ const _: () = assert!(std::mem::size_of::<MouseInputData>() == 24);
 const _: () = assert!(std::mem::align_of::<KeyboardInputData>() == 4);
 const _: () = assert!(std::mem::align_of::<MouseInputData>() == 4);
 
+// ── 双向字段映射（协议保真的纯函数 — 可无驱动单测）────────────
+
+impl From<InterceptionKeyStroke> for KeyboardInputData {
+    fn from(ks: InterceptionKeyStroke) -> Self {
+        Self {
+            unit_id: 0,
+            make_code: ks.code,
+            flags: ks.state,
+            reserved: 0,
+            extra_information: ks.information,
+        }
+    }
+}
+
+impl From<KeyboardInputData> for InterceptionKeyStroke {
+    fn from(raw: KeyboardInputData) -> Self {
+        Self {
+            code: raw.make_code,
+            state: raw.flags,
+            information: raw.extra_information,
+        }
+    }
+}
+
+impl From<InterceptionMouseStroke> for MouseInputData {
+    fn from(ms: InterceptionMouseStroke) -> Self {
+        Self {
+            unit_id: 0,
+            flags: ms.flags,
+            button_flags: ms.state,
+            button_data: ms.rolling as u16,
+            raw_buttons: 0,
+            last_x: ms.x,
+            last_y: ms.y,
+            extra_information: ms.information,
+        }
+    }
+}
+
+impl From<MouseInputData> for InterceptionMouseStroke {
+    fn from(raw: MouseInputData) -> Self {
+        Self {
+            state: raw.button_flags,
+            flags: raw.flags,
+            rolling: raw.button_data as i16,
+            x: raw.last_x,
+            y: raw.last_y,
+            information: raw.extra_information,
+        }
+    }
+}
+
 /// 单次 IOCTL 的栈缓冲 stroke 上限：一次读/写最多 32 条（C 版 HeapAlloc
 /// 任意大小，栈分批零分配；批量接收的引擎侧缓冲大小同此）。
 pub const MAX_STROKES_PER_IOCTL: usize = 32;
@@ -342,20 +403,28 @@ pub struct Context {
     devices: [DeviceSlot; MAX_DEVICE],
 }
 
-// HANDLE 为进程内可共享的内核对象引用；设备句柄/事件句柄跨线程使用安全
-// （并发 send 由驱动串行化，事件仅被等待线程消费）。
+// HANDLE 为进程内可共享的内核对象引用；设备句柄/事件句柄可跨线程移动。
+// 仅 Send 不标 Sync：receive_* 为 pub &self 方法，标 Sync 会让多线程
+// 并发 IOCTL_READ 瓜分同一驱动队列（review）— 单线程接收契约由上层
+// 类型执行（InterceptionContext !Sync；SendContext 仅暴露发送且驱动
+// 支持并发 send，其 Sync 在 context.rs 单独声明）。
 unsafe impl Send for Context {}
-unsafe impl Sync for Context {}
 
 /// 打开单个设备：CreateFileW → CreateEventW → IOCTL_SET_EVENT 注册事件
 /// （对齐 C 版 `interception_create_context` 循环体，宽字符 API 化）。
+///
+/// 句柄**即拿即填**进局部槽：后续任何一步失败 `?` 返回时，已打开的
+/// 句柄随 DeviceSlot::drop 关闭（对齐 C 版每条失败路径显式 destroy —
+/// review：此前 handle/unempty 是局部变量，CreateEventW/IOCTL 失败即
+/// 泄漏，模块文档"Drop 自动清理"的承诺对在飞局部变量不成立）。
 fn open_device(index: usize) -> Result<DeviceSlot> {
     let name: Vec<u16> = format!("\\\\.\\interception{index:02}")
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
+    let mut slot = DeviceSlot::default();
     // C: CreateFileA(name, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL)
-    let handle = unsafe {
+    slot.handle = unsafe {
         CreateFileW(
             PCWSTR(name.as_ptr()),
             FILE_GENERIC_READ.0,
@@ -367,12 +436,12 @@ fn open_device(index: usize) -> Result<DeviceSlot> {
         )
     }?;
     // C: CreateEventA(NULL, TRUE, FALSE, NULL)
-    let unempty = unsafe { CreateEventW(None, true, false, None) }?;
+    slot.unempty = unsafe { CreateEventW(None, true, false, None) }?;
     // C: 2 元素句柄数组 {event, NULL} 作输入缓冲注册事件
-    let handles = [unempty, HANDLE::default()];
+    let handles = [slot.unempty, HANDLE::default()];
     unsafe {
         DeviceIoControl(
-            handle,
+            slot.handle,
             IOCTL_SET_EVENT,
             Some(handles.as_ptr() as *const c_void),
             std::mem::size_of_val(&handles) as u32,
@@ -382,7 +451,127 @@ fn open_device(index: usize) -> Result<DeviceSlot> {
             None,
         )?;
     }
-    Ok(DeviceSlot { handle, unempty })
+    Ok(slot)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// IOCTL 原语与分批转换骨架 — 四个收发函数共用的泛化层
+// ═══════════════════════════════════════════════════════════════════
+
+/// bytes_returned → 记录条数，钳制到缓冲容量（驱动异常谎报超缓冲
+/// 字节数时不死循环、不越界 — review）。
+#[inline]
+fn records_from_bytes(bytes_returned: u32, record_size: usize, capacity: usize) -> usize {
+    (bytes_returned as usize / record_size).min(capacity)
+}
+
+/// IOCTL_READ 原语：读入 `out` 字节缓冲，返回实际读取字节数。
+fn ioctl_read(handle: HANDLE, out: &mut [u8]) -> Result<u32> {
+    let mut bytes_returned = 0u32;
+    unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_READ,
+            None,
+            0,
+            Some(out.as_mut_ptr() as *mut c_void),
+            out.len() as u32,
+            Some(&mut bytes_returned),
+            None,
+        )?;
+    }
+    Ok(bytes_returned)
+}
+
+/// IOCTL_WRITE 原语：写入 `input` 字节缓冲，返回实际写入字节数。
+fn ioctl_write(handle: HANDLE, input: &[u8]) -> Result<u32> {
+    let mut bytes_returned = 0u32;
+    unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_WRITE,
+            Some(input.as_ptr() as *const c_void),
+            input.len() as u32,
+            None,
+            0,
+            Some(&mut bytes_returned),
+            None,
+        )?;
+    }
+    Ok(bytes_returned)
+}
+
+/// 分批写入骨架：栈上构造线上格式（`fill`）→ ioctl_write → 字节换算。
+/// 部分写/失败即停并告警（C 版失败后返回垃圾计数 — 此处确定语义）。
+fn write_chunks<Raw, Out>(handle: HANDLE, input: &[Out], fill: impl Fn(&Out) -> Raw) -> usize
+where
+    Raw: Copy + Default,
+{
+    let record = std::mem::size_of::<Raw>();
+    let mut written = 0usize;
+    for chunk in input.chunks(MAX_STROKES_PER_IOCTL) {
+        let mut raw = [Raw::default(); MAX_STROKES_PER_IOCTL];
+        for (i, item) in chunk.iter().enumerate() {
+            raw[i] = fill(item);
+        }
+        // 仅本块实际占用的前缀字节入缓冲（数组尾部零填充不参与）
+        let bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(raw.as_ptr() as *const u8, chunk.len() * record) };
+        match ioctl_write(handle, bytes) {
+            Ok(n) => {
+                let done = records_from_bytes(n, record, chunk.len());
+                written += done;
+                if done < chunk.len() {
+                    warn!(
+                        "interception write: partial ({done}/{}) — 尾部丢弃",
+                        chunk.len()
+                    );
+                    break;
+                }
+            }
+            Err(e) => {
+                warn!("interception write failed: {e}");
+                break;
+            }
+        }
+    }
+    written
+}
+
+/// 分批读取骨架：ioctl_read → 钳制换算 → `map` 转换回公开 stroke。
+/// 返回实际读到的条数（调用方据此切片 — 前缀契约）。
+fn read_chunks<Raw, Out>(handle: HANDLE, out: &mut [Out], map: impl Fn(&Raw) -> Out) -> usize
+where
+    Raw: Copy + Default,
+{
+    let record = std::mem::size_of::<Raw>();
+    let mut total = 0usize;
+    for chunk in out.chunks_mut(MAX_STROKES_PER_IOCTL) {
+        let mut raw = [Raw::default(); MAX_STROKES_PER_IOCTL];
+        let bytes: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u8, chunk.len() * record)
+        };
+        match ioctl_read(handle, bytes) {
+            Ok(n) => {
+                let done = records_from_bytes(n, record, chunk.len());
+                for (dst, src) in chunk.iter_mut().zip(raw.iter()).take(done) {
+                    *dst = map(src);
+                }
+                total += done;
+                if done < chunk.len() {
+                    // 读不满即队列已排空 — 本驱动实测语义（C 版调用方
+                    // 自行循环直到返回 0，同此约定；非"对齐 interception_receive"
+                    // 的文档式承诺，review 核实 C 库不钳制 nstroke）
+                    break;
+                }
+            }
+            Err(e) => {
+                warn!("interception read failed: {e}");
+                break;
+            }
+        }
+    }
+    total
 }
 
 impl Context {
@@ -402,11 +591,12 @@ impl Context {
 
     // ── 等待 ───────────────────────────────────────────────
 
-    /// 阻塞等待任意设备有数据（对齐 `interception_wait`）。
-    pub fn wait(&self) -> Device {
-        // 任一事件被置位即返回；等待失败按超时处理（键盘 0 兜底）
+    /// 阻塞等待任意设备有数据；等待失败返回 `None`（对齐
+    /// `interception_wait` 失败返回 0 的哨兵语义，Rust 化 —
+    /// review：此前把 WAIT_FAILED 伪装成"键盘 0 有数据"，
+    /// 故障被永久遮蔽且配合粘滞事件形成无超时忙等）。
+    pub fn wait(&self) -> Option<Device> {
         self.wait_with_timeout(u32::MAX)
-            .unwrap_or(Device::Keyboard(keyboard(0)))
     }
 
     /// 带超时等待。返回有待处理数据的 [`Device`]；超时/失败返回 `None`
@@ -530,80 +720,26 @@ impl Context {
     ///
     /// DeviceIoControl 失败即停：返回值是确定语义（C 版失败后读取未定义的
     /// bytes_returned，返回垃圾计数 — 文档化改进）。
-    pub fn send_keyboard(&self, device: KeyboardDevice, strokes: &[InterceptionKeyStroke]) -> usize {
-        let slot = self.device_slot(device.0 as usize + 1);
-        let mut written = 0usize;
-        for chunk in strokes.chunks(MAX_STROKES_PER_IOCTL) {
-            let mut raw = [KeyboardInputData::default(); MAX_STROKES_PER_IOCTL];
-            for (i, ks) in chunk.iter().enumerate() {
-                raw[i] = KeyboardInputData {
-                    unit_id: 0,
-                    make_code: ks.code,
-                    flags: ks.state,
-                    reserved: 0,
-                    extra_information: ks.information,
-                };
-            }
-            let mut bytes_returned = 0u32;
-            if unsafe {
-                DeviceIoControl(
-                    slot.handle,
-                    IOCTL_WRITE,
-                    Some(raw.as_ptr() as *const c_void),
-                    (chunk.len() * std::mem::size_of::<KeyboardInputData>()) as u32,
-                    None,
-                    0,
-                    Some(&mut bytes_returned),
-                    None,
-                )
-            }
-            .is_err()
-            {
-                break;
-            }
-            written += bytes_returned as usize / std::mem::size_of::<KeyboardInputData>();
-        }
-        written
+    pub fn send_keyboard(
+        &self,
+        device: KeyboardDevice,
+        strokes: &[InterceptionKeyStroke],
+    ) -> usize {
+        write_chunks(
+            self.device_slot(device.0 as usize + 1).handle,
+            strokes,
+            |ks| KeyboardInputData::from(*ks),
+        )
     }
 
     /// 发送鼠标 stroke 序列，返回实际写入数。
     pub fn send_mouse(&self, device: MouseDevice, strokes: &[InterceptionMouseStroke]) -> usize {
-        let slot = self.device_slot(MAX_KEYBOARD + device.0 as usize + 1);
-        let mut written = 0usize;
-        for chunk in strokes.chunks(MAX_STROKES_PER_IOCTL) {
-            let mut raw = [MouseInputData::default(); MAX_STROKES_PER_IOCTL];
-            for (i, ms) in chunk.iter().enumerate() {
-                raw[i] = MouseInputData {
-                    unit_id: 0,
-                    flags: ms.flags,
-                    button_flags: ms.state,
-                    button_data: ms.rolling as u16,
-                    raw_buttons: 0,
-                    last_x: ms.x,
-                    last_y: ms.y,
-                    extra_information: ms.information,
-                };
-            }
-            let mut bytes_returned = 0u32;
-            if unsafe {
-                DeviceIoControl(
-                    slot.handle,
-                    IOCTL_WRITE,
-                    Some(raw.as_ptr() as *const c_void),
-                    (chunk.len() * std::mem::size_of::<MouseInputData>()) as u32,
-                    None,
-                    0,
-                    Some(&mut bytes_returned),
-                    None,
-                )
-            }
-            .is_err()
-            {
-                break;
-            }
-            written += bytes_returned as usize / std::mem::size_of::<MouseInputData>();
-        }
-        written
+        write_chunks(
+            self.device_slot(MAX_KEYBOARD + device.0 as usize + 1)
+                .handle,
+            strokes,
+            |ms| MouseInputData::from(*ms),
+        )
     }
 
     // ── 接收（类型化，栈上分批转换）──────────────────────────
@@ -624,40 +760,11 @@ impl Context {
         device: KeyboardDevice,
         out: &'a mut [InterceptionKeyStroke],
     ) -> &'a mut [InterceptionKeyStroke] {
-        let slot = self.device_slot(device.0 as usize + 1);
-        let mut total = 0usize;
-        for chunk in out.chunks_mut(MAX_STROKES_PER_IOCTL) {
-            let mut raw = [KeyboardInputData::default(); MAX_STROKES_PER_IOCTL];
-            let mut bytes_returned = 0u32;
-            if unsafe {
-                DeviceIoControl(
-                    slot.handle,
-                    IOCTL_READ,
-                    None,
-                    0,
-                    Some(raw.as_mut_ptr() as *mut c_void),
-                    (chunk.len() * std::mem::size_of::<KeyboardInputData>()) as u32,
-                    Some(&mut bytes_returned),
-                    None,
-                )
-            }
-            .is_err()
-            {
-                break;
-            }
-            let n = bytes_returned as usize / std::mem::size_of::<KeyboardInputData>();
-            for (i, ks) in chunk.iter_mut().enumerate().take(n) {
-                *ks = InterceptionKeyStroke {
-                    code: raw[i].make_code,
-                    state: raw[i].flags,
-                    information: raw[i].extra_information,
-                };
-            }
-            total += n;
-            if n < chunk.len() {
-                break; // 读不满即无更多数据（对齐 C 版单次调用语义）
-            }
-        }
+        let total = read_chunks(
+            self.device_slot(device.0 as usize + 1).handle,
+            out,
+            |raw: &KeyboardInputData| InterceptionKeyStroke::from(*raw),
+        );
         &mut out[..total]
     }
 
@@ -667,43 +774,82 @@ impl Context {
         device: MouseDevice,
         out: &'a mut [InterceptionMouseStroke],
     ) -> &'a mut [InterceptionMouseStroke] {
-        let slot = self.device_slot(MAX_KEYBOARD + device.0 as usize + 1);
-        let mut total = 0usize;
-        for chunk in out.chunks_mut(MAX_STROKES_PER_IOCTL) {
-            let mut raw = [MouseInputData::default(); MAX_STROKES_PER_IOCTL];
-            let mut bytes_returned = 0u32;
-            if unsafe {
-                DeviceIoControl(
-                    slot.handle,
-                    IOCTL_READ,
-                    None,
-                    0,
-                    Some(raw.as_mut_ptr() as *mut c_void),
-                    (chunk.len() * std::mem::size_of::<MouseInputData>()) as u32,
-                    Some(&mut bytes_returned),
-                    None,
-                )
-            }
-            .is_err()
-            {
-                break;
-            }
-            let n = bytes_returned as usize / std::mem::size_of::<MouseInputData>();
-            for (i, ms) in chunk.iter_mut().enumerate().take(n) {
-                *ms = InterceptionMouseStroke {
-                    state: raw[i].button_flags,
-                    flags: raw[i].flags,
-                    rolling: raw[i].button_data as i16,
-                    x: raw[i].last_x,
-                    y: raw[i].last_y,
-                    information: raw[i].extra_information,
-                };
-            }
-            total += n;
-            if n < chunk.len() {
-                break;
-            }
-        }
+        let total = read_chunks(
+            self.device_slot(MAX_KEYBOARD + device.0 as usize + 1)
+                .handle,
+            out,
+            |raw: &MouseInputData| InterceptionMouseStroke::from(*raw),
+        );
         &mut out[..total]
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 单测 — 无驱动可测的纯逻辑：协议字段映射往返、设备编号、钳制算术
+// （幻影按键回归网：记录数钳制 + 前缀切片契约的算术底座）
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_numbering_matches_c_protocol() {
+        assert_eq!(Device::Keyboard(keyboard(0)).number(), 1);
+        assert_eq!(Device::Keyboard(keyboard(9)).number(), 10);
+        assert_eq!(Device::Mouse(mouse(0)).number(), 11);
+        assert_eq!(Device::Mouse(mouse(9)).number(), 20);
+        assert!(Device::Keyboard(keyboard(0)).is_keyboard());
+        assert!(!Device::Mouse(mouse(0)).is_keyboard());
+    }
+
+    #[test]
+    #[should_panic]
+    fn keyboard_constructor_rejects_out_of_range() {
+        let _ = keyboard(10);
+    }
+
+    #[test]
+    #[should_panic]
+    fn mouse_constructor_rejects_out_of_range() {
+        let _ = mouse(256);
+    }
+
+    #[test]
+    fn keyboard_roundtrip_preserves_all_fields() {
+        let ks = InterceptionKeyStroke {
+            code: 0x64,
+            state: 0x03, // E0 | KEY_UP
+            information: 0xDEAD_BEEF,
+        };
+        let raw: KeyboardInputData = ks.into();
+        // 线上格式 unit_id/reserved 恒 0（对齐 C 版 send 转换）
+        assert_eq!((raw.unit_id, raw.reserved), (0, 0));
+        let back: InterceptionKeyStroke = raw.into();
+        assert_eq!(back, ks);
+    }
+
+    #[test]
+    fn mouse_roundtrip_preserves_all_fields() {
+        let ms = InterceptionMouseStroke {
+            state: 0x0402,
+            flags: 1,
+            rolling: -120,
+            x: 65535,
+            y: -1,
+            information: 7,
+        };
+        let raw: MouseInputData = ms.into();
+        let back: InterceptionMouseStroke = raw.into();
+        assert_eq!(back, ms);
+    }
+
+    #[test]
+    fn records_from_bytes_clamps_to_capacity() {
+        // 驱动异常谎报超缓冲字节数时不越界（review V7）
+        assert_eq!(records_from_bytes(12 * 40, 12, 32), 32);
+        assert_eq!(records_from_bytes(12 * 5, 12, 32), 5);
+        assert_eq!(records_from_bytes(0, 12, 32), 0);
+        assert_eq!(records_from_bytes(11, 12, 32), 0); // 非整条字节忽略
     }
 }

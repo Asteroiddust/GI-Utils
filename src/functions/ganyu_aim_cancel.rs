@@ -6,8 +6,8 @@ use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// 甘雨走 A 功能 — Once 模式。
 ///

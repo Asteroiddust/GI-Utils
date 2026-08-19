@@ -4,8 +4,8 @@
 use crate::engine::function::KeyFunction;
 use crate::utils::delay;
 use crate::utils::screen::{self, PixelReader};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
 
 /// 坐标颜色功能 — Loop 模式。
@@ -45,8 +45,7 @@ impl KeyFunction for 坐标颜色 {
                     let color = screen::PixelColor::from_colorref(cr);
                     info!(
                         "x:{:>5}  y:{:>5}  R:{:>3} G:{:>3} B:{:>3}  #{:02X}{:02X}{:02X}  raw:0x{:08X}",
-                        pos.x, pos.y, color.r, color.g, color.b,
-                        color.r, color.g, color.b, cr
+                        pos.x, pos.y, color.r, color.g, color.b, color.r, color.g, color.b, cr
                     );
                 }
             }

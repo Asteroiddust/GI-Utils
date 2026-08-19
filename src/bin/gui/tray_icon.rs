@@ -26,11 +26,59 @@ pub fn create_tray_icon_pixels() -> (Vec<u8>, u32, u32) {
     let white = [0xFFu8, 0xFF, 0xFF, 0xFF];
     let transparent = [0x00u8, 0x00, 0x00, 0x00];
     let g_shape: &[(u32, u32)] = &[
-        (10,6),(11,6),(12,6),(13,6),(14,6),(15,6),(16,6),(17,6),(18,6),(19,6),(20,6),(21,6),
-        (9,7),(9,8),(9,9),(9,10),(9,11),(9,12),(9,13),(9,14),(9,15),(9,16),(9,17),(9,18),(9,19),(9,20),(9,21),(9,22),(9,23),
-        (10,24),(11,24),(12,24),(13,24),(14,24),(15,24),(16,24),(17,24),(18,24),(19,24),(20,24),(21,24),
-        (22,19),(22,20),(22,21),(22,22),(22,23),
-        (16,15),(17,15),(18,15),(19,15),(20,15),(21,15),(22,15),
+        (10, 6),
+        (11, 6),
+        (12, 6),
+        (13, 6),
+        (14, 6),
+        (15, 6),
+        (16, 6),
+        (17, 6),
+        (18, 6),
+        (19, 6),
+        (20, 6),
+        (21, 6),
+        (9, 7),
+        (9, 8),
+        (9, 9),
+        (9, 10),
+        (9, 11),
+        (9, 12),
+        (9, 13),
+        (9, 14),
+        (9, 15),
+        (9, 16),
+        (9, 17),
+        (9, 18),
+        (9, 19),
+        (9, 20),
+        (9, 21),
+        (9, 22),
+        (9, 23),
+        (10, 24),
+        (11, 24),
+        (12, 24),
+        (13, 24),
+        (14, 24),
+        (15, 24),
+        (16, 24),
+        (17, 24),
+        (18, 24),
+        (19, 24),
+        (20, 24),
+        (21, 24),
+        (22, 19),
+        (22, 20),
+        (22, 21),
+        (22, 22),
+        (22, 23),
+        (16, 15),
+        (17, 15),
+        (18, 15),
+        (19, 15),
+        (20, 15),
+        (21, 15),
+        (22, 15),
     ];
     for y in 0..size {
         for x in 0..size {
@@ -57,11 +105,7 @@ pub fn create_tray_icon_pixels() -> (Vec<u8>, u32, u32) {
 /// RGBA → HICON（纯 GDI）。RGBA→BGRA 翻转 → CreateBitmap×2（AND mask 全 0：
 /// 32bpp BGRA alpha 承载透明度，全 0xFF 按掩蔽语义渲染成不透明方块）→
 /// CreateIconIndirect → 临时位图立即 DeleteObject。任何失败返回 None 不 panic。
-pub(crate) unsafe fn create_hicon_from_rgba(
-    rgba: &[u8],
-    w: u32,
-    h: u32,
-) -> Option<HICON> {
+pub(crate) unsafe fn create_hicon_from_rgba(rgba: &[u8], w: u32, h: u32) -> Option<HICON> {
     use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HGDIOBJ};
     use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, ICONINFO};
 
@@ -83,10 +127,18 @@ pub(crate) unsafe fn create_hicon_from_rgba(
     // all-0xFF mask would mask out every pixel and show a square icon.
     let mask_bits: Vec<u8> = vec![0; ((w * h) as usize + 7) / 8];
     let hbm_mask = CreateBitmap(
-        w as i32, h as i32, 1, 1, Some(mask_bits.as_ptr() as *const std::ffi::c_void),
+        w as i32,
+        h as i32,
+        1,
+        1,
+        Some(mask_bits.as_ptr() as *const std::ffi::c_void),
     );
     let hbm_color = CreateBitmap(
-        w as i32, h as i32, 1, 32, Some(bgra.as_ptr() as *const std::ffi::c_void),
+        w as i32,
+        h as i32,
+        1,
+        32,
+        Some(bgra.as_ptr() as *const std::ffi::c_void),
     );
 
     // CreateBitmap 失败或资源不足 → 不进入 panic 路径，返回 None 优雅降级
@@ -120,8 +172,8 @@ pub(crate) unsafe fn create_hicon_from_rgba(
 /// 仅由 preload_tray_icon 调用（启动健康态）— 恢复轮绝不重试 LoadImageW
 /// （L4 WIC 污染是进程级永久态，重试无效）。
 unsafe fn load_ico_from_file(path: &str) -> Option<HICON> {
-    use windows::core::PCWSTR;
     use windows::Win32::UI::WindowsAndMessaging::{IMAGE_ICON, LR_LOADFROMFILE, LoadImageW};
+    use windows::core::PCWSTR;
 
     let mut wide: Vec<u16> = path.encode_utf16().collect();
     // LoadImageW 扫描至 0x0000 — 显式 NUL 终止，防越界读（review 发现，

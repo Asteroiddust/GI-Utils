@@ -14,24 +14,24 @@
 // 原始指针解引用）逐调用嵌套 unsafe {} 只增噪音。
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 use windows::Win32::Foundation::{
-    GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NOTIFYICONDATAW, NOTIFYICON_VERSION_4, NIF_ICON, NIF_MESSAGE, NIF_TIP,
-    NIM_ADD, NIM_DELETE, NIM_SETVERSION,
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICON_VERSION_4,
+    NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    DispatchMessageW, GetCursorPos, GetWindowLongPtrW, PeekMessageW, PostQuitMessage,
-    RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, TrackPopupMenu, CS_HREDRAW,
-    CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, HWND_MESSAGE, MF_STRING, MSG, PM_REMOVE,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONDBLCLK, WM_QUIT, WM_RBUTTONUP, WM_USER, WNDCLASSW,
+    AppendMenuW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos,
+    GetWindowLongPtrW, HWND_MESSAGE, MF_STRING, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
+    RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_QUIT, WM_RBUTTONUP, WM_USER, WNDCLASSW,
 };
 
 /// 托盘 → GUI 的消息类型。
@@ -210,9 +210,8 @@ pub fn run_tray_thread(
 
     // GUI 侧线程：pin 12,13（普通优先级）— 与渲染线程同核但非时序关键；
     // 避免落上 14,15 与 REALTIME 输入线程争抢（CLAUDE.md 核心分离纪律）。
-    let _ = gi_utils::utils::affinity::pin_current_thread(
-        gi_utils::utils::affinity::GUI_CORES_MASK,
-    );
+    let _ =
+        gi_utils::utils::affinity::pin_current_thread(gi_utils::utils::affinity::GUI_CORES_MASK);
 
     unsafe {
         // ── ① 图标解析 ──────────────────────────────────────────

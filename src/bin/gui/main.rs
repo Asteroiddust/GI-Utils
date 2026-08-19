@@ -8,21 +8,19 @@
 
 use eframe::egui;
 use gi_utils::config::{self, Binding};
-use gi_utils::engine::function::KeyFunction;
 use gi_utils::engine::Engine;
 use gi_utils::engine::TriggerMode;
+use gi_utils::engine::function::KeyFunction;
 use gi_utils::interception::SendContext;
 use gi_utils::key::Key;
 use gi_utils::utils;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 use std::thread::JoinHandle;
-use windows::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, SetLastError,
-};
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, SetLastError};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 
 // 模块拆分：tray（托盘线程）+ tray_icon（图标原料/共享句柄）+ window_ops
 // （HWND 安全包装，幽灵窗口防御唯一入口）。tray.rs 通过 crate:: 路径引用
@@ -170,9 +168,8 @@ impl eframe::App for GuiApp {
                 self.hidden.store(false, Ordering::Release);
                 // 单次 show_and_activate 可能打在幽灵窗口上（L3）— 记录
                 // 截止时刻，由下方 deadline 块每帧重试直到 ~2s（review #5）
-                self.show_until = Some(
-                    std::time::Instant::now() + std::time::Duration::from_secs(2),
-                );
+                self.show_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
                 ctx.request_repaint();
             }
             Ok(TrayAction::Exit) => {
@@ -190,12 +187,13 @@ impl eframe::App for GuiApp {
                     // （review 3.6）。
                     self.hidden.store(false, Ordering::Release);
                     if self.hidden_applied {
-                        self.show_until = Some(
-                            std::time::Instant::now() + std::time::Duration::from_secs(2),
-                        );
+                        self.show_until =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
                     }
                     ctx.request_repaint();
-                    self.log("WARNING: tray icon creation failed — closing will exit instead of hiding.");
+                    self.log(
+                        "WARNING: tray icon creation failed — closing will exit instead of hiding.",
+                    );
                 }
             }
             _ => {}
@@ -211,9 +209,9 @@ impl eframe::App for GuiApp {
         // 幽灵窗口（winit 延迟销毁）期间 FindWindowW 可能匹配到旧窗口 —
         // 在 ~2s 截止内每帧重试，直至新窗口被真正隐藏。
         if self.hidden.load(Ordering::Acquire) && !self.hidden_applied {
-            let deadline = *self
-                .hidden_apply_deadline
-                .get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
+            let deadline = *self.hidden_apply_deadline.get_or_insert_with(|| {
+                std::time::Instant::now() + std::time::Duration::from_secs(2)
+            });
             if std::time::Instant::now() < deadline {
                 // window_ops::find_main_window 自带 IsWindow 重校验（L3 纪律）
                 if let Some(hwnd) = window_ops::find_main_window() {
@@ -247,9 +245,9 @@ impl eframe::App for GuiApp {
         // 运行于新窗口存续期（幽灵已在事件循环启动时销毁），从首帧起重试
         // 设置直到 ~2s 截止，保证真窗口拿到图标。
         if self.window_icon.is_some() && !self.icon_applied {
-            let deadline = *self
-                .icon_apply_deadline
-                .get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(2));
+            let deadline = *self.icon_apply_deadline.get_or_insert_with(|| {
+                std::time::Instant::now() + std::time::Duration::from_secs(2)
+            });
             if std::time::Instant::now() < deadline {
                 // IsWindow 重校验（L3）+ set_window_icon（PostMessageW 异步，
                 // 同线程向自己窗口投递，事件循环随即处理）
@@ -310,7 +308,11 @@ impl eframe::App for GuiApp {
                     env!("CARGO_PKG_VERSION")
                 ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if self.log_visible { "▸ Log" } else { "▹ Log" };
+                    let label = if self.log_visible {
+                        "▸ Log"
+                    } else {
+                        "▹ Log"
+                    };
                     if ui.button(label).clicked() {
                         self.log_visible = !self.log_visible;
                     }
@@ -353,10 +355,7 @@ impl eframe::App for GuiApp {
                 ui.label("Status: Running");
                 if self.dirty {
                     ui.separator();
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 200, 0),
-                        "(unsaved changes)",
-                    );
+                    ui.colored_label(egui::Color32::from_rgb(255, 200, 0), "(unsaved changes)");
                 }
             });
         });
@@ -399,74 +398,84 @@ impl GuiApp {
         // L3: 捕获期间禁用表格交互 — 防止捕获中改/删行导致 binding_id 悬空
         // 或状态混乱（按键捕获窗口仍可用 Cancel 按钮取消）
         ui.add_enabled_ui(!self.capture.active, |ui| {
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            egui::Grid::new("binding_grid")
-                .striped(true)
-                .min_col_width(80.0)
-                .show(ui, |ui| {
-                    ui.strong("Key");
-                    ui.strong("Function");
-                    ui.strong("Mode");
-                    ui.strong("Actions");
-                    ui.end_row();
-
-                    for (i, binding) in self.bindings_list.iter_mut().enumerate() {
-                        // ---- Key 列 ----
-                        if self.capture.active && self.capture.binding_id == Some(binding.id) {
-                            ui.label("(capturing...)");
-                        } else if let Some(ref name) = binding.key.map(|_| binding.key_name.clone()) {
-                            ui.label(name);
-                        } else {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(150, 150, 150),
-                                "[not set]",
-                            );
-                        }
-
-                        // ---- Function 列 ----
-                        let func_before = binding.func.clone();
-                        egui::ComboBox::from_id_salt(format!("func_{}", binding.id))
-                            .selected_text(func_before.as_str())
-                            .show_ui(ui, |ui| {
-                                for name in &function_names {
-                                    if ui.selectable_label(binding.func == *name, *name).clicked() {
-                                        binding.func = name.to_string();
-                                    }
-                                }
-                            });
-                        if binding.func != func_before {
-                            need_apply = true;
-                        }
-
-                        // ---- Mode 列 ----
-                        let mode_before = binding.mode;
-                        egui::ComboBox::from_id_salt(format!("mode_{}", binding.id))
-                            .selected_text(format!("{:?}", binding.mode))
-                            .show_ui(ui, |ui| {
-                                for &m in &[TriggerMode::Once, TriggerMode::Loop, TriggerMode::Toggle] {
-                                    if ui.selectable_label(binding.mode == m, format!("{:?}", m)).clicked() {
-                                        binding.mode = m;
-                                    }
-                                }
-                            });
-                        if binding.mode != mode_before {
-                            need_apply = true;
-                        }
-
-                        // ---- Actions 列 ----
-                        ui.horizontal(|ui| {
-                            if ui.button("Set Key").clicked() {
-                                capture_idx = Some(i);
-                            }
-                            if ui.small_button("Del").clicked() {
-                                remove_idx = Some(i);
-                            }
-                        });
-
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                egui::Grid::new("binding_grid")
+                    .striped(true)
+                    .min_col_width(80.0)
+                    .show(ui, |ui| {
+                        ui.strong("Key");
+                        ui.strong("Function");
+                        ui.strong("Mode");
+                        ui.strong("Actions");
                         ui.end_row();
-                    }
-                });
-        });
+
+                        for (i, binding) in self.bindings_list.iter_mut().enumerate() {
+                            // ---- Key 列 ----
+                            if self.capture.active && self.capture.binding_id == Some(binding.id) {
+                                ui.label("(capturing...)");
+                            } else if let Some(ref name) =
+                                binding.key.map(|_| binding.key_name.clone())
+                            {
+                                ui.label(name);
+                            } else {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(150, 150, 150),
+                                    "[not set]",
+                                );
+                            }
+
+                            // ---- Function 列 ----
+                            let func_before = binding.func.clone();
+                            egui::ComboBox::from_id_salt(format!("func_{}", binding.id))
+                                .selected_text(func_before.as_str())
+                                .show_ui(ui, |ui| {
+                                    for name in &function_names {
+                                        if ui
+                                            .selectable_label(binding.func == *name, *name)
+                                            .clicked()
+                                        {
+                                            binding.func = name.to_string();
+                                        }
+                                    }
+                                });
+                            if binding.func != func_before {
+                                need_apply = true;
+                            }
+
+                            // ---- Mode 列 ----
+                            let mode_before = binding.mode;
+                            egui::ComboBox::from_id_salt(format!("mode_{}", binding.id))
+                                .selected_text(format!("{:?}", binding.mode))
+                                .show_ui(ui, |ui| {
+                                    for &m in
+                                        &[TriggerMode::Once, TriggerMode::Loop, TriggerMode::Toggle]
+                                    {
+                                        if ui
+                                            .selectable_label(binding.mode == m, format!("{:?}", m))
+                                            .clicked()
+                                        {
+                                            binding.mode = m;
+                                        }
+                                    }
+                                });
+                            if binding.mode != mode_before {
+                                need_apply = true;
+                            }
+
+                            // ---- Actions 列 ----
+                            ui.horizontal(|ui| {
+                                if ui.button("Set Key").clicked() {
+                                    capture_idx = Some(i);
+                                }
+                                if ui.small_button("Del").clicked() {
+                                    remove_idx = Some(i);
+                                }
+                            });
+
+                            ui.end_row();
+                        }
+                    });
+            });
         }); // add_enabled_ui — 捕获期间禁用
 
         // 延迟处理（避免在 grid 闭包中 borrow self）
@@ -504,11 +513,7 @@ impl GuiApp {
                 // "连点器v1"在已绑定时，加行后不选功能直接按键会产生重复
                 // 绑定；"停止退出"永不作默认（直接按键会导致程序退出）
                 // （review 4.6）
-                let used: Vec<&str> = self
-                    .bindings_list
-                    .iter()
-                    .map(|g| g.func.as_str())
-                    .collect();
+                let used: Vec<&str> = self.bindings_list.iter().map(|g| g.func.as_str()).collect();
                 let default_func = config::list_function_names()
                     .into_iter()
                     .find(|name| *name != "停止退出" && !used.contains(name))
@@ -594,7 +599,11 @@ impl GuiApp {
     fn load_cjk_font(&mut self, ctx: &egui::Context) {
         let cjk_font = [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simsun.ttc"]
             .iter()
-            .find_map(|path| std::fs::read(path).ok().map(|b| egui::FontData::from_owned(b).into()));
+            .find_map(|path| {
+                std::fs::read(path)
+                    .ok()
+                    .map(|b| egui::FontData::from_owned(b).into())
+            });
 
         let sym_font = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf")
             .ok()
@@ -895,7 +904,12 @@ fn register_all_bindings(
             match config::create_function(&b.func, send_ctx.clone()) {
                 Ok(f) => f,
                 Err(e) => {
-                    log.push(format!("  ERROR: '{}' -> '{}': {}", b.key.name(), b.func, e));
+                    log.push(format!(
+                        "  ERROR: '{}' -> '{}': {}",
+                        b.key.name(),
+                        b.func,
+                        e
+                    ));
                     continue;
                 }
             }
@@ -1049,8 +1063,9 @@ fn main() {
     let stop_flag = engine.stop_flag();
 
     // ── 4. 注册初始绑定 ─────────────────────────────────────
-    let stop_func: Arc<dyn KeyFunction> =
-        Arc::new(gi_utils::functions::stop::停止退出::new(stop_flag.clone()));
+    let stop_func: Arc<dyn KeyFunction> = Arc::new(gi_utils::functions::stop::停止退出::new(
+        stop_flag.clone(),
+    ));
     startup_log.push("Registered functions:".into());
     startup_log.extend(register_all_bindings(
         &key_bindings,
@@ -1148,10 +1163,7 @@ fn main() {
                     b
                 }
                 Err(e) => {
-                    startup_log.push(format!(
-                        "config.toml 重载失败（沿用启动快照）: {}",
-                        e
-                    ));
+                    startup_log.push(format!("config.toml 重载失败（沿用启动快照）: {}", e));
                     config_bindings.clone()
                 }
             }
@@ -1172,14 +1184,12 @@ fn main() {
         // 托盘：每轮尝试独立 channel + quit 标志 + 线程（上一轮的旧线程在
         // panic 路径已收尾）
         let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
-        tray_handle = match std::thread::Builder::new()
-            .name("tray".into())
-            .spawn({
-                let icon = preloaded_icon.clone();
-                let pixels = tray_pixels.clone();
-                let quit = tray_quit.clone();
-                move || tray::run_tray_thread(tray_tx, quit, icon, pixels, tray_w, tray_h)
-            }) {
+        tray_handle = match std::thread::Builder::new().name("tray".into()).spawn({
+            let icon = preloaded_icon.clone();
+            let pixels = tray_pixels.clone();
+            let quit = tray_quit.clone();
+            move || tray::run_tray_thread(tray_tx, quit, icon, pixels, tray_w, tray_h)
+        }) {
             Ok(h) => Some(h),
             Err(e) => {
                 startup_log.push(format!("Tray thread spawn failed: {}", e));

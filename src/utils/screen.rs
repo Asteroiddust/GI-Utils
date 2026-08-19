@@ -6,7 +6,7 @@
 //! For bulk capture, consider DXGI Desktop Duplication.
 
 use windows::Win32::Foundation::POINT;
-use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC, HDC};
+use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, HDC, ReleaseDC};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 // ── RAII screen DC ────────────────────────────────────────────

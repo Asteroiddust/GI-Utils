@@ -13,7 +13,7 @@
 
 - **Rust 1.99 nightly** (edition 2024, -Z plt=no, build-std release-only)
 - **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入；用户层 API 为**原生 Rust 移植**（`src/interception/native.rs`，DeviceIoControl 协议端，替代原预编译 interception.lib，2026-08 移植）
-- **windows 0.62** — Win32 API（Threading、ToolHelp、Gdi、WindowsAndMessaging、Shell、LibraryLoader、Media、HiDpi、Security）
+- **windows 0.62** — Win32 API（Threading、ToolHelp、Gdi、WindowsAndMessaging、Shell、LibraryLoader、Media、HiDpi、Security、Storage_FileSystem、System_IO）
 - **eframe 0.36**（egui，仅 glow + default_fonts）— GUI 配置面板与托盘窗口
 - **toml 1.1 + serde 1.0** — TOML 配置解析/序列化
 - **tracing 0.1 + tracing-subscriber 0.3**（仅 fmt）— 结构化日志 → GUI 日志面板桥
@@ -41,7 +41,7 @@ src/
 │   └── context.rs             #   InterceptionContext (recv) + SendContext (send) 类型化封装
 
 ├── engine/
-│   ├── mod.rs                 #   Engine — 事件循环 + 按键显示
+│   ├── mod.rs                 #   Engine — 事件循环
 │   ├── event.rs               #   InputEvent + EventSequence 链式 API
 │   ├── function.rs            #   KeyFunction trait (1 method)
 │   ├── bindings.rs            #   KeyBindings + TriggerMode + ActiveGuard
@@ -150,7 +150,7 @@ rustflags: `-C target-cpu=native -Z threads=16`（target-cpu 已含 native 调�
 
 build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，破坏 GUI 亲和性恢复兜底。
 
-已知非目标（有意保持，见 dsh-review-result.md §3）：`cargo clippy -D warnings` 有 13 项风格 lint（缺 `Default` impl、`collapsible_if` 等，无功能错误）；`cargo fmt --check` 不干净（项目为手写格式风格，引入 rustfmt 会产生一次大 diff）。
+已知非目标（有意保持，见 dsh-review-result.md §3）：`cargo clippy -D warnings` 有 13 项风格 lint（缺 `Default` impl、`collapsible_if` 等，无功能错误）。rustfmt：**2026-08-19 起已全面采用**（用户拍板，全项目一次格式化），`cargo fmt --check` 应保持干净。
 
 ## 运行
 

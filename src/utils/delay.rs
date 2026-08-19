@@ -9,8 +9,8 @@
 //! 若校准被跳过，将回退到硬编码默认值（9800X3D 基础频率）。
 //! Falls back to a hardcoded default (9800X3D base clock) if calibration is skipped.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── Safe TSC wrapper ──────────────────────────────────────────
 
@@ -176,7 +176,12 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> (f64, Vec<String>) {
         let elapsed = start.elapsed().as_secs_f64();
         let rate = (tsc_end - tsc_start) as f64 / elapsed;
         if rate.is_finite() {
-            lines.push(format!("  sample {:>2}/{}: {:.0} Hz", i + 1, sample_count, rate));
+            lines.push(format!(
+                "  sample {:>2}/{}: {:.0} Hz",
+                i + 1,
+                sample_count,
+                rate
+            ));
             rates.push(rate);
         } else {
             lines.push(format!(

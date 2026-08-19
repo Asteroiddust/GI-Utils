@@ -2,8 +2,8 @@
 //! Once 模式，单次执行。
 
 use crate::engine::function::KeyFunction;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 停止退出功能 — Once 模式。
 ///

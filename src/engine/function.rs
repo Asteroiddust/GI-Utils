@@ -3,8 +3,8 @@
 //! 所有自动化功能实现此 trait，通过单个 `execute` 方法驱动。
 //! All automation functions implement this trait, driven by a single `execute` method.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 pub trait KeyFunction: Send + Sync {
     /// 执行功能，直到 `stop_requested` 变为 true（由 manager 在 key-up / toggle-off 时设置）。

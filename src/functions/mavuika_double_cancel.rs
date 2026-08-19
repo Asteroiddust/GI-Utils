@@ -3,15 +3,15 @@
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
+use crate::interception::SendContext;
 use crate::interception::native::{
     INTERCEPTION_KEY_DOWN, INTERCEPTION_KEY_UP, INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
     INTERCEPTION_MOUSE_LEFT_BUTTON_UP,
 };
-use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 双玛头 (Mavuika Double Cancel) 功能 — Loop 模式。
 ///

@@ -7,8 +7,8 @@
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetWindowThreadProcessId, ICON_BIG, ICON_SMALL, IsIconic, IsWindow,
-    PostMessageW, SetForegroundWindow, ShowWindow, HICON, SW_HIDE, SW_RESTORE, SW_SHOW, WM_CLOSE,
+    FindWindowW, GetWindowThreadProcessId, HICON, ICON_BIG, ICON_SMALL, IsIconic, IsWindow,
+    PostMessageW, SW_HIDE, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow, WM_CLOSE,
     WM_SETICON,
 };
 
@@ -94,4 +94,3 @@ pub fn post_close(hwnd: HWND) {
         let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
 }
-

@@ -12,15 +12,15 @@ pub mod timeline;
 pub use bindings::TriggerMode;
 
 use crate::interception::native::{
-    Device, InterceptionKeyStroke, InterceptionMouseStroke, INTERCEPTION_FILTER_KEY_ALL,
-    INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP, MAX_STROKES_PER_IOCTL,
+    Device, INTERCEPTION_FILTER_KEY_ALL, INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP,
+    InterceptionKeyStroke, MAX_STROKES_PER_IOCTL,
 };
 use crate::interception::{InterceptionContext, SendContext};
 use crate::key::Key;
 use crate::scan_code::ScanCode;
 use bindings::KeyBindings;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 应用程序引擎 (Application Engine)。
 /// 分离的 recv 上下文用于接收，共享的 send 上下文用于转发事件。
@@ -75,9 +75,8 @@ impl Engine {
 
         // L12: Engine 线程固定到输入处理核心（14,15）— 进程掩码为 12-15，
         // 新线程继承进程掩码，需显式收窄。失败不致命 — 仅降低时序隔离性。
-        let _ = crate::utils::affinity::pin_current_thread(
-            crate::utils::affinity::ENGINE_CORES_MASK,
-        );
+        let _ =
+            crate::utils::affinity::pin_current_thread(crate::utils::affinity::ENGINE_CORES_MASK);
 
         while !self.stop_requested.load(Ordering::Acquire) {
             // Engine 线程也回收已结束功能线程的句柄（与 GUI 帧循环调用同一
@@ -89,7 +88,7 @@ impl Engine {
             };
 
             match device {
-                // ── 键盘设备：批量接收 + 逐条转发/解析分发 ─────
+                // ── 键盘设备：批量接收 + 整批转发 + 逐条解析分发 ──
                 Device::Keyboard(dev) => {
                     // 批缓冲：一次 IOCTL_READ 取回突发输入（C 版语义本就
                     // 支持 nstroke，旧实现恒为 1 — 重写深化的系统调用削减）
@@ -100,20 +99,19 @@ impl Engine {
                         if got.is_empty() {
                             break;
                         }
-                        for ks in got {
-                            // 1. 转发原始事件 — Forward the stroke to the system
-                            send_ctx.forward_keyboard(dev, std::slice::from_ref(ks));
 
-                            // 2. 消除歧义 — Resolve E0 prefix and press/release
-                            //    into a unified Key
+                        // 1. 整批转发 — 一次 IOCTL_WRITE（与批量接收对称，
+                        //    减少与功能线程发送的交错 — review V5）
+                        send_ctx.forward_keyboard(dev, got);
+
+                        // 2./3. 逐条消除歧义并分发
+                        for ks in got {
                             let is_e0 = (ks.state & INTERCEPTION_KEY_E0) != 0;
                             let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
                             let key = Key {
                                 code: ScanCode(ks.code),
                                 is_e0,
                             };
-
-                            // 3. 分发 — Route press/release to the binding manager
                             if is_pressing {
                                 self.bindings.process_key_down(key);
                             } else {
@@ -122,20 +120,11 @@ impl Engine {
                         }
                     }
                 }
-                // ── 鼠标设备：只转发，不分发（旧实现把鼠标缓冲误按键盘
-                //    解析成垃圾 Key — 原生移植顺手修正）───────────────
-                Device::Mouse(dev) => {
-                    let mut strokes = [InterceptionMouseStroke::default(); MAX_STROKES_PER_IOCTL];
-                    loop {
-                        let got = self.recv_ctx.receive_mouse(dev, &mut strokes);
-                        if got.is_empty() {
-                            break;
-                        }
-                        for ms in got {
-                            send_ctx.forward_mouse(dev, std::slice::from_ref(ms));
-                        }
-                    }
-                }
+                // ── 鼠标设备：过滤器仅设键盘（鼠标 pass-through 不进
+                //    队列），此分支不可达 — 若未来拦截鼠标，在此转发
+                //    （review：旧注释所称"鼠标被误按键盘解析"在旧版同样
+                //    不会发生，过滤器历来只设键盘）──────────────────
+                Device::Mouse(_) => {}
             }
         }
     }

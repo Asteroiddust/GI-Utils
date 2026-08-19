@@ -6,8 +6,8 @@ use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 火神跳喷 (Mavuika Jump) 功能 — Loop 模式。
 ///
