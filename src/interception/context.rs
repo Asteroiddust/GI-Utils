@@ -82,7 +82,7 @@ impl InterceptionContext {
     ///
     /// 鼠标接收不在此暴露：引擎过滤器仅设键盘（鼠标事件 pass-through
     /// 不进队列）— 鼠标分支为防御性死代码已删（review）；底层协议 API
-    /// 仍在 native.rs 完整保留。
+    /// 仍在 protocol.rs 完整保留。
     pub fn receive_keyboard<'a>(
         &self,
         device: KeyboardDevice,

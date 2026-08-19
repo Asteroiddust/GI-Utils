@@ -16,7 +16,7 @@
 //!   设备类型混淆在编译期不存在（send_keyboard 只接受 KeyboardDevice）；
 //!   索引越界在构造处 panic（绝不静默截断/错位 — review）
 //! - **批量接收**：一次 IOCTL_READ 可读 [`MAX_STROKES_PER_IOCTL`] 条
-//!   （C 版语义本就支持 nstroke，引擎侧旧实现恒为 1）
+//!   （协议本身支持 nstroke，引擎以 32 条批缓冲调用）
 //! - **宽字符 API**：CreateFileW（CreateFileA 是 Win9x 遗留惯例）
 //! - **错误传播**：CreateFile / CreateEvent / DeviceIoControl 失败返回
 //!   `windows::core::Result`（C 版全部忽略）；create 中途失败由 Drop 自动清理
