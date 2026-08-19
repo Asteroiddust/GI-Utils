@@ -1,11 +1,9 @@
 //! 全局日志收集 — Global log collection via tracing subscriber.
 //!
-//! GUI 版无控制台（`#![windows_subsystem = "windows"]`），功能线程里的
+//! 程序无控制台（`#![windows_subsystem = "windows"]`），功能线程里的
 //! `println`/`eprintln` 会被静默丢弃。本模块提供安装到全局的 tracing
 //! subscriber：将 INFO 以上的事件格式化为文本行收集到共享 buffer，
 //! GUI 主线程每帧 [`drain`] 到日志面板。
-//!
-//! headless 版不安装本模块（main.rs 直接装 stderr fmt subscriber）。
 
 use std::io;
 use std::sync::{Arc, Mutex};

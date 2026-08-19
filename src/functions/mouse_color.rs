@@ -32,7 +32,7 @@ impl KeyFunction for 坐标颜色 {
     /// 执行坐标颜色显示循环。
     ///
     /// 每 20ms 获取一次光标位置，调用 `GetPixel` 读取该点 RGB 值，
-    /// 经 tracing 输出（GUI 版汇入日志面板；headless 版输出到 stderr）。
+    /// 经 tracing 输出（汇入 GUI 日志面板）。
     /// 原 `\r` 控制台覆盖式输出不适用于日志通道，改为每次一行。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
         while !stop_requested.load(Ordering::Acquire) {

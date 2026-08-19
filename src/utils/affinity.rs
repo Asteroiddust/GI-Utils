@@ -33,7 +33,6 @@ pub const GAME_CORES_MASK: usize = ALL_CORES_MASK;
 
 /// 输入处理核心（物理核 7，逻辑 14,15）— Engine 事件循环 + 全部功能线程。
 /// 与 GUI 渲染核心（12,13）分离：渲染卡顿不影响输入注入时序。
-/// headless 版整个进程 pin 在此（`configure_self`）。
 pub const ENGINE_CORES_MASK: usize = 0b1100_0000_0000_0000;
 
 /// GUI 渲染核心（物理核 6，逻辑 12,13）— eframe 主线程（渲染 + 事件循环）。
@@ -285,7 +284,6 @@ pub fn pin_current_thread(mask: usize) -> Result<(), Error> {
 ///
 /// 必须在 [`configure_self`] 之后、创建 Engine 线程之前调用：新线程继承
 /// 进程掩码，需先扩展进程掩码到 12-15，Engine/功能线程才能收窄到 14,15。
-/// 仅在 GUI 二进制调用；headless 版进程掩码保持 14,15，无需扩展。
 pub fn configure_gui_self() -> Result<(), Error> {
     // 1. 扩展进程掩码至 12-15 — 线程掩码必须 ⊆ 进程掩码，
     //    GUI(12,13) 与输入处理(14,15) 才能分别收窄

@@ -85,17 +85,16 @@ impl Engine {
     pub fn run(&self) {
         let send_ctx = &self.send_ctx;
 
-        // L12: Engine 线程固定到输入处理核心（14,15）— GUI 版进程掩码为
-        // 12-15，新线程继承进程掩码，需显式收窄；headless 版为无操作
-        // （进程掩码本就是 14,15）。失败不致命 — 仅降低时序隔离性。
+        // L12: Engine 线程固定到输入处理核心（14,15）— 进程掩码为 12-15，
+        // 新线程继承进程掩码，需显式收窄。失败不致命 — 仅降低时序隔离性。
         let _ = crate::utils::affinity::pin_current_thread(
             crate::utils::affinity::ENGINE_CORES_MASK,
         );
 
         while !self.stop_requested.load(Ordering::Acquire) {
-            // headless 版无 GUI 帧循环 — 已结束功能线程的句柄在此回收
-            // （GUI 版由帧循环调用同一方法；is_finished 检查绝不阻塞，
-            //  谁先看到结束谁 join — review 3.3）
+            // Engine 线程也回收已结束功能线程的句柄（与 GUI 帧循环调用同一
+            // 方法；is_finished 检查绝不阻塞，谁先看到结束谁 join —
+            // review 3.3）
             self.bindings.drain_pending_joins();
             let device = self.recv_ctx.wait_timeout(100);
             if device == 0 {

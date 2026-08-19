@@ -25,8 +25,8 @@ pub mod log;
 /// the TSC (Time Stamp Counter) for high-precision timing. Must be called
 /// once at startup, before any timing-critical or GDI work.
 ///
-/// 返回初始化日志行。调用方自行输出：headless 版逐行 println，
-/// GUI 版注入日志面板（GUI 无控制台，println 输出会被静默丢弃）。
+/// 返回初始化日志行。GUI 无控制台，println 输出会被静默丢弃 —
+/// 调用方注入日志面板。
 pub fn init() -> Vec<String> {
     let mut lines: Vec<String> = Vec::with_capacity(8);
 
