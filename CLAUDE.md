@@ -23,8 +23,7 @@
 
 ```
 src/
-├── main.rs                    # headless 入口：加载 config → 校准 TSC → 注册 → Engine.run()
-├── lib.rs                     # 库根 — headless 与 GUI 共享全部模块
+├── lib.rs                     # 库根 — GUI 二进制与测试共享全部模块
 ├── bin/
 │   └── gui/
 │       ├── main.rs            # GUI 入口 (egui 配置面板 + live-apply + 崩溃自愈重试 → gi-utils-gui.exe)
@@ -118,15 +117,25 @@ Engine (主循环, blocking)
 ## 构建
 
 ```bash
-# release（含 build-std：std 以 panic_unwind + native/O3 重编，见 .cargo/build-std.toml）
+# ── 日常开发（dev profile，增量编译秒级 — 默认路径）──────────────────
+cargo check    # 类型检查
+cargo test     # dev profile 跑单测 + doctest
+cargo build    # target/debug/gi-utils-gui.exe（功能验证用）
+# dev 产物不影响部署（部署符号链接指向 target/release/）
+
+# ── 部署/发版（release + build-std，全量 ~1 分钟 — 仅此时运行）────────
+# build-std：std 以 panic_unwind + native/O3 重编，见 .cargo/build-std.toml
 cargo build --release --config .cargo/build-std.toml
-# 测试（不带 build-std — 全局 build-std 会让 cargo test 为 dev+test 双 profile
-# 各编一份 std，两份 core 链接报 duplicate lang item（cargo 已知问题））
-cargo test
-# 输出: target/release/gi-utils.exe (~880KB, headless) + gi-utils-gui.exe (~5.8MB, GUI)
+# 输出: target/release/gi-utils-gui.exe (~5.8MB)
 ```
 
-自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入两个 exe；文件缺失时跳过并警告，不影响构建。
+> **策略（2026-08-19 定）**：日常编译/测试/功能验证一律走 dev profile —
+> release 版 O3 + fat LTO + build-std 重编 std 每次 30-60s+，日常迭代太慢。
+> release 构建仅在部署/发版时运行。测试不带 build-std 的原因：全局 build-std
+> 会让 cargo test 为 dev+test 双 profile 各编一份 std，两份 core 链接报
+> duplicate lang item（cargo 已知问题）。
+
+自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入 exe；文件缺失时跳过并警告，不影响构建。
 
 release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1, panic=unwind, incremental=false`（unwind 是 GUI 崩溃自愈的基础：catch_unwind 捕获渲染 panic 重试；Drop 防护体系全面激活）
 
@@ -163,15 +172,15 @@ build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，
 > 「优化游戏」偶数次恢复**有意不降游戏优先级**（3.4）：降级需再次
 > OpenProcess 游戏句柄（反作弊拦截路径），且 HIGH 留存无害（进程退出即消亡）。
 
-进程掩码 12-15（GUI 版）。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`；托盘线程 → 12,13（普通优先级，GUI 侧）；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用）。headless 版进程掩码保持 14,15，无需扩展。
+进程掩码 12-15。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`；托盘线程 → 12,13（普通优先级，GUI 侧）；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用）。
 
 ## 部署
 
 `E:\Program\GI-Utils\` 下两个符号链接，每次构建自动同步：
 
 ```
-gi-utils.exe      → E:\Projects\Rust\GI-Utils\target\release\gi-utils.exe
-gi-utils-gui.exe  → E:\Projects\Rust\GI-Utils\target\release\gi-utils-gui.exe
+gi-utils-gui.exe  → E:\Projects\Rust\GI-Utils\target\release\gi-utils-gui.exe   (发版产物)
+gi-utils-dev.exe  → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe     (dev 日常验证，dev profile 秒级构建)
 ```
 
 **必须以管理员身份运行**。首次运行自动生成 `config.toml`。
@@ -218,7 +227,7 @@ icon_path = ""
 2. 在 `src/functions/` 下新建文件，中文 struct 名照搬原项目
 3. 实现 `KeyFunction` trait
 4. 在 `src/config.rs` 的 `create_function` 和 `DEFAULT_CONFIG` 各加一行
-5. 无需改 `main.rs` — 全部走配置驱动
+5. 无需改入口 — 全部走配置驱动
 
 参考模板: `auto_clicker.rs` (Loop), `ganyu_aim_cancel.rs` (Once), `mavuika_jump.rs` (on_activate+Loop)
 
