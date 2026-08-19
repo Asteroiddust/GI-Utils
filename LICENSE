@@ -19,3 +19,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+NOTE: `src/interception/protocol.rs` is a modified version (Rust port) of
+`library/interception.c` from the oblitum/Interception project, and is
+licensed under the GNU Lesser General Public License v3.0 — see
+LICENSE-LGPL.txt (and the incorporated GNU GPL v3.0, LICENSE-GPL.txt).
+The Interception library and its use are covered by the LGPL; original
+copyright belongs to the oblitum/Interception authors. The MIT License
+above applies to all other parts of this project. The Interception
+kernel-mode driver is NOT included in this repository — it is distributed
+separately by its authors under their own (commercial) license.

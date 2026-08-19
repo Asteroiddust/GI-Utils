@@ -1,8 +1,18 @@
 //! Interception 用户层 API 的原生 Rust 移植（重写深化版）
 //!
 //! 协议契约移植自 oblitum/Interception `library/interception.c`（LGPL 3.0，
-//! 许可文本见 `Interception/licenses/`）：内核驱动侧保持不变，本模块实现
-//! 用户态 DeviceIoControl 协议端。
+//! 许可文本见项目根 `LICENSE-LGPL.txt` / `LICENSE-GPL.txt`）：内核驱动侧
+//! 保持不变，本模块实现用户态 DeviceIoControl 协议端。
+//!
+//! ## 许可声明（LGPL §2/§4 合规）
+//!
+//! 本文件是 interception.c 的**衍生修改版本**（Rust 移植），依 LGPL 3.0
+//! 条款许可（SPDX: LGPL-3.0-only）。原始版权归属 oblitum/Interception
+//! 及其贡献者。项目其余部分为 MIT（见根目录 `LICENSE`）。
+//! This file is a modified version (Rust port) of interception.c from
+//! oblitum/Interception, licensed under LGPL 3.0. The rest of the project
+//! is MIT. The library and its use are covered by the LGPL — see
+//! `LICENSE-LGPL.txt` and `LICENSE-GPL.txt`.
 //!
 //! # 相对 C 原版的现代化
 //!

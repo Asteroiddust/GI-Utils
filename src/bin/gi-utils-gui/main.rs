@@ -1029,6 +1029,9 @@ fn main() {
     // 启动日志（GUI 无控制台，收集到内存后在日志面板显示）
     let mut startup_log: Vec<String> = vec![
         format!("GI-Utils GUI v{}", env!("CARGO_PKG_VERSION")),
+        // LGPL §4(c) 合规：运行时显示所用库的版权与许可提示
+        "Interception protocol layer: derived from interception.c (oblitum/Interception), LGPL 3.0 — see LICENSE-LGPL.txt"
+            .into(),
         "Initializing...".into(),
     ];
 
