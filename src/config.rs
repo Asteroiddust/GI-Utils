@@ -36,6 +36,8 @@ struct RawBinding {
 struct RawGuiConfig {
     #[serde(default)]
     icon_path: String,
+    #[serde(default)]
+    font_path: String,
 }
 
 /// GUI 配置 — GUI-only settings from the `[gui]` section.
@@ -43,6 +45,9 @@ struct RawGuiConfig {
 pub struct GuiConfig {
     /// 托盘图标 .ico 文件路径。空或文件不存在时回退程序生成图标。
     pub icon_path: String,
+    /// CJK 补充字体文件路径（.ttf/.ttc/.otf）。空 = 自动探测系统字体
+    /// （msyh.ttc → simsun.ttc 顺序）；非空但加载失败时回退自动探测。
+    pub font_path: String,
 }
 
 /// 解析后的绑定项 — A parsed binding ready to register.
@@ -291,9 +296,11 @@ key = "NumpadAdd"
 func = "优化游戏"
 mode = "Once"
 
-# GUI 配置 — icon_path 指向 .ico 托盘图标；留空使用程序生成图标
+# GUI 配置 — icon_path 指向 .ico 托盘图标；font_path 指向 CJK 补充字体；
+# 两者留空均使用自动回退（程序生成图标 / 系统字体 msyh→simsun）
 [gui]
 icon_path = "E:/Projects/Rust/GI-Utils/assets/icon.ico"
+font_path = ""
 "#;
 
 /// 加载并解析配置文件 — Load and parse the config file. Generates a default if missing.
@@ -364,6 +371,7 @@ pub fn load_gui_config() -> GuiConfig {
     match toml::from_str::<RawConfig>(&content) {
         Ok(raw) => GuiConfig {
             icon_path: raw.gui.icon_path,
+            font_path: raw.gui.font_path,
         },
         Err(_) => GuiConfig::default(),
     }
@@ -393,6 +401,7 @@ pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
         bindings: raw_bindings,
         gui: RawGuiConfig {
             icon_path: gui.icon_path.clone(),
+            font_path: gui.font_path.clone(),
         },
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;

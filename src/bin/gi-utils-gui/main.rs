@@ -595,15 +595,32 @@ impl GuiApp {
 // ═══════════════════════════════════════════════════════════════════
 
 impl GuiApp {
-    /// 加载系统字体（中文 + 符号），注入 egui 字体系统作为 fallback。
+    /// 加载 CJK 补充字体（+ 符号字体），注入 egui 字体系统作为 fallback。
+    ///
+    /// 来源优先级：`[gui] font_path` 显式配置 → 自动探测系统字体
+    /// （msyh.ttc → simsun.ttc）。显式路径加载失败时告警并回退自动探测。
     fn load_cjk_font(&mut self, ctx: &egui::Context) {
-        let cjk_font = [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simsun.ttc"]
-            .iter()
-            .find_map(|path| {
-                std::fs::read(path)
-                    .ok()
-                    .map(|b| egui::FontData::from_owned(b).into())
-            });
+        let configured = &self.gui_config.font_path;
+        let cjk_font = if configured.is_empty() {
+            [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simsun.ttc"]
+                .iter()
+                .find_map(|path| {
+                    std::fs::read(path)
+                        .ok()
+                        .map(|b| egui::FontData::from_owned(b).into())
+                })
+        } else {
+            match std::fs::read(configured) {
+                Ok(bytes) => Some(egui::FontData::from_owned(bytes).into()),
+                Err(e) => {
+                    self.log(format!(
+                        "WARNING: font_path '{}' load failed ({e}) — falling back to system fonts.",
+                        configured
+                    ));
+                    None
+                }
+            }
+        };
 
         let sym_font = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf")
             .ok()
