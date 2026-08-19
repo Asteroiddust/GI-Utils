@@ -25,7 +25,7 @@
 src/
 ├── lib.rs                     # 库根 — GUI 二进制与测试共享全部模块
 ├── bin/
-│   └── gui/
+│   └── gi-utils-gui/          # 唯一二进制（目录名 = 二进制名，Cargo 自动发现，无 [[bin]] 配置）
 │       ├── main.rs            # GUI 入口 (egui 配置面板 + live-apply + 崩溃自愈重试 → gi-utils-gui.exe)
 │       ├── tray.rs            # 托盘线程 (Shell_NotifyIconW + 消息窗口/泵 + quit 标志收尾)
 │       ├── tray_icon.rs       # 图标原料 + SharedIcon 共享句柄 (启动预加载, L4 WIC 污染防御)

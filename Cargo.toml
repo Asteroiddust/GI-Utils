@@ -33,10 +33,6 @@ eframe = { version = "0.36", default-features = false, features = [
 [build-dependencies]
 embed-resource = "3"
 
-[[bin]]
-name = "gi-utils-gui"
-path = "src/bin/gui/main.rs"
-
 # ==============================================================================
 # 1. dev 模式：极限压榨编译速度（用于日常 cargo run / check 快速开发）
 # ==============================================================================
