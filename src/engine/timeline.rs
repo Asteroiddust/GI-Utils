@@ -433,25 +433,31 @@ impl TimelinePlayer {
             //    已触发即移除 → 表恒为未触发条目；动态插入的新条目在到期帧
             //    被 partition_point 捕获，天然不重复、不遗漏。
             let due = self.state.drain_due(delay::tsc_now() - start);
+            // 同帧到期条目之间无间隔 → 收集后一次 send_events 批量发送
+            // （段内按 Sleep/设备类型自动切批，顺序保持）
+            let mut batch: Vec<InputEvent> = Vec::with_capacity(due.len());
             for item in due {
                 if stop_requested.load(AtomicOrdering::Acquire) {
                     break;
                 }
                 match item {
                     ScheduleItem::Down { key, .. } => {
-                        self.send_ctx.send_event(&InputEvent::press(key));
+                        batch.push(InputEvent::press(key));
                         pending.push(key);
                     }
                     ScheduleItem::Up { key, .. } => {
-                        self.send_ctx.send_event(&InputEvent::release(key));
+                        batch.push(InputEvent::release(key));
                         remove_pending(&mut pending, key);
                     }
                     ScheduleItem::Event { event, .. } => {
-                        self.send_ctx.send_event(&event);
                         // At 键盘事件同样参与挂起键清理（防卡键）
                         track_keyboard(&mut pending, &event);
+                        batch.push(event);
                     }
                 }
+            }
+            if !batch.is_empty() {
+                self.send_ctx.send_events(&batch);
             }
 
             // 3. 停止请求 → 补发挂起键后退出（最坏停止延迟 ~100μs + 本帧突发发送）

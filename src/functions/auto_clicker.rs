@@ -5,10 +5,9 @@
 //! - `连点器v1`：left_click + sleep 10ms（原版参数）
 //! - `连点器v2`：left_down 8ms / left_up 8ms（调参定稿）
 
-use crate::engine::event::{EventSequence, InputEvent};
+use crate::engine::event::EventSequence;
 use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
-use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -39,17 +38,12 @@ impl 连点器v1 {
 impl KeyFunction for 连点器v1 {
     /// 执行连点循环。
     ///
-    /// 反复发送 left_click → sleep 10ms，每次 sleep 后检查 `stop_requested`。
+    /// 反复播放 left_click → sleep 10ms；[down, up] 点击对经
+    /// `EventSequence::play` 合并为一次 IOCTL_WRITE（驱动级原子送达），
+    /// 每次 sleep 后检查 `stop_requested`。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
-        let events = self.sequence.events();
-
         while !stop_requested.load(Ordering::Acquire) {
-            for event in events {
-                self.send_ctx.send_event(event);
-                if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &stop_requested);
-                }
-            }
+            self.sequence.play(&self.send_ctx, Some(&stop_requested));
         }
     }
 }
@@ -74,7 +68,9 @@ impl 连点器v2 {
     /// `while` 控制。
     pub fn new(send_ctx: Arc<SendContext>) -> Self {
         let mut sequence = EventSequence::new();
-        sequence.left_down().sleep(8.0).left_up().sleep(8.0);
+        // hold_left(8ms) = left_down → sleep(8) → left_up（与手写三连等价，
+        // 复用 event.rs 现成包装糖）
+        sequence.hold_left(8.0).sleep(8.0);
         Self { sequence, send_ctx }
     }
 }
@@ -82,18 +78,12 @@ impl 连点器v2 {
 impl KeyFunction for 连点器v2 {
     /// 执行连点循环。
     ///
-    /// 反复发送 left_down → sleep 8ms → left_up → sleep 8ms，
+    /// 反复播放 left_down → sleep 8ms → left_up → sleep 8ms
+    /// （每个事件都被 Sleep 隔开，无连续段 — 合并对 v2 是 no-op），
     /// 每次 sleep 后检查 `stop_requested`。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
-        let events = self.sequence.events();
-
         while !stop_requested.load(Ordering::Acquire) {
-            for event in events {
-                self.send_ctx.send_event(event);
-                if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &stop_requested);
-                }
-            }
+            self.sequence.play(&self.send_ctx, Some(&stop_requested));
         }
     }
 }

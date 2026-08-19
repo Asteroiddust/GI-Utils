@@ -1,11 +1,10 @@
 //! 火神跳喷 (Mavuika Jump) — 初始跳跃后循环空格连跳。
 //! 用于原神火神跳喷移动。Loop 模式，按住循环。
 
-use crate::engine::event::{EventSequence, InputEvent};
+use crate::engine::event::EventSequence;
 use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
-use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,25 +42,15 @@ impl 火神跳喷 {
 impl KeyFunction for 火神跳喷 {
     /// 执行火神跳喷：先初始跳跃 (不可中断) → 循环跳跃 (可中断)。
     ///
-    /// 初始段使用 `delay_ms` 保证首次跳跃不被中途打断；
-    /// 循环段使用 `delay_ms_interruptible` 以实现即时停止响应。
+    /// 初始段 `stop` 传 None — `delay_ms` 保证首次跳跃不被中途打断；
+    /// 循环段传 Some — `delay_ms_interruptible` 实现即时停止响应。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
         // ── on activate: initial jump (non-cancellable, matches C++) ──
-        for event in self.initial_jump.events() {
-            self.send_ctx.send_event(event);
-            if let InputEvent::Sleep { ms } = event {
-                delay::delay_ms(*ms);
-            }
-        }
+        self.initial_jump.play(&self.send_ctx, None);
 
         // ── while held: loop jump ──
         while !stop_requested.load(Ordering::Acquire) {
-            for event in self.loop_seq.events() {
-                self.send_ctx.send_event(event);
-                if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &stop_requested);
-                }
-            }
+            self.loop_seq.play(&self.send_ctx, Some(&stop_requested));
         }
     }
 }

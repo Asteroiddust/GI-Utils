@@ -1,11 +1,10 @@
 //! 甘雨走A — 鼠标左右键连点 + R 键取消射箭后摇 (aim cancel)。
 //! 用于原神甘雨走 A 输出手法。Once 模式，单次执行。
 
-use crate::engine::event::{EventSequence, InputEvent};
+use crate::engine::event::EventSequence;
 use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
-use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -38,15 +37,11 @@ impl 甘雨走A {
 impl KeyFunction for 甘雨走A {
     /// 执行甘雨走 A 序列（单次，不循环）。
     ///
-    /// 顺序发送 left_click → 50ms → right_click → 30ms → press R → release R。
-    /// 使用不可中断的 `delay_ms`，因为 Once 模式不需要在 sleep 中响应停止。
+    /// 顺序播放 left_click → 50ms → right_click → 30ms → press R → release R；
+    /// 各点击对与 R 对经 play 合并为一次 IOCTL_WRITE（6 次发送 → 3 次）。
+    /// `stop` 传 None — 延时不可中断（Once 模式无需在 sleep 中响应停止，
+    /// 对齐原 `delay_ms` 语义）。
     fn execute(&self, _stop_requested: Arc<AtomicBool>) {
-        let events = self.sequence.events();
-        for event in events {
-            self.send_ctx.send_event(event);
-            if let InputEvent::Sleep { ms } = event {
-                delay::delay_ms(*ms);
-            }
-        }
+        self.sequence.play(&self.send_ctx, None);
     }
 }

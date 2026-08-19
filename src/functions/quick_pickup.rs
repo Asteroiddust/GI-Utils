@@ -1,11 +1,10 @@
 //! 快速拾取 — 反复按 F 键 + 鼠标滚轮下拉。
 //! 用于原神快速收集掉落物。Loop 模式，按住循环。
 
-use crate::engine::event::{EventSequence, InputEvent, ScrollDir};
+use crate::engine::event::{EventSequence, ScrollDir};
 use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
-use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -35,17 +34,11 @@ impl 快速拾取 {
 impl KeyFunction for 快速拾取 {
     /// 执行快速拾取循环。
     ///
-    /// 反复发送 tap F → sleep 10ms → wheel DOWN → sleep 10ms，每次 sleep 后检查 `stop_requested`。
+    /// 反复播放 tap F → sleep 10ms → wheel DOWN → sleep 10ms；[F↓, F↑]
+    /// 点击对经 play 合并为一次 IOCTL_WRITE，每次 sleep 后检查 `stop_requested`。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
-        let events = self.sequence.events();
-
         while !stop_requested.load(Ordering::Acquire) {
-            for event in events {
-                self.send_ctx.send_event(event);
-                if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &stop_requested);
-                }
-            }
+            self.sequence.play(&self.send_ctx, Some(&stop_requested));
         }
     }
 }

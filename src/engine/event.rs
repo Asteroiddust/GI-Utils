@@ -366,4 +366,45 @@ impl EventSequence {
     pub fn sleep(&mut self, ms: f64) -> &mut Self {
         self.push(InputEvent::sleep(ms))
     }
+
+    // ── 播放 — Playback ──────────────────────────────────────
+
+    /// 播放序列：连续的同类非 Sleep 事件经
+    /// [`SendContext::send_events`] 合并为一次 IOCTL_WRITE（驱动级原子
+    /// 送达），Sleep 处延时。
+    ///
+    /// `stop` 为 `Some` 时延时走可中断版（Loop/Toggle 即时响应）；
+    /// `None` 时不可中断（Once 模式，对齐原 `delay_ms` 语义）。
+    ///
+    /// Play the sequence: contiguous same-device non-Sleep events are
+    /// coalesced into a single IOCTL_WRITE via [`SendContext::send_events`];
+    /// delays happen at Sleep boundaries.
+    pub fn play(
+        &self,
+        send_ctx: &crate::interception::SendContext,
+        stop: Option<&std::sync::atomic::AtomicBool>,
+    ) {
+        let events = self.events();
+        let mut i = 0usize;
+        while i < events.len() {
+            // 收集连续非 Sleep 段（Sleep 是时序边界）
+            let start = i;
+            while i < events.len() && !matches!(events[i], InputEvent::Sleep { .. }) {
+                i += 1;
+            }
+            if i > start {
+                send_ctx.send_events(&events[start..i]);
+            }
+            if i < events.len() {
+                // InputEvent: Copy — 模式绑定按值拷贝，ms 即 f64
+                if let InputEvent::Sleep { ms } = events[i] {
+                    match stop {
+                        Some(stop) => crate::utils::delay::delay_ms_interruptible(ms, stop),
+                        None => crate::utils::delay::delay_ms(ms),
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
 }
