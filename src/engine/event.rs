@@ -195,6 +195,46 @@ impl InputEvent {
     pub fn sleep(ms: f64) -> Self {
         InputEvent::Sleep { ms }
     }
+
+    // ── 线上 stroke 转换 — 唯一的字段映射出处 ─────────────────
+    // SendContext 的 send_event / send_segment 共用此处构造器，
+    // information 恒 0（对齐原生移植前的写缓冲路径）。
+
+    /// 键盘事件 → 线上 stroke。非键盘事件返回 `None`。
+    pub fn to_key_stroke(&self) -> Option<InterceptionKeyStroke> {
+        if let InputEvent::Keyboard { code, state } = self {
+            Some(InterceptionKeyStroke {
+                code: code.raw(),
+                state: *state,
+                information: 0,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// 鼠标事件 → 线上 stroke。非鼠标事件返回 `None`。
+    pub fn to_mouse_stroke(&self) -> Option<InterceptionMouseStroke> {
+        if let InputEvent::Mouse {
+            state,
+            flags,
+            rolling,
+            x,
+            y,
+        } = self
+        {
+            Some(InterceptionMouseStroke {
+                state: *state,
+                flags: *flags,
+                rolling: *rolling,
+                x: *x,
+                y: *y,
+                information: 0,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════

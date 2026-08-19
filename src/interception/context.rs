@@ -117,30 +117,13 @@ impl SendContext {
     /// 发送一个 [`InputEvent`]，自动路由到正确的设备（键盘 0 / 鼠标 0）。
     pub fn send_event(&self, event: &InputEvent) {
         match event {
-            InputEvent::Keyboard { code, state } => {
-                let stroke = InterceptionKeyStroke {
-                    code: code.raw(),
-                    state: *state,
-                    information: 0,
-                };
+            InputEvent::Keyboard { .. } => {
+                let stroke = event.to_key_stroke().expect("Keyboard 分支");
                 self.raw
                     .send_keyboard(native::keyboard(0), std::slice::from_ref(&stroke));
             }
-            InputEvent::Mouse {
-                state,
-                flags,
-                rolling,
-                x,
-                y,
-            } => {
-                let stroke = InterceptionMouseStroke {
-                    state: *state,
-                    flags: *flags,
-                    rolling: *rolling,
-                    x: *x,
-                    y: *y,
-                    information: 0,
-                };
+            InputEvent::Mouse { .. } => {
+                let stroke = event.to_mouse_stroke().expect("Mouse 分支");
                 self.raw
                     .send_mouse(native::mouse(0), std::slice::from_ref(&stroke));
             }
@@ -174,13 +157,7 @@ impl SendContext {
                 let mut strokes = [InterceptionKeyStroke::default(); MAX_STROKES_PER_IOCTL];
                 for chunk in segment.chunks(MAX_STROKES_PER_IOCTL) {
                     for (i, event) in chunk.iter().enumerate() {
-                        if let InputEvent::Keyboard { code, state } = event {
-                            strokes[i] = InterceptionKeyStroke {
-                                code: code.raw(),
-                                state: *state,
-                                information: 0,
-                            };
-                        }
+                        strokes[i] = event.to_key_stroke().expect("键盘段仅含 Keyboard 事件");
                     }
                     self.raw
                         .send_keyboard(native::keyboard(0), &strokes[..chunk.len()]);
@@ -190,23 +167,7 @@ impl SendContext {
                 let mut strokes = [InterceptionMouseStroke::default(); MAX_STROKES_PER_IOCTL];
                 for chunk in segment.chunks(MAX_STROKES_PER_IOCTL) {
                     for (i, event) in chunk.iter().enumerate() {
-                        if let InputEvent::Mouse {
-                            state,
-                            flags,
-                            rolling,
-                            x,
-                            y,
-                        } = event
-                        {
-                            strokes[i] = InterceptionMouseStroke {
-                                state: *state,
-                                flags: *flags,
-                                rolling: *rolling,
-                                x: *x,
-                                y: *y,
-                                information: 0,
-                            };
-                        }
+                        strokes[i] = event.to_mouse_stroke().expect("鼠标段仅含 Mouse 事件");
                     }
                     self.raw
                         .send_mouse(native::mouse(0), &strokes[..chunk.len()]);
