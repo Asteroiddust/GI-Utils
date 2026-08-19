@@ -27,14 +27,16 @@
 
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_EVENT};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_NO_MORE_ITEMS, HANDLE, INVALID_HANDLE_VALUE, WAIT_EVENT,
+};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
     FILE_SHARE_MODE, OPEN_EXISTING,
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Threading::{CreateEventW, WaitForMultipleObjects};
-use windows::core::{PCWSTR, Result};
+use windows::core::{HRESULT, PCWSTR, Result};
 
 use tracing::warn;
 
@@ -466,6 +468,11 @@ fn records_from_bytes(bytes_returned: u32, record_size: usize, capacity: usize) 
 }
 
 /// IOCTL_READ 原语：读入 `out` 字节缓冲，返回实际读取字节数。
+///
+/// ERROR_NO_MORE_ITEMS（0x80070103）是**队列已空的正常信号** — 驱动对
+/// 空队列读以此状态完成（排空循环每次都会遇到一次）。C 版不区分错误与
+/// 空读（统一按 bytes_returned=0 处理）；此处显式归一为 `Ok(0)`，只有
+/// 真错误才向上传播告警（实测：否则每次按键都刷一条 warn）。
 fn ioctl_read(handle: HANDLE, out: &mut [u8]) -> Result<u32> {
     let mut bytes_returned = 0u32;
     unsafe {
@@ -478,8 +485,15 @@ fn ioctl_read(handle: HANDLE, out: &mut [u8]) -> Result<u32> {
             out.len() as u32,
             Some(&mut bytes_returned),
             None,
-        )?;
+        )
     }
+    .or_else(|e| {
+        if e.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) {
+            Ok(())
+        } else {
+            Err(e)
+        }
+    })?;
     Ok(bytes_returned)
 }
 
