@@ -4,3 +4,7 @@
 
 # 私有 Interception 仓库本地克隆（不纳入本项目版本控制）
 /Interception/
+
+# 本地文档（逐机维护，不入库）
+/AGENTS.md
+/CLAUDE.md
