@@ -1,15 +1,11 @@
-//! Interception 内核驱动 FFI 绑定及安全封装
+//! Interception 内核驱动的原生 Rust 用户层实现
 //!
-//! 包含原始 FFI 声明 (`ffi`)、RAII 上下文包装 (`context`)、
-//! 以及缓冲区读写工具 (`strokes`)。
-//!
-//! - [`ffi`]: 镜像 `interception.h` 的原始 C 绑定
-//! - [`context`]: `InterceptionContext`（接收）和 `SendContext`（发送）的安全 RAII 封装
-//! - [`strokes`]: 扁平缓冲区与类型化结构体之间的安全转换
+//! - [`native`]: 用户层 API 的原生移植（DeviceIoControl 协议端，
+//!   替代原预编译 interception.lib；内核驱动侧不变）
+//! - [`context`]: `InterceptionContext`（接收）和 `SendContext`（发送）的类型化封装
 
 pub mod context;
-pub mod ffi;
-pub mod strokes;
+pub mod native;
 
 /// 重新导出上下文类型，方便从 `interception::` 直接使用。
 pub use context::{InterceptionContext, SendContext};

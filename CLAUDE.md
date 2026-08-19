@@ -12,7 +12,7 @@
 ## 技术栈
 
 - **Rust 1.99 nightly** (edition 2024, -Z plt=no, build-std release-only)
-- **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入
+- **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入；用户层 API 为**原生 Rust 移植**（`src/interception/native.rs`，DeviceIoControl 协议端，替代原预编译 interception.lib，2026-08 移植）
 - **windows 0.62** — Win32 API（Threading、ToolHelp、Gdi、WindowsAndMessaging、Shell、LibraryLoader、Media、HiDpi、Security）
 - **eframe 0.36**（egui，仅 glow + default_fonts）— GUI 配置面板与托盘窗口
 - **toml 1.1 + serde 1.0** — TOML 配置解析/序列化
@@ -31,14 +31,14 @@ src/
 │       ├── tray_icon.rs       # 图标原料 + SharedIcon 共享句柄 (启动预加载, L4 WIC 污染防御)
 │       └── window_ops.rs      # HWND 安全包装唯一入口 (IsWindow 重校验 + 跨进程 pid 过滤, L3 幽灵窗口防御)
 ├── config.rs                  # TOML 配置解析 + 函数工厂 + [gui] 图标配置
-├── build.rs                   # 链接 interception.lib + 嵌入 assets/icon.ico
+├── build.rs                   # 嵌入 assets/icon.ico
 ├── key.rs                     # Key (ScanCode + is_e0) + 90+ 常量
 ├── scan_code.rs               # ScanCode(u16) FFI 新类型
 
-├── interception/              # Interception FFI 绑定
-│   ├── ffi.rs                 #   unsafe extern "C" 声明、常量、repr(C) struct
-│   ├── context.rs             #   InterceptionContext (recv) + SendContext (send)
-│   └── strokes.rs             #   read/write unaligned 安全转换
+├── interception/              # Interception 用户层原生实现（替代预编译 lib）
+│   ├── native.rs              #   DeviceIoControl 协议端移植：20 设备上下文、类型化收发、
+│   │                          #   IOCTL/常量（与 interception.h 同名）、栈分批零堆分配
+│   └── context.rs             #   InterceptionContext (recv) + SendContext (send) 类型化封装
 
 ├── engine/
 │   ├── mod.rs                 #   Engine — 事件循环 + 按键显示
@@ -92,6 +92,7 @@ Engine (主循环, blocking)
 |------|------|
 | **Key = ScanCode + is_e0** | 单一类型消除 PS/2 值冲突，E0 自动注入 state |
 | **SendContext 独立类型** | 发送/接收分离，编译器强制禁止并发接收 |
+| **用户层 API 原生移植** | 替代预编译 interception.lib：类型化收发切片、栈分批零堆分配（消灭 C 版每调用 HeapAlloc）、错误传播 Result、set_filter 闭包、Drop 自动清理 — 内核驱动协议不变 |
 | **stop_requested 正向语义** | `true`=停止，全项目统一，无双重否定 |
 | **TOML 动态配置** | `config.toml` 驱动热键映射，无需重编译 |
 | **ActiveGuard Drop 防护** | 线程 panic 时自动清理 active 标志（panic=unwind 后真正生效） |

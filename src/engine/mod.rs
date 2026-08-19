@@ -11,7 +11,10 @@ pub mod timeline;
 
 pub use bindings::TriggerMode;
 
-use crate::interception::ffi::*;
+use crate::interception::native::{
+    is_keyboard, InterceptionKeyStroke, InterceptionMouseStroke, INTERCEPTION_FILTER_KEY_ALL,
+    INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP,
+};
 use crate::interception::{InterceptionContext, SendContext};
 use crate::key::Key;
 use crate::scan_code::ScanCode;
@@ -27,37 +30,22 @@ pub struct Engine {
     send_ctx: Arc<SendContext>,
     bindings: Arc<KeyBindings>,
     stop_requested: Arc<AtomicBool>,
-    /// 为 true 时将所有按键输出到 stdout。
-    verbose: bool,
 }
 
 impl Engine {
     /// 创建引擎，含独立的 recv/send 上下文。
     pub fn new() -> Self {
-        Self::with_verbose(false)
-    }
-
-    /// 创建引擎，将所有按键输出到 stdout 用于调试。
-    pub fn verbose() -> Self {
-        Self::with_verbose(true)
-    }
-
-    fn with_verbose(verbose: bool) -> Self {
         let recv_ctx = InterceptionContext::create();
         let send_ctx = Arc::new(SendContext::create());
 
         // Set keyboard filter on the receive context: capture all key events
-        recv_ctx.set_filter(
-            interception_is_keyboard as InterceptionPredicate,
-            INTERCEPTION_FILTER_KEY_ALL,
-        );
+        recv_ctx.set_filter(is_keyboard, INTERCEPTION_FILTER_KEY_ALL);
 
         Self {
             recv_ctx,
             send_ctx,
             bindings: Arc::new(KeyBindings::new()),
             stop_requested: Arc::new(AtomicBool::new(false)),
-            verbose,
         }
     }
 
@@ -96,69 +84,42 @@ impl Engine {
             // 方法；is_finished 检查绝不阻塞，谁先看到结束谁 join —
             // review 3.3）
             self.bindings.drain_pending_joins();
-            let device = self.recv_ctx.wait_timeout(100);
-            if device == 0 {
+            let Some(device) = self.recv_ctx.wait_timeout(100) else {
                 continue; // timeout, recheck stop_requested
-            }
-            let mut stroke_buf: InterceptionStroke = [0u8; STROKE_SIZE];
+            };
 
-            while self.recv_ctx.receive(device, &mut stroke_buf) > 0 {
-                // 1. 转发原始事件 — Forward raw event to the system
-                send_ctx.send_stroke(device, &stroke_buf);
+            if is_keyboard(device) {
+                // ── 键盘设备：转发 + 解析分发 ─────────────────
+                let mut strokes = [InterceptionKeyStroke::default(); 1];
+                while self.recv_ctx.receive_keyboard(device, &mut strokes) > 0 {
+                    let ks = strokes[0];
 
-                // 2. 解析按键 stroke — Deserialize the raw buffer into a key stroke struct
-                let ks = crate::interception::strokes::read_key_stroke(&stroke_buf);
+                    // 1. 转发原始事件 — Forward the stroke to the system
+                    send_ctx.forward_keyboard(device, &strokes);
 
-                // 3. 消除歧义 — Resolve E0 prefix and press/release into a unified Key
-                let is_e0 = (ks.state & INTERCEPTION_KEY_E0) != 0;
-                let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
-                let is_e1 = (ks.state & INTERCEPTION_KEY_E1) != 0;
-                let key = Key {
-                    code: ScanCode(ks.code),
-                    is_e0,
-                };
+                    // 2. 消除歧义 — Resolve E0 prefix and press/release into a unified Key
+                    let is_e0 = (ks.state & INTERCEPTION_KEY_E0) != 0;
+                    let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
+                    let key = Key {
+                        code: ScanCode(ks.code),
+                        is_e0,
+                    };
 
-                // 4. 调试输出 — Print verbose keystroke info if enabled
-                if self.verbose {
-                    print_keystroke(device, key, ks.state, is_e1, ks.information);
+                    // 3. 分发 — Route press/release to the binding manager
+                    if is_pressing {
+                        self.bindings.process_key_down(key);
+                    } else {
+                        self.bindings.process_key_up(key);
+                    }
                 }
-
-                // 5. 分发 — Route press/release to the binding manager
-                if is_pressing {
-                    self.bindings.process_key_down(key);
-                } else {
-                    self.bindings.process_key_up(key);
+            } else {
+                // ── 鼠标设备：只转发，不分发（旧实现把鼠标缓冲误按键盘
+                //    解析成垃圾 Key — 原生移植顺手修正）───────────────
+                let mut strokes = [InterceptionMouseStroke::default(); 1];
+                while self.recv_ctx.receive_mouse(device, &mut strokes) > 0 {
+                    send_ctx.forward_mouse(device, &strokes);
                 }
             }
         }
     }
-}
-
-// ── 按键调试显示 — Keystroke debug display ────────────────────
-
-fn print_keystroke(device: i32, key: Key, state: u16, e1: bool, info: u32) {
-    let pressing = (state & INTERCEPTION_KEY_UP) == 0;
-    let dir = if pressing { "\u{2193}" } else { "\u{2191}" };
-    let tags = match (key.is_e0, e1) {
-        (false, false) => "",
-        (true, false) => " E0",
-        (false, true) => " E1",
-        (true, true) => " E0 E1",
-    };
-    let dev_type = if device <= INTERCEPTION_MAX_KEYBOARD {
-        "KBD"
-    } else {
-        "MSE"
-    };
-    println!(
-        "[{}] {:<3} #{:<2} {:<16} {:>4}  code={:#04X}  state={:#04X}  info={:#08X}",
-        dir,
-        dev_type,
-        device,
-        tags,
-        key.name(),
-        key.code.raw(),
-        state,
-        info
-    );
 }

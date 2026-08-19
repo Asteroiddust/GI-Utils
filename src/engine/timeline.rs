@@ -26,7 +26,7 @@
 //! multi-key holds can overlap naturally.
 
 use crate::engine::event::InputEvent;
-use crate::interception::ffi::{INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP};
+use crate::interception::native::{INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP};
 use crate::interception::SendContext;
 use crate::key::Key;
 use crate::utils::delay;

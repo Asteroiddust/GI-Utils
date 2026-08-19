@@ -1,6 +1,7 @@
-//! Interception 上下文的 RAII 封装
+//! Interception 上下文的类型化封装
 //!
-//! 创建上下文会分配驱动资源，释放时自动销毁。
+//! 底层实现见 [`crate::interception::native`]（原生 Rust 移植，替代原
+//! interception.lib FFI）。
 //!
 //! # 线程安全 (Thread Safety)
 //!
@@ -12,50 +13,25 @@
 //! [`InterceptionContext`] 实现了 `Send` 但 **不** 实现 `Sync`。
 
 use crate::engine::event::InputEvent;
-use crate::interception::ffi;
-use crate::interception::ffi::*;
+use crate::interception::native::{self, InterceptionKeyStroke, InterceptionMouseStroke};
+use std::marker::PhantomData;
 
-// ═══════════════════════════════════════════════════════════════════
-// Internal helpers
-// ═══════════════════════════════════════════════════════════════════
-
-/// 创建原始 Interception 上下文，失败时 panic（驱动未安装）。
-fn create_raw() -> ffi::InterceptionContext {
-    let raw = unsafe { interception_create_context() };
-    if raw.is_null() {
+/// 创建原始上下文，失败 panic（驱动未安装）— 与旧 create_raw 语义一致。
+fn create_raw() -> native::Context {
+    native::Context::create().unwrap_or_else(|e| {
         panic!(
-            "Failed to create Interception context. \
+            "Failed to create Interception context ({e}). \
              Is the interception driver installed? \
              (https://github.com/oblitum/Interception)"
-        );
-    }
-    raw
-}
-
-/// 发送事件的内部实现，`Sleep` 事件自动跳过。
-fn send_event_impl(raw: ffi::InterceptionContext, event: &InputEvent) {
-    match event {
-        InputEvent::Sleep { .. } => {}
-        _ => {
-            let mut buf: InterceptionStroke = [0u8; STROKE_SIZE];
-            event.write_to_buffer(&mut buf);
-            let device = match event {
-                InputEvent::Keyboard { .. } => interception_keyboard(0),
-                InputEvent::Mouse { .. } => interception_mouse(0),
-                InputEvent::Sleep { .. } => return,
-            };
-            unsafe {
-                interception_send(raw, device, &buf as *const InterceptionStroke, 1);
-            }
-        }
-    }
+        )
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // InterceptionContext — receive-only, single-thread
 // ═══════════════════════════════════════════════════════════════════
 
-/// 只接收的 Interception 上下文，拥有原始驱动句柄。
+/// 只接收的 Interception 上下文。
 ///
 /// 必须在单线程中使用（接收操作非线程安全）。
 /// 实现了 `Send`（可跨线程移动），但 **不** 实现 `Sync`。
@@ -63,64 +39,50 @@ fn send_event_impl(raw: ffi::InterceptionContext, event: &InputEvent) {
 /// Must be used from a single thread at a time (receiving is not
 /// thread-safe). Implements `Send` (safe to move), but NOT `Sync`.
 pub struct InterceptionContext {
-    raw: ffi::InterceptionContext,
+    raw: native::Context,
+    /// `*mut ()` 为 !Send + !Sync：阻断 Sync 自动实现（接收仅限单线程）；
+    /// Send 由下方显式 unsafe impl 恢复（可跨线程移动）。
+    _not_sync: PhantomData<*mut ()>,
 }
 
+unsafe impl Send for InterceptionContext {}
+
 impl InterceptionContext {
-    /// 创建新的 Interception 接收上下文。
+    /// 创建新的 Interception 接收上下文（独立打开全部 20 个设备）。
     pub fn create() -> Self {
-        Self { raw: create_raw() }
+        Self {
+            raw: create_raw(),
+            _not_sync: PhantomData,
+        }
     }
 
     // ── Receive ──────────────────────────────────────────────
 
-    /// 阻塞等待输入到达。返回有待处理数据的设备 ID。
-    pub fn wait(&self) -> ffi::InterceptionDevice {
-        unsafe { interception_wait(self.raw) }
+    /// 阻塞等待输入到达。返回有待处理数据的设备号（1..=20）。
+    pub fn wait(&self) -> usize {
+        self.raw.wait()
     }
 
-    /// 带超时的等待（毫秒）。超时时返回 0。
-    pub fn wait_timeout(&self, ms: u32) -> ffi::InterceptionDevice {
-        unsafe { interception_wait_with_timeout(self.raw, ms) }
+    /// 带超时的等待（毫秒）。超时时返回 `None`。
+    pub fn wait_timeout(&self, ms: u32) -> Option<usize> {
+        self.raw.wait_with_timeout(ms)
     }
 
-    /// 设置设备过滤器。
-    pub fn set_filter(&self, predicate: InterceptionPredicate, filter: InterceptionFilter) {
-        unsafe {
-            interception_set_filter(self.raw, predicate, filter);
-        }
+    /// 设置设备过滤器（谓词为 Rust 闭包，替代 C 版 extern "C" 函数指针）。
+    pub fn set_filter(&self, predicate: impl Fn(usize) -> bool, filter: u16) {
+        self.raw.set_filter(predicate, filter);
     }
 
-    /// 从设备接收一个原始输入数据包。
-    pub fn receive(&self, device: ffi::InterceptionDevice, stroke: &mut InterceptionStroke) -> i32 {
-        unsafe { interception_receive(self.raw, device, stroke as *mut InterceptionStroke, 1) }
+    /// 从设备接收键盘输入，返回实际读取条数。
+    pub fn receive_keyboard(&self, device: usize, out: &mut [InterceptionKeyStroke]) -> usize {
+        self.raw.receive_keyboard(device, out)
     }
 
-    // ── Send (used for event forwarding from recv thread) ────
-
-    /// 向设备转发一个原始输入数据包。
-    ///
-    /// **必须**在调用 `receive` 的同一个线程中调用。
-    pub fn send_stroke(&self, device: ffi::InterceptionDevice, stroke: &InterceptionStroke) {
-        unsafe {
-            interception_send(self.raw, device, stroke as *const InterceptionStroke, 1);
-        }
+    /// 从设备接收鼠标输入，返回实际读取条数。
+    pub fn receive_mouse(&self, device: usize, out: &mut [InterceptionMouseStroke]) -> usize {
+        self.raw.receive_mouse(device, out)
     }
 }
-
-/// 销毁上下文，释放驱动资源。
-impl Drop for InterceptionContext {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe {
-                interception_destroy_context(self.raw);
-            }
-        }
-    }
-}
-
-/// 安全跨线程移动（接收操作仍需单线程使用）。
-unsafe impl Send for InterceptionContext {}
 
 // ═══════════════════════════════════════════════════════════════════
 // SendContext — send-only, thread-safe to share
@@ -128,46 +90,63 @@ unsafe impl Send for InterceptionContext {}
 
 /// 只发送的 Interception 上下文，可在线程间安全共享。
 ///
-/// 仅暴露 `send_event()` 和 `send_stroke()` 方法。
+/// 仅暴露 `send_event()` 与 `forward_*` 方法。
 /// Interception 驱动明确支持通过同一个句柄并发发送。
 ///
 /// Thread-safe to share across threads. Exposes only send
 /// methods — the driver supports concurrent sends through one handle.
 pub struct SendContext {
-    raw: ffi::InterceptionContext,
+    raw: native::Context,
 }
 
 impl SendContext {
-    /// 创建新的 Interception 发送上下文。
+    /// 创建新的 Interception 发送上下文（独立第二个上下文 —
+    /// 双上下文架构，与历史行为一致）。
     pub fn create() -> Self {
         Self { raw: create_raw() }
     }
 
-    /// 发送一个 [`InputEvent`]，自动路由到正确的设备。
+    /// 发送一个 [`InputEvent`]，自动路由到正确的设备（键盘 1 / 鼠标 11）。
     pub fn send_event(&self, event: &InputEvent) {
-        send_event_impl(self.raw, event)
-    }
-
-    /// 向指定设备发送一个原始输入数据包。
-    pub fn send_stroke(&self, device: ffi::InterceptionDevice, stroke: &InterceptionStroke) {
-        unsafe {
-            interception_send(self.raw, device, stroke as *const InterceptionStroke, 1);
-        }
-    }
-}
-
-/// 销毁上下文，释放驱动资源。
-impl Drop for SendContext {
-    fn drop(&mut self) {
-        if !self.raw.is_null() {
-            unsafe {
-                interception_destroy_context(self.raw);
+        match event {
+            InputEvent::Keyboard { code, state } => {
+                let stroke = InterceptionKeyStroke {
+                    code: code.raw(),
+                    state: *state,
+                    information: 0,
+                };
+                self.raw
+                    .send_keyboard(native::keyboard(0), std::slice::from_ref(&stroke));
             }
+            InputEvent::Mouse {
+                state,
+                flags,
+                rolling,
+                x,
+                y,
+            } => {
+                let stroke = InterceptionMouseStroke {
+                    state: *state,
+                    flags: *flags,
+                    rolling: *rolling,
+                    x: *x,
+                    y: *y,
+                    information: 0,
+                };
+                self.raw
+                    .send_mouse(native::mouse(0), std::slice::from_ref(&stroke));
+            }
+            InputEvent::Sleep { .. } => {}
         }
     }
-}
 
-/// 安全：仅暴露发送方法，驱动支持并发发送。
-unsafe impl Send for SendContext {}
-/// 安全：仅暴露发送方法，驱动支持并发发送。
-unsafe impl Sync for SendContext {}
+    /// 引擎转发用：原样转发接收到的键盘 stroke。
+    pub fn forward_keyboard(&self, device: usize, strokes: &[InterceptionKeyStroke]) {
+        self.raw.send_keyboard(device, strokes);
+    }
+
+    /// 引擎转发用：原样转发接收到的鼠标 stroke。
+    pub fn forward_mouse(&self, device: usize, strokes: &[InterceptionMouseStroke]) {
+        self.raw.send_mouse(device, strokes);
+    }
+}

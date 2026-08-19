@@ -26,7 +26,7 @@
 
 #![allow(dead_code)]
 
-use crate::interception::ffi;
+use crate::interception::native;
 use crate::scan_code::ScanCode;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -45,9 +45,9 @@ impl Key {
     #[inline(always)]
     pub fn down_state(self) -> u16 {
         if self.is_e0 {
-            ffi::INTERCEPTION_KEY_DOWN | ffi::INTERCEPTION_KEY_E0
+            native::INTERCEPTION_KEY_DOWN | native::INTERCEPTION_KEY_E0
         } else {
-            ffi::INTERCEPTION_KEY_DOWN
+            native::INTERCEPTION_KEY_DOWN
         }
     }
 
@@ -55,9 +55,9 @@ impl Key {
     #[inline(always)]
     pub fn up_state(self) -> u16 {
         if self.is_e0 {
-            ffi::INTERCEPTION_KEY_UP | ffi::INTERCEPTION_KEY_E0
+            native::INTERCEPTION_KEY_UP | native::INTERCEPTION_KEY_E0
         } else {
-            ffi::INTERCEPTION_KEY_UP
+            native::INTERCEPTION_KEY_UP
         }
     }
 

@@ -31,7 +31,7 @@
 //! seq.left_click().sleep(80.0).wheel(ScrollDir::DOWN).sleep(5.0);
 //! ```
 
-use crate::interception::ffi::*;
+use crate::interception::native::*;
 use crate::key::Key;
 use crate::scan_code::ScanCode;
 
@@ -194,28 +194,6 @@ impl InputEvent {
     /// 创建延时事件，暂停 `ms` 毫秒 (Create a delay event).
     pub fn sleep(ms: f64) -> Self {
         InputEvent::Sleep { ms }
-    }
-
-    /// 将事件写入原始 Interception stroke 缓冲区。Sleep 事件为 no-op（无需发送）。
-    /// Write this event into a raw Interception stroke buffer. Sleep events are no-ops.
-    pub fn write_to_buffer(&self, buffer: &mut InterceptionStroke) {
-        match self {
-            InputEvent::Keyboard { code, state } => {
-                let ks = InterceptionKeyStroke::new(code.raw(), *state);
-                crate::interception::strokes::write_key_stroke(buffer, &ks);
-            }
-            InputEvent::Mouse {
-                state,
-                flags,
-                rolling,
-                x,
-                y,
-            } => {
-                let ms = InterceptionMouseStroke::new(*state, *flags, *rolling, *x, *y);
-                crate::interception::strokes::write_mouse_stroke(buffer, &ms);
-            }
-            InputEvent::Sleep { .. } => {}
-        }
     }
 }
 

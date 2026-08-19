@@ -3,7 +3,7 @@
 
 use crate::engine::event::{EventSequence, InputEvent};
 use crate::engine::function::KeyFunction;
-use crate::interception::ffi::{
+use crate::interception::native::{
     INTERCEPTION_KEY_DOWN, INTERCEPTION_KEY_UP, INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
     INTERCEPTION_MOUSE_LEFT_BUTTON_UP,
 };
