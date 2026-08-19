@@ -1,36 +1,42 @@
-//! Interception 用户层 API 的原生 Rust 移植
+//! Interception 用户层 API 的原生 Rust 移植（重写深化版）
 //!
-//! 移植自 oblitum/Interception `library/interception.c`（LGPL 3.0，许可文本见
-//! `Interception/licenses/`）。替代原预编译 interception.lib：内核驱动侧
-//! 保持不变，本模块只实现用户态 DeviceIoControl 协议端。
+//! 协议契约移植自 oblitum/Interception `library/interception.c`（LGPL 3.0，
+//! 许可文本见 `Interception/licenses/`）：内核驱动侧保持不变，本模块实现
+//! 用户态 DeviceIoControl 协议端。
 //!
-//! # 相对 C 原版的改进
+//! # 相对 C 原版的现代化
+//!
+//! 原库为 2012-2015 时代写法（ANSI API、每调用 HeapAlloc、错误全忽略、
+//! 手工清理）。本移植除忠实协议外全部现代化：
 //!
 //! - **类型化 send/receive**：直接收发 [`InterceptionKeyStroke`] /
-//!   [`InterceptionMouseStroke`] 切片 — 消除 C 版每次调用的 HeapAlloc
-//!   （栈上分批转换）；原 `strokes.rs` 的非对齐字节缓冲往返整体删除
+//!   [`InterceptionMouseStroke`] 切片，栈上分批转换 — 消灭 C 版每次
+//!   调用的 HeapAlloc 与字节缓冲往返
+//! - **设备新类型**：[`KeyboardDevice`] / [`MouseDevice`] / [`Device`] —
+//!   错误设备号在编译期不存在（send_keyboard 只接受 KeyboardDevice）
+//! - **批量接收**：一次 IOCTL_READ 可读 [`MAX_STROKES_PER_IOCTL`] 条
+//!   （C 版语义本就支持 nstroke，引擎侧旧实现恒为 1）
+//! - **宽字符 API**：CreateFileW（CreateFileA 是 Win9x 遗留惯例）
 //! - **错误传播**：CreateFile / CreateEvent / DeviceIoControl 失败返回
-//!   `windows::core::Result`（C 版全部忽略返回值）；create 中途失败时
-//!   已打开的资源由 `Drop` 自动清理（C 版依赖手工 destroy 路径）
+//!   `windows::core::Result`（C 版全部忽略）；create 中途失败由 Drop 自动清理
 //! - **set_filter 接受 Rust 闭包**（C 版需 extern "C" 函数指针）
-//! - **设备判定为 `const` 内联纯函数**，零 FFI 调用开销
 //! - **Context RAII**：句柄由结构所有权 + Drop 管理，无手工释放路径
 
 #![allow(dead_code)] // 协议完整性保留（precedence/hardware_id 等当前未调用）
 
 use std::ffi::c_void;
 
-use windows::core::{Result, PCSTR};
+use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_EVENT};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileA, FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
+    CreateFileW, FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
     FILE_SHARE_MODE, OPEN_EXISTING,
 };
 use windows::Win32::System::IO::DeviceIoControl;
-use windows::Win32::System::Threading::{CreateEventA, WaitForMultipleObjects};
+use windows::Win32::System::Threading::{CreateEventW, WaitForMultipleObjects};
 
 // ═══════════════════════════════════════════════════════════════════
-// 设备编号 — Device numbering（与 interception.h 宏一一对应）
+// 设备编号 — 新类型（编译期防呆，替代 C 版的裸 int + 运行时判定）
 // ═══════════════════════════════════════════════════════════════════
 
 /// 最大键盘设备数。
@@ -42,29 +48,48 @@ pub const MAX_MOUSE: usize = 10;
 /// 最大总设备数（键盘 + 鼠标）。
 pub const MAX_DEVICE: usize = MAX_KEYBOARD + MAX_MOUSE;
 
-/// 键盘设备号（1..=10）。
-#[inline]
-pub const fn keyboard(index: usize) -> usize {
-    index + 1
+/// 键盘设备（索引 0 起）。只能传给键盘专用方法 — 类型层面不可混淆。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardDevice(pub u8);
+
+/// 鼠标设备（索引 0 起）。只能传给鼠标专用方法。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseDevice(pub u8);
+
+/// 接收路径的设备标识（wait 返回值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Keyboard(KeyboardDevice),
+    Mouse(MouseDevice),
 }
 
-/// 鼠标设备号（11..=20）。
-#[inline]
-pub const fn mouse(index: usize) -> usize {
-    MAX_KEYBOARD + index + 1
+impl Device {
+    /// 驱动协议设备号（键盘 1..=10，鼠标 11..=20）。
+    #[inline]
+    pub fn number(self) -> usize {
+        match self {
+            Device::Keyboard(d) => d.0 as usize + 1,
+            Device::Mouse(d) => MAX_KEYBOARD + d.0 as usize + 1,
+        }
+    }
+
+    /// 是否为键盘设备。
+    #[inline]
+    pub const fn is_keyboard(self) -> bool {
+        matches!(self, Device::Keyboard(_))
+    }
 }
 
-/// 设备号是否为键盘（C 版 `interception_is_keyboard` 的纯函数化；
-/// 区间比较手写 — `RangeInclusive::contains` 尚非 const fn）。
+/// 键盘设备（索引 0 起）。
 #[inline]
-pub const fn is_keyboard(device: usize) -> bool {
-    device >= 1 && device <= MAX_KEYBOARD
+pub const fn keyboard(index: usize) -> KeyboardDevice {
+    KeyboardDevice(index as u8)
 }
 
-/// 设备号是否为鼠标。
+/// 鼠标设备（索引 0 起）。
 #[inline]
-pub const fn is_mouse(device: usize) -> bool {
-    device > MAX_KEYBOARD && device <= MAX_DEVICE
+pub const fn mouse(index: usize) -> MouseDevice {
+    MouseDevice(index as u8)
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -269,9 +294,9 @@ const _: () = assert!(std::mem::size_of::<MouseInputData>() == 24);
 const _: () = assert!(std::mem::align_of::<KeyboardInputData>() == 4);
 const _: () = assert!(std::mem::align_of::<MouseInputData>() == 4);
 
-/// 单次 IOCTL 的栈缓冲 stroke 上限，超出分批（C 版 HeapAlloc 任意大小，
-/// 栈分批零分配且足够本项目 1-stroke 调用）。
-const MAX_STROKES_PER_IOCTL: usize = 32;
+/// 单次 IOCTL 的栈缓冲 stroke 上限：一次读/写最多 32 条（C 版 HeapAlloc
+/// 任意大小，栈分批零分配；批量接收的引擎侧缓冲大小同此）。
+pub const MAX_STROKES_PER_IOCTL: usize = 32;
 
 // ═══════════════════════════════════════════════════════════════════
 // Context — 20 个设备（10 键盘 + 10 鼠标）的句柄集合，RAII
@@ -322,14 +347,17 @@ pub struct Context {
 unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 
-/// 打开单个设备：CreateFile → CreateEvent → IOCTL_SET_EVENT 注册事件
-/// （对齐 C 版 `interception_create_context` 循环体）。
+/// 打开单个设备：CreateFileW → CreateEventW → IOCTL_SET_EVENT 注册事件
+/// （对齐 C 版 `interception_create_context` 循环体，宽字符 API 化）。
 fn open_device(index: usize) -> Result<DeviceSlot> {
-    let name = format!("\\\\.\\interception{index:02}");
+    let name: Vec<u16> = format!("\\\\.\\interception{index:02}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     // C: CreateFileA(name, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL)
     let handle = unsafe {
-        CreateFileA(
-            PCSTR(name.as_ptr()),
+        CreateFileW(
+            PCWSTR(name.as_ptr()),
             FILE_GENERIC_READ.0,
             FILE_SHARE_MODE(0),
             None,
@@ -339,7 +367,7 @@ fn open_device(index: usize) -> Result<DeviceSlot> {
         )
     }?;
     // C: CreateEventA(NULL, TRUE, FALSE, NULL)
-    let unempty = unsafe { CreateEventA(None, true, false, None) }?;
+    let unempty = unsafe { CreateEventW(None, true, false, None) }?;
     // C: 2 元素句柄数组 {event, NULL} 作输入缓冲注册事件
     let handles = [unempty, HANDLE::default()];
     unsafe {
@@ -367,36 +395,49 @@ impl Context {
         Ok(Self { devices })
     }
 
-    fn device_slot(&self, device: usize) -> &DeviceSlot {
-        // 调用方保证 device 为有效设备号（1..=20）
-        &self.devices[device - 1]
+    fn device_slot(&self, number: usize) -> &DeviceSlot {
+        // number 由 Device 新类型产生，恒为 1..=20
+        &self.devices[number - 1]
     }
 
     // ── 等待 ───────────────────────────────────────────────
 
     /// 阻塞等待任意设备有数据（对齐 `interception_wait`）。
-    pub fn wait(&self) -> usize {
-        // 任一事件被置位即返回；等待失败按超时处理（返回 0）
-        self.wait_with_timeout(u32::MAX).unwrap_or(0)
+    pub fn wait(&self) -> Device {
+        // 任一事件被置位即返回；等待失败按超时处理（键盘 0 兜底）
+        self.wait_with_timeout(u32::MAX)
+            .unwrap_or(Device::Keyboard(keyboard(0)))
     }
 
-    /// 带超时等待。返回 1..=20 的设备号；超时/失败返回 `None`
+    /// 带超时等待。返回有待处理数据的 [`Device`]；超时/失败返回 `None`
     /// （对齐 `interception_wait_with_timeout` 返回 0 的语义，Rust 化）。
-    pub fn wait_with_timeout(&self, milliseconds: u32) -> Option<usize> {
+    pub fn wait_with_timeout(&self, milliseconds: u32) -> Option<Device> {
         let handles: [HANDLE; MAX_DEVICE] = self.devices.each_ref().map(|d| d.unempty);
         let result: WAIT_EVENT = unsafe { WaitForMultipleObjects(&handles, false, milliseconds) };
         // WAIT_OBJECT_0 + n (n < 20)；WAIT_TIMEOUT(0x102) / WAIT_FAILED(0xFFFF_FFFF)
         // 均落在区间外
-        let index = result.0;
-        (index < MAX_DEVICE as u32).then_some(index as usize + 1)
+        let index = result.0 as usize;
+        if index >= MAX_DEVICE {
+            return None;
+        }
+        Some(if index < MAX_KEYBOARD {
+            Device::Keyboard(KeyboardDevice(index as u8))
+        } else {
+            Device::Mouse(MouseDevice((index - MAX_KEYBOARD) as u8))
+        })
     }
 
     // ── 过滤 / 优先级 / 硬件 ID ─────────────────────────────
 
     /// 为满足谓词的设备设置过滤器（对齐 `interception_set_filter`）。
-    pub fn set_filter(&self, predicate: impl Fn(usize) -> bool, filter: u16) {
+    pub fn set_filter(&self, predicate: impl Fn(Device) -> bool, filter: u16) {
         for (i, slot) in self.devices.iter().enumerate() {
-            if predicate(i + 1) {
+            let device = if i < MAX_KEYBOARD {
+                Device::Keyboard(KeyboardDevice(i as u8))
+            } else {
+                Device::Mouse(MouseDevice((i - MAX_KEYBOARD) as u8))
+            };
+            if predicate(device) {
                 unsafe {
                     let _ = DeviceIoControl(
                         slot.handle,
@@ -414,11 +455,11 @@ impl Context {
     }
 
     /// 读取指定设备的当前过滤器；失败返回 0（对齐 C 版失败语义）。
-    pub fn get_filter(&self, device: usize) -> u16 {
+    pub fn get_filter(&self, device: Device) -> u16 {
         let mut filter = 0u16;
         unsafe {
             let _ = DeviceIoControl(
-                self.device_slot(device).handle,
+                self.device_slot(device.number()).handle,
                 IOCTL_GET_FILTER,
                 None,
                 0,
@@ -432,10 +473,10 @@ impl Context {
     }
 
     /// 设置设备优先级（对齐 `interception_set_precedence`）。
-    pub fn set_precedence(&self, device: usize, precedence: i32) {
+    pub fn set_precedence(&self, device: Device, precedence: i32) {
         unsafe {
             let _ = DeviceIoControl(
-                self.device_slot(device).handle,
+                self.device_slot(device.number()).handle,
                 IOCTL_SET_PRECEDENCE,
                 Some(&precedence as *const i32 as *const c_void),
                 std::mem::size_of::<i32>() as u32,
@@ -448,11 +489,11 @@ impl Context {
     }
 
     /// 读取设备优先级；失败返回 0。
-    pub fn get_precedence(&self, device: usize) -> i32 {
+    pub fn get_precedence(&self, device: Device) -> i32 {
         let mut precedence = 0i32;
         unsafe {
             let _ = DeviceIoControl(
-                self.device_slot(device).handle,
+                self.device_slot(device.number()).handle,
                 IOCTL_GET_PRECEDENCE,
                 None,
                 0,
@@ -466,11 +507,11 @@ impl Context {
     }
 
     /// 读取设备硬件 ID 字符串，返回写入的字节数。
-    pub fn get_hardware_id(&self, device: usize, buffer: &mut [u8]) -> u32 {
+    pub fn get_hardware_id(&self, device: Device, buffer: &mut [u8]) -> u32 {
         let mut bytes_returned = 0u32;
         unsafe {
             let _ = DeviceIoControl(
-                self.device_slot(device).handle,
+                self.device_slot(device.number()).handle,
                 IOCTL_GET_HARDWARE_ID,
                 None,
                 0,
@@ -489,8 +530,8 @@ impl Context {
     ///
     /// DeviceIoControl 失败即停：返回值是确定语义（C 版失败后读取未定义的
     /// bytes_returned，返回垃圾计数 — 文档化改进）。
-    pub fn send_keyboard(&self, device: usize, strokes: &[InterceptionKeyStroke]) -> usize {
-        let slot = self.device_slot(device);
+    pub fn send_keyboard(&self, device: KeyboardDevice, strokes: &[InterceptionKeyStroke]) -> usize {
+        let slot = self.device_slot(device.0 as usize + 1);
         let mut written = 0usize;
         for chunk in strokes.chunks(MAX_STROKES_PER_IOCTL) {
             let mut raw = [KeyboardInputData::default(); MAX_STROKES_PER_IOCTL];
@@ -526,8 +567,8 @@ impl Context {
     }
 
     /// 发送鼠标 stroke 序列，返回实际写入数。
-    pub fn send_mouse(&self, device: usize, strokes: &[InterceptionMouseStroke]) -> usize {
-        let slot = self.device_slot(device);
+    pub fn send_mouse(&self, device: MouseDevice, strokes: &[InterceptionMouseStroke]) -> usize {
+        let slot = self.device_slot(MAX_KEYBOARD + device.0 as usize + 1);
         let mut written = 0usize;
         for chunk in strokes.chunks(MAX_STROKES_PER_IOCTL) {
             let mut raw = [MouseInputData::default(); MAX_STROKES_PER_IOCTL];
@@ -568,8 +609,11 @@ impl Context {
     // ── 接收（类型化，栈上分批转换）──────────────────────────
 
     /// 接收键盘 stroke 序列，返回实际读取数（对齐 `interception_receive`）。
-    pub fn receive_keyboard(&self, device: usize, out: &mut [InterceptionKeyStroke]) -> usize {
-        let slot = self.device_slot(device);
+    ///
+    /// 一次 IOCTL_READ 最多读 `out` 长度条（上限 [`MAX_STROKES_PER_IOCTL`]
+    /// 分批）— 引擎侧以批缓冲调用，突发输入一个系统调用取回。
+    pub fn receive_keyboard(&self, device: KeyboardDevice, out: &mut [InterceptionKeyStroke]) -> usize {
+        let slot = self.device_slot(device.0 as usize + 1);
         let mut total = 0usize;
         for chunk in out.chunks_mut(MAX_STROKES_PER_IOCTL) {
             let mut raw = [KeyboardInputData::default(); MAX_STROKES_PER_IOCTL];
@@ -607,8 +651,8 @@ impl Context {
     }
 
     /// 接收鼠标 stroke 序列，返回实际读取数。
-    pub fn receive_mouse(&self, device: usize, out: &mut [InterceptionMouseStroke]) -> usize {
-        let slot = self.device_slot(device);
+    pub fn receive_mouse(&self, device: MouseDevice, out: &mut [InterceptionMouseStroke]) -> usize {
+        let slot = self.device_slot(MAX_KEYBOARD + device.0 as usize + 1);
         let mut total = 0usize;
         for chunk in out.chunks_mut(MAX_STROKES_PER_IOCTL) {
             let mut raw = [MouseInputData::default(); MAX_STROKES_PER_IOCTL];

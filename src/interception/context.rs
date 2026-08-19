@@ -13,7 +13,9 @@
 //! [`InterceptionContext`] 实现了 `Send` 但 **不** 实现 `Sync`。
 
 use crate::engine::event::InputEvent;
-use crate::interception::native::{self, InterceptionKeyStroke, InterceptionMouseStroke};
+use crate::interception::native::{
+    self, Device, InterceptionKeyStroke, InterceptionMouseStroke, KeyboardDevice, MouseDevice,
+};
 use std::marker::PhantomData;
 
 /// 创建原始上下文，失败 panic（驱动未安装）— 与旧 create_raw 语义一致。
@@ -58,28 +60,29 @@ impl InterceptionContext {
 
     // ── Receive ──────────────────────────────────────────────
 
-    /// 阻塞等待输入到达。返回有待处理数据的设备号（1..=20）。
-    pub fn wait(&self) -> usize {
+    /// 阻塞等待输入到达。返回有待处理数据的设备。
+    pub fn wait(&self) -> Device {
         self.raw.wait()
     }
 
     /// 带超时的等待（毫秒）。超时时返回 `None`。
-    pub fn wait_timeout(&self, ms: u32) -> Option<usize> {
+    pub fn wait_timeout(&self, ms: u32) -> Option<Device> {
         self.raw.wait_with_timeout(ms)
     }
 
     /// 设置设备过滤器（谓词为 Rust 闭包，替代 C 版 extern "C" 函数指针）。
-    pub fn set_filter(&self, predicate: impl Fn(usize) -> bool, filter: u16) {
+    pub fn set_filter(&self, predicate: impl Fn(Device) -> bool, filter: u16) {
         self.raw.set_filter(predicate, filter);
     }
 
-    /// 从设备接收键盘输入，返回实际读取条数。
-    pub fn receive_keyboard(&self, device: usize, out: &mut [InterceptionKeyStroke]) -> usize {
+    /// 从设备批量接收键盘输入，返回实际读取条数（一次 IOCTL 最多
+    /// `out` 长度条 — 引擎以批缓冲调用，突发输入一次取回）。
+    pub fn receive_keyboard(&self, device: KeyboardDevice, out: &mut [InterceptionKeyStroke]) -> usize {
         self.raw.receive_keyboard(device, out)
     }
 
-    /// 从设备接收鼠标输入，返回实际读取条数。
-    pub fn receive_mouse(&self, device: usize, out: &mut [InterceptionMouseStroke]) -> usize {
+    /// 从设备批量接收鼠标输入，返回实际读取条数。
+    pub fn receive_mouse(&self, device: MouseDevice, out: &mut [InterceptionMouseStroke]) -> usize {
         self.raw.receive_mouse(device, out)
     }
 }
@@ -106,7 +109,7 @@ impl SendContext {
         Self { raw: create_raw() }
     }
 
-    /// 发送一个 [`InputEvent`]，自动路由到正确的设备（键盘 1 / 鼠标 11）。
+    /// 发送一个 [`InputEvent`]，自动路由到正确的设备（键盘 0 / 鼠标 0）。
     pub fn send_event(&self, event: &InputEvent) {
         match event {
             InputEvent::Keyboard { code, state } => {
@@ -141,12 +144,12 @@ impl SendContext {
     }
 
     /// 引擎转发用：原样转发接收到的键盘 stroke。
-    pub fn forward_keyboard(&self, device: usize, strokes: &[InterceptionKeyStroke]) {
+    pub fn forward_keyboard(&self, device: KeyboardDevice, strokes: &[InterceptionKeyStroke]) {
         self.raw.send_keyboard(device, strokes);
     }
 
     /// 引擎转发用：原样转发接收到的鼠标 stroke。
-    pub fn forward_mouse(&self, device: usize, strokes: &[InterceptionMouseStroke]) {
+    pub fn forward_mouse(&self, device: MouseDevice, strokes: &[InterceptionMouseStroke]) {
         self.raw.send_mouse(device, strokes);
     }
 }

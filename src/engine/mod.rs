@@ -12,8 +12,8 @@ pub mod timeline;
 pub use bindings::TriggerMode;
 
 use crate::interception::native::{
-    is_keyboard, InterceptionKeyStroke, InterceptionMouseStroke, INTERCEPTION_FILTER_KEY_ALL,
-    INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP,
+    Device, InterceptionKeyStroke, InterceptionMouseStroke, INTERCEPTION_FILTER_KEY_ALL,
+    INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP, MAX_STROKES_PER_IOCTL,
 };
 use crate::interception::{InterceptionContext, SendContext};
 use crate::key::Key;
@@ -39,7 +39,7 @@ impl Engine {
         let send_ctx = Arc::new(SendContext::create());
 
         // Set keyboard filter on the receive context: capture all key events
-        recv_ctx.set_filter(is_keyboard, INTERCEPTION_FILTER_KEY_ALL);
+        recv_ctx.set_filter(Device::is_keyboard, INTERCEPTION_FILTER_KEY_ALL);
 
         Self {
             recv_ctx,
@@ -88,36 +88,44 @@ impl Engine {
                 continue; // timeout, recheck stop_requested
             };
 
-            if is_keyboard(device) {
-                // ── 键盘设备：转发 + 解析分发 ─────────────────
-                let mut strokes = [InterceptionKeyStroke::default(); 1];
-                while self.recv_ctx.receive_keyboard(device, &mut strokes) > 0 {
-                    let ks = strokes[0];
+            match device {
+                // ── 键盘设备：批量接收 + 逐条转发/解析分发 ─────
+                Device::Keyboard(dev) => {
+                    // 批缓冲：一次 IOCTL_READ 取回突发输入（C 版语义本就
+                    // 支持 nstroke，旧实现恒为 1 — 重写深化的系统调用削减）
+                    let mut strokes = [InterceptionKeyStroke::default(); MAX_STROKES_PER_IOCTL];
+                    while self.recv_ctx.receive_keyboard(dev, &mut strokes) > 0 {
+                        for ks in &strokes {
+                            // 1. 转发原始事件 — Forward the stroke to the system
+                            send_ctx.forward_keyboard(dev, std::slice::from_ref(ks));
 
-                    // 1. 转发原始事件 — Forward the stroke to the system
-                    send_ctx.forward_keyboard(device, &strokes);
+                            // 2. 消除歧义 — Resolve E0 prefix and press/release
+                            //    into a unified Key
+                            let is_e0 = (ks.state & INTERCEPTION_KEY_E0) != 0;
+                            let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
+                            let key = Key {
+                                code: ScanCode(ks.code),
+                                is_e0,
+                            };
 
-                    // 2. 消除歧义 — Resolve E0 prefix and press/release into a unified Key
-                    let is_e0 = (ks.state & INTERCEPTION_KEY_E0) != 0;
-                    let is_pressing = (ks.state & INTERCEPTION_KEY_UP) == 0;
-                    let key = Key {
-                        code: ScanCode(ks.code),
-                        is_e0,
-                    };
-
-                    // 3. 分发 — Route press/release to the binding manager
-                    if is_pressing {
-                        self.bindings.process_key_down(key);
-                    } else {
-                        self.bindings.process_key_up(key);
+                            // 3. 分发 — Route press/release to the binding manager
+                            if is_pressing {
+                                self.bindings.process_key_down(key);
+                            } else {
+                                self.bindings.process_key_up(key);
+                            }
+                        }
                     }
                 }
-            } else {
                 // ── 鼠标设备：只转发，不分发（旧实现把鼠标缓冲误按键盘
                 //    解析成垃圾 Key — 原生移植顺手修正）───────────────
-                let mut strokes = [InterceptionMouseStroke::default(); 1];
-                while self.recv_ctx.receive_mouse(device, &mut strokes) > 0 {
-                    send_ctx.forward_mouse(device, &strokes);
+                Device::Mouse(dev) => {
+                    let mut strokes = [InterceptionMouseStroke::default(); MAX_STROKES_PER_IOCTL];
+                    while self.recv_ctx.receive_mouse(dev, &mut strokes) > 0 {
+                        for ms in &strokes {
+                            send_ctx.forward_mouse(dev, std::slice::from_ref(ms));
+                        }
+                    }
                 }
             }
         }
