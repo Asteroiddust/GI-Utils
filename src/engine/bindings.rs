@@ -421,3 +421,287 @@ impl Drop for KeyBindings {
         self.stop_all();
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// 状态机单测 — 纯内存结构，无需驱动。覆盖防抖/触发模式/替换/清理/
+// 捕获拦截 — 项目 bug 风险最高的一层（幽灵按键、僵尸线程均出于此）。
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::function::KeyFunction;
+    use crate::key::Key;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::{Duration, Instant};
+
+    /// 测试用功能：`gate` 为 Some 时等 gate（Once 模拟，预置 true 即立即
+    /// 完成）；None 时等 stop_requested（Loop 模拟）。
+    struct TestFunc {
+        started: Arc<AtomicUsize>,
+        finished: Arc<AtomicUsize>,
+        gate: Option<Arc<AtomicBool>>,
+    }
+
+    impl TestFunc {
+        fn loop_style(started: Arc<AtomicUsize>, finished: Arc<AtomicUsize>) -> Self {
+            Self {
+                started,
+                finished,
+                gate: None,
+            }
+        }
+
+        fn once_style(
+            started: Arc<AtomicUsize>,
+            finished: Arc<AtomicUsize>,
+            gate: Arc<AtomicBool>,
+        ) -> Self {
+            Self {
+                started,
+                finished,
+                gate: Some(gate),
+            }
+        }
+    }
+
+    impl KeyFunction for TestFunc {
+        fn execute(&self, stop_requested: Arc<AtomicBool>) {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            let wait_cond = match &self.gate {
+                Some(gate) => gate.clone(),
+                None => stop_requested.clone(),
+            };
+            while !wait_cond.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.finished.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn counter() -> Arc<AtomicUsize> {
+        Arc::new(AtomicUsize::new(0))
+    }
+
+    /// 轮询等待条件成立（上限 2s，测试线程各自 <50ms 完成）。
+    fn wait_until(cond: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        cond()
+    }
+
+    fn once_gate() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    // ── 防抖 / Loop 生命周期 ────────────────────────────────
+
+    #[test]
+    fn debounce_ignores_auto_repeat_and_loop_stops_on_key_up() {
+        let bindings = KeyBindings::new();
+        let (started, finished) = (counter(), counter());
+        bindings.register(
+            Key::F1,
+            TriggerMode::Loop,
+            Arc::new(TestFunc::loop_style(started.clone(), finished.clone())),
+        );
+
+        bindings.process_key_down(Key::F1);
+        assert!(wait_until(|| started.load(Ordering::SeqCst) == 1));
+
+        // 按住期间 auto-repeat 的 key-down 被防抖吞掉 — 不重复 spawn
+        bindings.process_key_down(Key::F1);
+        bindings.process_key_down(Key::F1);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+
+        // key-up 停止 Loop 线程；句柄入 pending，drain 后回收
+        bindings.process_key_up(Key::F1);
+        assert!(wait_until(|| finished.load(Ordering::SeqCst) == 1));
+        bindings.drain_pending_joins();
+        assert!(bindings.pending_joins.lock().unwrap().is_empty());
+    }
+
+    // ── Once 生命周期 ───────────────────────────────────────
+
+    #[test]
+    fn once_blocks_while_running_and_can_retrigger() {
+        let bindings = KeyBindings::new();
+        let (started, finished) = (counter(), counter());
+        let gate = once_gate();
+        bindings.register(
+            Key::F1,
+            TriggerMode::Once,
+            Arc::new(TestFunc::once_style(
+                started.clone(),
+                finished.clone(),
+                gate.clone(),
+            )),
+        );
+
+        bindings.process_key_down(Key::F1);
+        assert!(wait_until(|| started.load(Ordering::SeqCst) == 1));
+        bindings.process_key_up(Key::F1); // 真实按键成对：松开后防抖清除
+
+        // 运行中再次按下被 is_running 守卫拦截（防抖已清，走得到分支）
+        bindings.process_key_down(Key::F1);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        bindings.process_key_up(Key::F1);
+
+        // 放行后完成；可再次触发（退役句柄经 deferred 入 pending）
+        gate.store(true, Ordering::SeqCst);
+        assert!(wait_until(|| finished.load(Ordering::SeqCst) == 1));
+
+        bindings.process_key_down(Key::F1);
+        assert!(wait_until(|| started.load(Ordering::SeqCst) == 2));
+        assert!(wait_until(|| finished.load(Ordering::SeqCst) == 2));
+        bindings.drain_pending_joins();
+        assert!(bindings.pending_joins.lock().unwrap().is_empty());
+    }
+
+    // ── Toggle 生命周期 ─────────────────────────────────────
+
+    #[test]
+    fn toggle_second_press_stops_and_third_restarts() {
+        let bindings = KeyBindings::new();
+        let (started, finished) = (counter(), counter());
+        bindings.register(
+            Key::F2,
+            TriggerMode::Toggle,
+            Arc::new(TestFunc::loop_style(started.clone(), finished.clone())),
+        );
+
+        bindings.process_key_down(Key::F2);
+        assert!(wait_until(|| started.load(Ordering::SeqCst) == 1));
+        bindings.process_key_up(Key::F2); // 防抖清除（Toggle 每次按需完整 down→up）
+
+        // 第二次按下 → 停止；句柄经 deferred 入 pending
+        bindings.process_key_down(Key::F2);
+        assert!(wait_until(|| finished.load(Ordering::SeqCst) == 1));
+        bindings.process_key_up(Key::F2);
+
+        // 第三次按下 → 重新启动
+        bindings.process_key_down(Key::F2);
+        assert!(wait_until(|| started.load(Ordering::SeqCst) == 2));
+
+        // 收尾：stop_all 全停 + join（Drop 亦会执行）
+        bindings.stop_all();
+        assert!(wait_until(|| finished.load(Ordering::SeqCst) == 2));
+    }
+
+    // ── 注册替换 / 注销 ─────────────────────────────────────
+
+    #[test]
+    fn register_replacement_stops_old_running_thread() {
+        let bindings = KeyBindings::new();
+        let (started_a, finished_a) = (counter(), counter());
+        let (started_b, finished_b) = (counter(), counter());
+        bindings.register(
+            Key::F1,
+            TriggerMode::Loop,
+            Arc::new(TestFunc::loop_style(started_a.clone(), finished_a.clone())),
+        );
+        bindings.process_key_down(Key::F1);
+        assert!(wait_until(|| started_a.load(Ordering::SeqCst) == 1));
+
+        // 替换已占用键 → 旧线程被 signal_stop（review 3.8）
+        bindings.register(
+            Key::F1,
+            TriggerMode::Loop,
+            Arc::new(TestFunc::loop_style(started_b.clone(), finished_b.clone())),
+        );
+        assert!(wait_until(|| finished_a.load(Ordering::SeqCst) == 1));
+        assert_eq!(started_b.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unregister_removes_binding() {
+        let bindings = KeyBindings::new();
+        let (started, finished) = (counter(), counter());
+        bindings.register(
+            Key::F1,
+            TriggerMode::Loop,
+            Arc::new(TestFunc::loop_style(started.clone(), finished.clone())),
+        );
+        bindings.unregister(Key::F1);
+        bindings.process_key_down(Key::F1);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+        assert_eq!(finished.load(Ordering::SeqCst), 0);
+    }
+
+    // ── clear_all ───────────────────────────────────────────
+
+    #[test]
+    fn clear_all_stops_running_and_clears_debounce_table() {
+        let bindings = KeyBindings::new();
+        let (started, finished) = (counter(), counter());
+        bindings.register(
+            Key::F1,
+            TriggerMode::Loop,
+            Arc::new(TestFunc::loop_style(started.clone(), finished.clone())),
+        );
+        bindings.register(
+            Key::F2,
+            TriggerMode::Loop,
+            Arc::new(TestFunc::loop_style(started.clone(), finished.clone())),
+        );
+        bindings.process_key_down(Key::F1);
+        bindings.process_key_down(Key::F2);
+        assert!(wait_until(|| started.load(Ordering::SeqCst) == 2));
+
+        bindings.clear_all();
+        assert!(wait_until(|| finished.load(Ordering::SeqCst) == 2));
+
+        // 4.5 回归：clear_all 必须同步清空防抖表 — F1 此前被按下未松开，
+        // 重新注册后立即按下若被防抖吞掉即失败
+        let (started2, finished2) = (counter(), counter());
+        let gate = once_gate();
+        gate.store(true, Ordering::SeqCst); // 立即完成
+        bindings.register(
+            Key::F1,
+            TriggerMode::Once,
+            Arc::new(TestFunc::once_style(
+                started2.clone(),
+                finished2.clone(),
+                gate,
+            )),
+        );
+        bindings.process_key_down(Key::F1);
+        assert!(wait_until(|| started2.load(Ordering::SeqCst) == 1));
+        assert!(wait_until(|| finished2.load(Ordering::SeqCst) == 1));
+    }
+
+    // ── 按键捕获 ────────────────────────────────────────────
+
+    #[test]
+    fn capture_mode_intercepts_and_skips_dispatch() {
+        let bindings = KeyBindings::new();
+        let (started, finished) = (counter(), counter());
+        bindings.register(
+            Key::F1,
+            TriggerMode::Loop,
+            Arc::new(TestFunc::loop_style(started.clone(), finished.clone())),
+        );
+
+        let rx = bindings.enable_capture();
+        bindings.process_key_down(Key::F1);
+        // 捕获分支：键进 channel，不分发到绑定
+        assert_eq!(rx.recv_timeout(Duration::from_millis(100)), Ok(Key::F1));
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+
+        bindings.disable_capture();
+        // 捕获分支也记录了 held — 松开清除后正常分发路径恢复
+        bindings.process_key_up(Key::F1);
+        bindings.process_key_down(Key::F1);
+        assert!(wait_until(|| started.load(Ordering::SeqCst) == 1));
+        bindings.process_key_up(Key::F1);
+        assert!(wait_until(|| finished.load(Ordering::SeqCst) == 1));
+    }
+}
