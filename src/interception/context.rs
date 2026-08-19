@@ -162,7 +162,7 @@ impl SendContext {
     /// 连点器 v1 的 [down, up] 点击对由两次系统调用变为一次驱动请求，
     /// 点击时长最短且不受其他功能线程并发发送的干扰。
     pub fn send_events(&self, events: &[InputEvent]) {
-        for segment in split_segments(events) {
+        for segment in segments(events) {
             self.send_segment(segment);
         }
     }
@@ -222,38 +222,53 @@ impl SendContext {
 // 其 receive 方法若被共享会并发瓜分驱动队列，review）。
 unsafe impl Sync for SendContext {}
 
-/// 将事件序列切分为可合并发送的连续段：**Sleep 与键盘/鼠标切换是边界**。
-/// Sleep 代表时间流逝，不可与前后动作合并；键盘与鼠标是不同设备号且必须
-/// 保持严格顺序，不可按类型分组。纯函数（无驱动依赖），单测覆盖。
-fn split_segments(events: &[InputEvent]) -> Vec<&[InputEvent]> {
-    let mut segments = Vec::new();
-    let mut start = 0usize;
-    let mut kind: Option<bool> = None; // Some(true)=键盘段，Some(false)=鼠标段
+/// 事件序列 → 可合并发送的连续段（**惰性迭代器，零分配**）。
+///
+/// 边界规则：Sleep 代表时间流逝，不可与前后动作合并；键盘与鼠标是
+/// 不同设备号且必须保持严格顺序，不可按类型分组。事件序列是构造后
+/// 不可变的静态数据 — 段边界在每次播放时重算，惰性迭代消除每迭代
+/// 一次的 Vec 分配（连点器 v1 每 10ms 周期调用一次）。
+fn segments(events: &[InputEvent]) -> impl Iterator<Item = &[InputEvent]> {
+    struct Segments<'a> {
+        events: &'a [InputEvent],
+        pos: usize,
+    }
+    impl<'a> Iterator for Segments<'a> {
+        type Item = &'a [InputEvent];
 
-    for (i, event) in events.iter().enumerate() {
-        let is_keyboard = matches!(event, InputEvent::Keyboard { .. });
-        match event {
-            InputEvent::Sleep { .. } => {
-                if i > start {
-                    segments.push(&events[start..i]);
+        fn next(&mut self) -> Option<Self::Item> {
+            while self.pos < self.events.len() {
+                let start = self.pos;
+                let mut kind: Option<bool> = None; // Some(true)=键盘段，Some(false)=鼠标段
+                while self.pos < self.events.len() {
+                    match self.events[self.pos] {
+                        InputEvent::Sleep { .. } => break,
+                        InputEvent::Keyboard { .. } => {
+                            if kind == Some(false) {
+                                break; // 设备类型切换 → 切批
+                            }
+                            kind = Some(true);
+                            self.pos += 1;
+                        }
+                        InputEvent::Mouse { .. } => {
+                            if kind == Some(true) {
+                                break;
+                            }
+                            kind = Some(false);
+                            self.pos += 1;
+                        }
+                    }
                 }
-                start = i + 1;
-                kind = None;
-            }
-            _ => {
-                if kind == Some(!is_keyboard) {
-                    // 设备类型切换 → 切批，保持严格顺序
-                    segments.push(&events[start..i]);
-                    start = i;
+                if self.pos > start {
+                    return Some(&self.events[start..self.pos]);
                 }
-                kind = Some(is_keyboard);
+                // 当前位置是 Sleep（不发送）：跳过
+                self.pos += 1;
             }
+            None
         }
     }
-    if start < events.len() {
-        segments.push(&events[start..]);
-    }
-    segments
+    Segments { events, pos: 0 }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -277,7 +292,7 @@ mod tests {
             InputEvent::Sleep { ms: 10.0 },
             InputEvent::wheel(ScrollDir::DOWN),
         ];
-        let segments = split_segments(&events);
+        let segments: Vec<&[InputEvent]> = segments(&events).collect();
         assert_eq!(segments.len(), 3);
         assert_eq!(segments[0].len(), 2); // 键盘对
         assert_eq!(segments[1].len(), 2); // 鼠标对
@@ -286,9 +301,9 @@ mod tests {
 
     #[test]
     fn split_handles_empty_and_sleep_edges() {
-        assert!(split_segments(&[]).is_empty());
+        assert!(segments(&[]).next().is_none());
         // 纯 Sleep 序列 → 无段（Sleep 不发送）
-        assert!(split_segments(&[InputEvent::Sleep { ms: 1.0 }]).is_empty());
+        assert!(segments(&[InputEvent::Sleep { ms: 1.0 }]).next().is_none());
         // 连续 Sleep：不产生空段
         let events = vec![
             InputEvent::press(Key::F),
@@ -296,7 +311,7 @@ mod tests {
             InputEvent::Sleep { ms: 2.0 },
             InputEvent::release(Key::F),
         ];
-        let segments = split_segments(&events);
+        let segments: Vec<&[InputEvent]> = segments(&events).collect();
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].len(), 1);
         assert_eq!(segments[1].len(), 1);
@@ -310,7 +325,7 @@ mod tests {
             InputEvent::left_down(),
             InputEvent::release(Key::W),
         ];
-        let segments = split_segments(&events);
+        let segments: Vec<&[InputEvent]> = segments(&events).collect();
         assert_eq!(segments.len(), 3);
         assert!(matches!(segments[0][0], InputEvent::Keyboard { .. }));
         assert!(matches!(segments[1][0], InputEvent::Mouse { .. }));
