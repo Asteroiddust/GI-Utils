@@ -1,7 +1,7 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.2.3
 
 > **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 26 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16
-> **Build**: O3 + LTO fat + panic=unwind + target-cpu=native
+> **Build**: O3 + LTO fat + panic=unwind + rust-lld + target-cpu=native
 
 ## 项目概述
 
@@ -128,9 +128,13 @@ cargo test
 
 自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入两个 exe；文件缺失时跳过并警告，不影响构建。
 
-release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1, panic=unwind`（unwind 是 GUI 崩溃自愈的基础：catch_unwind 捕获渲染 panic 重试；Drop 防护体系全面激活）
+release profile: `opt-level=3, lto=fat, strip=true, codegen-units=1, panic=unwind, incremental=false`（unwind 是 GUI 崩溃自愈的基础：catch_unwind 捕获渲染 panic 重试；Drop 防护体系全面激活）
 
-rustflags: `-C target-cpu=native -Z plt=no`（target-cpu 已含 native 调优，tune-cpu 冗余已移除）
+dev profile（极速迭代）: `opt-level=0, debug=0, codegen-units=256, incremental`；依赖统一 `opt-level=2`（eframe/glow 界面流畅 + 依赖只编一次）
+
+链接器: `rust-lld.exe`（lld-link，目标域配置 `[target.x86_64-pc-windows-msvc]`，比 MSVC link.exe 快）
+
+rustflags: `-C target-cpu=native -Z threads=16`（target-cpu 已含 native 调优，tune-cpu 冗余已移除；`-Z plt=no` 已移除 — PLT 是 ELF 概念，Windows PE 上无效）
 
 依赖裁剪：eframe 仅 `default_fonts` + `glow`（无 wgpu/accesskit/links — GUI -46%）；tracing-subscriber 仅 `fmt`。
 
