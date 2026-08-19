@@ -12,7 +12,7 @@
 ## 技术栈
 
 - **Rust 1.100 nightly** (edition 2024, -Z threads=16, build-std release-only)
-- **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入；用户层 API 为**原生 Rust 移植**（`src/interception/native.rs`，DeviceIoControl 协议端，替代原预编译 interception.lib，2026-08 移植）
+- **Interception 驱动** — 内核级键盘/鼠标输入拦截与注入；用户层 API 为**原生 Rust 移植**（`src/interception/protocol.rs`，DeviceIoControl 协议端，替代原预编译 interception.lib，2026-08 移植）
 - **windows 0.62** — Win32 API（Threading、ToolHelp、Gdi、WindowsAndMessaging、Shell、LibraryLoader、Media、HiDpi、Security、Storage_FileSystem、System_IO）
 - **eframe 0.36**（egui，仅 glow + default_fonts）— GUI 配置面板与托盘窗口
 - **toml 1 + serde 1** — TOML 配置解析/序列化
@@ -22,6 +22,16 @@
 ## 项目结构
 
 ```
+# 根级
+├── Cargo.toml                 # 依赖 + profile（dev 极速 / release 激进）
+├── build.rs                   # 嵌入 assets/icon.ico
+├── assets/
+│   ├── icon.ico               # 自定义图标（构建期嵌入 exe 资源）
+│   └── icon.rc                # 图标资源脚本 (embed-resource)
+├── CLAUDE.md                  # 本文档（单一权威）
+└── AGENTS.md                  # 子 agent 指令
+
+# 源码
 src/
 ├── lib.rs                     # 库根 — GUI 二进制与测试共享全部模块
 ├── bin/
@@ -31,20 +41,17 @@ src/
 │       ├── tray_icon.rs       # 图标原料 + SharedIcon 共享句柄 (启动预加载, L4 WIC 污染防御)
 │       └── window_ops.rs      # HWND 安全包装唯一入口 (IsWindow 重校验 + 跨进程 pid 过滤, L3 幽灵窗口防御)
 ├── config.rs                  # TOML 配置解析 + 函数工厂 + [gui] 图标配置
-├── build.rs                   # 嵌入 assets/icon.ico
-├── key.rs                     # Key (ScanCode + is_e0) + 90+ 常量
-├── scan_code.rs               # ScanCode(u16) FFI 新类型
+├── key.rs                     # ScanCode(u16) 新类型 + Key (ScanCode + is_e0) + 90+ 常量
 
 ├── interception/              # Interception 用户层原生实现（替代预编译 lib）
-│   ├── native.rs              #   DeviceIoControl 协议端移植：20 设备上下文、类型化收发、
+│   ├── protocol.rs            #   DeviceIoControl 协议端移植：20 设备上下文、类型化收发、
 │   │                          #   IOCTL/常量（与 interception.h 同名）、栈分批零堆分配
 │   └── context.rs             #   InterceptionContext (recv) + SendContext (send) 类型化封装
 
 ├── engine/
 │   ├── mod.rs                 #   Engine — 事件循环
-│   ├── event.rs               #   InputEvent + EventSequence 链式 API
-│   ├── function.rs            #   KeyFunction trait (1 method)
-│   ├── bindings.rs            #   KeyBindings + TriggerMode + ActiveGuard
+│   ├── event.rs               #   InputEvent + EventSequence 链式 API + HeldTracker
+│   ├── bindings.rs            #   KeyFunction trait + KeyBindings + TriggerMode + ActiveGuard
 │   └── timeline.rs            #   Timeline/RollingKeys — 绝对时刻编排 (Timestamp 范式)
 
 ├── utils/
@@ -52,7 +59,7 @@ src/
 │   ├── beep.rs                #   蜂鸣 (同步 beep + 异步 beep_async)
 │   ├── affinity.rs            #   CPU 亲和性 + 进程迭代
 │   ├── screen.rs              #   PixelReader (cached DC) + 像素取色
-│   └── log.rs                 #   LogCollector — 全局 tracing → GUI 日志面板桥
+│   └── log_collector.rs       #   LogCollector — 全局 tracing → GUI 日志面板桥
 
 └── functions/
     ├── stop.rs                #   停止退出 (F12, Once)
@@ -64,10 +71,6 @@ src/
     ├── mavuika_double_cancel.rs # 双玛头 (F18, Loop)
     ├── mouse_color.rs         #   坐标颜色 (F19, Loop)
     └── optimize_game.rs        #   优化游戏 (NumpadAdd, Once, toggle 奇偶)
-
-assets/
-├── icon.ico                   # 自定义图标（构建期嵌入 exe 资源）
-└── icon.rc                    # 图标资源脚本 (embed-resource)
 ```
 
 ## 架构
@@ -236,9 +239,9 @@ icon_path = ""
 重构前技术选型的存续结论（原文为实现前方案，细节已过时，此处仅留决策依据）：
 
 - **输入拦截三路线评估**：A) Interception 内核驱动 — 游戏兼容性最好，原 C++ 项目已验证（✅ 采用）；B) Win32 SendInput（enigo/winput）— 纯 Rust 无驱动，但大量游戏会忽略其注入；C) SetWindowsHookEx（inputbot/rdev）— 用户态 hook，反作弊易拦截。内核级驱动对游戏输入助手不可替代
-- 自行编写 FFI 绑定而非社区 interception-sys（维护状态不明）— 2026-08-19 已进一步演进为**用户层原生 Rust 移植**（`interception/native.rs`）
+- 自行编写 FFI 绑定而非社区 interception-sys（维护状态不明）— 2026-08-19 已进一步演进为**用户层原生 Rust 移植**（`interception/protocol.rs`）
 - 依赖对照：fmt→`std::fmt`、spdlog→tracing、tlhelp32→windows crate、RDTSC→`core::arch`（均与最终实现一致）
-- **OpenInputBridge**（2026-08-19 调研）：社区干净室重写的协议兼容驱动（MIT 源码 + WHQL 已签但分发付费）。协议逐字节兼容已验证 — `interception/native.rs` 零改动可跑（附 2 个扩展 IOCTL：槽位配分/驱动识别）。**决策：不切换**（原版驱动免费稳定）；未来原版不可用时按此切换，成本仅装驱动
+- **OpenInputBridge**（2026-08-19 调研）：社区干净室重写的协议兼容驱动（MIT 源码 + WHQL 已签但分发付费）。协议逐字节兼容已验证 — `interception/protocol.rs` 零改动可跑（附 2 个扩展 IOCTL：槽位配分/驱动识别）。**决策：不切换**（原版驱动免费稳定）；未来原版不可用时按此切换，成本仅装驱动
 - 与早期方案的偏差（以代码为准）：未用 CancellationToken（`stop_requested: Arc<AtomicBool>` 更轻）；edition 2024；EventSequence 按 enum 设计落地；时间轴调度器为重构后新增范式
 
 ## DeepSeek 审查处置 — 原 dsh-review-result.md 并入（2026-08-19）

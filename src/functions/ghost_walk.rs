@@ -3,7 +3,7 @@
 //! 产生、释放动态排程，对应 C++ 原版 next_press_time + scheduled_releases。
 //! Loop 模式，按住循环。
 
-use crate::engine::function::KeyFunction;
+use crate::engine::bindings::KeyFunction;
 use crate::engine::timeline::{RollingKeys, RollingPlayer};
 use crate::interception::SendContext;
 use crate::key::Key;

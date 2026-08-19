@@ -1,8 +1,8 @@
 //! 甘雨走A — 鼠标左右键连点 + R 键取消射箭后摇 (aim cancel)。
 //! 用于原神甘雨走 A 输出手法。Once 模式，单次执行。
 
+use crate::engine::bindings::KeyFunction;
 use crate::engine::event::EventSequence;
-use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
 use std::sync::Arc;

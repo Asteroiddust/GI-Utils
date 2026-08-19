@@ -31,9 +31,8 @@
 //! seq.left_click().sleep(80.0).wheel(ScrollDir::DOWN).sleep(5.0);
 //! ```
 
-use crate::interception::native::*;
-use crate::key::Key;
-use crate::scan_code::ScanCode;
+use crate::interception::protocol::*;
+use crate::key::{Key, ScanCode};
 
 // ═══════════════════════════════════════════════════════════════
 // 滚轮方向 — Scroll direction constants

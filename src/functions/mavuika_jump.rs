@@ -1,8 +1,8 @@
 //! 火神跳喷 (Mavuika Jump) — 初始跳跃后循环空格连跳。
 //! 用于原神火神跳喷移动。Loop 模式，按住循环。
 
+use crate::engine::bindings::KeyFunction;
 use crate::engine::event::EventSequence;
-use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
 use std::sync::Arc;

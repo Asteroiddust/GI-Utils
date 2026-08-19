@@ -1,7 +1,7 @@
 //! 坐标颜色 — 实时显示光标位置 (Cursor Position) 和像素颜色。
 //! Loop 模式，按住时持续显示，松开停止。
 
-use crate::engine::function::KeyFunction;
+use crate::engine::bindings::KeyFunction;
 use crate::utils::delay;
 use crate::utils::screen::{self, PixelReader};
 use std::sync::Arc;

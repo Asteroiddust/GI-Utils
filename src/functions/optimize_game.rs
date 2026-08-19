@@ -2,7 +2,7 @@
 //! 用于原神/崩铁/绝区零/终末地 (UnityWndClass) 以及鸣潮/黑猴 (UnrealWindow)。
 //! Once 模式，按下 NumpadAdd 执行一次。
 
-use crate::engine::function::KeyFunction;
+use crate::engine::bindings::KeyFunction;
 use crate::utils;
 use crate::utils::delay;
 use std::sync::Arc;

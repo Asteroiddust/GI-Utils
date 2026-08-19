@@ -1,8 +1,8 @@
 //! 双玛头 (Mavuika Double Cancel) — 复杂鼠标按键序列 + S 键。
 //! 用于原神玛薇卡双坠操作。Loop 模式，按住循环。
 
+use crate::engine::bindings::KeyFunction;
 use crate::engine::event::EventSequence;
-use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
 use std::sync::Arc;

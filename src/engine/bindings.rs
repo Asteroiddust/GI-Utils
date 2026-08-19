@@ -9,7 +9,6 @@
 //! | `Loop`   | spawn 循环          | cancel + join       |
 //! | `Toggle` | 切换 启动 / 停止    | —                   |
 
-use crate::engine::function::KeyFunction;
 use crate::key::Key;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +16,22 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use tracing::debug;
+
+// ═══════════════════════════════════════════════════════════════════
+// KeyFunction — 功能执行契约（自 engine/function.rs 合并入本模块）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 所有自动化功能实现此 trait，通过单个 `execute` 方法驱动。
+/// All automation functions implement this trait, driven by a single `execute` method.
+pub trait KeyFunction: Send + Sync {
+    /// 执行功能，直到 `stop_requested` 变为 true（由 manager 在 key-up /
+    /// toggle-off 时设置）。函数持有一个 `Arc<AtomicBool>` 克隆，
+    /// manager 持有另一个。
+    ///
+    /// Run until `stop_requested` becomes true (set by the manager on
+    /// key-up / toggle-off).
+    fn execute(&self, stop_requested: Arc<AtomicBool>);
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // 触发模式 — TriggerMode
@@ -430,7 +445,6 @@ impl Drop for KeyBindings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::function::KeyFunction;
     use crate::key::Key;
     use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};

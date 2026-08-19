@@ -1,6 +1,6 @@
 //! Interception 上下文的类型化封装
 //!
-//! 底层实现见 [`crate::interception::native`]（原生 Rust 移植，替代原
+//! 底层实现见 [`crate::interception::protocol`]（原生 Rust 移植，替代原
 //! interception.lib FFI）。
 //!
 //! # 线程安全 (Thread Safety)
@@ -13,15 +13,15 @@
 //! [`InterceptionContext`] 实现了 `Send` 但 **不** 实现 `Sync`。
 
 use crate::engine::event::InputEvent;
-use crate::interception::native::{
+use crate::interception::protocol::{
     self, Device, InterceptionKeyStroke, InterceptionMouseStroke, KeyboardDevice,
     MAX_STROKES_PER_IOCTL,
 };
 use std::marker::PhantomData;
 
 /// 创建原始上下文，失败 panic（驱动未安装）— 与旧 create_raw 语义一致。
-fn create_raw() -> native::Context {
-    native::Context::create().unwrap_or_else(|e| {
+fn create_raw() -> protocol::Context {
+    protocol::Context::create().unwrap_or_else(|e| {
         panic!(
             "Failed to create Interception context ({e}). \
              Is the interception driver installed? \
@@ -42,7 +42,7 @@ fn create_raw() -> native::Context {
 /// Must be used from a single thread at a time (receiving is not
 /// thread-safe). Implements `Send` (safe to move), but NOT `Sync`.
 pub struct InterceptionContext {
-    raw: native::Context,
+    raw: protocol::Context,
     /// `*mut ()` 为 !Send + !Sync：阻断 Sync 自动实现（接收仅限单线程）；
     /// Send 由下方显式 unsafe impl 恢复（可跨线程移动）。
     _not_sync: PhantomData<*mut ()>,
@@ -104,7 +104,7 @@ impl InterceptionContext {
 /// Thread-safe to share across threads. Exposes only send
 /// methods — the driver supports concurrent sends through one handle.
 pub struct SendContext {
-    raw: native::Context,
+    raw: protocol::Context,
 }
 
 impl SendContext {
@@ -120,12 +120,12 @@ impl SendContext {
             InputEvent::Keyboard { .. } => {
                 let stroke = event.to_key_stroke().expect("Keyboard 分支");
                 self.raw
-                    .send_keyboard(native::keyboard(0), std::slice::from_ref(&stroke));
+                    .send_keyboard(protocol::keyboard(0), std::slice::from_ref(&stroke));
             }
             InputEvent::Mouse { .. } => {
                 let stroke = event.to_mouse_stroke().expect("Mouse 分支");
                 self.raw
-                    .send_mouse(native::mouse(0), std::slice::from_ref(&stroke));
+                    .send_mouse(protocol::mouse(0), std::slice::from_ref(&stroke));
             }
             InputEvent::Sleep { .. } => {}
         }
@@ -160,7 +160,7 @@ impl SendContext {
                         strokes[i] = event.to_key_stroke().expect("键盘段仅含 Keyboard 事件");
                     }
                     self.raw
-                        .send_keyboard(native::keyboard(0), &strokes[..chunk.len()]);
+                        .send_keyboard(protocol::keyboard(0), &strokes[..chunk.len()]);
                 }
             }
             InputEvent::Mouse { .. } => {
@@ -170,7 +170,7 @@ impl SendContext {
                         strokes[i] = event.to_mouse_stroke().expect("鼠标段仅含 Mouse 事件");
                     }
                     self.raw
-                        .send_mouse(native::mouse(0), &strokes[..chunk.len()]);
+                        .send_mouse(protocol::mouse(0), &strokes[..chunk.len()]);
                 }
             }
             InputEvent::Sleep { .. } => unreachable!("split_segments 已排除 Sleep"),
@@ -178,8 +178,8 @@ impl SendContext {
     }
 }
 
-// Sync 声明在此层而非 native::Context：SendContext 仅暴露发送方法，
-// 驱动文档明确支持通过同一上下文并发发送（native::Context 不标 Sync —
+// Sync 声明在此层而非 protocol::Context：SendContext 仅暴露发送方法，
+// 驱动文档明确支持通过同一上下文并发发送（protocol::Context 不标 Sync —
 // 其 receive 方法若被共享会并发瓜分驱动队列，review）。
 unsafe impl Sync for SendContext {}
 

@@ -17,7 +17,7 @@ pub mod affinity;
 pub mod screen;
 
 /// 全局日志收集 — Global log collection via tracing subscriber (GUI log panel).
-pub mod log;
+pub mod log_collector;
 
 /// 系统初始化 — Mirrors the original C++ `Utils::Initialize()`.
 ///

@@ -5,8 +5,8 @@
 //! - `连点器v1`：left_click + sleep 10ms（原版参数）
 //! - `连点器v2`：left_down 8ms / left_up 8ms（调参定稿）
 
+use crate::engine::bindings::KeyFunction;
 use crate::engine::event::EventSequence;
-use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

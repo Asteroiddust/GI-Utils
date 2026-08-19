@@ -1,8 +1,8 @@
 //! 快速拾取 — 反复按 F 键 + 鼠标滚轮下拉。
 //! 用于原神快速收集掉落物。Loop 模式，按住循环。
 
+use crate::engine::bindings::KeyFunction;
 use crate::engine::event::{EventSequence, ScrollDir};
-use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
 use crate::key::Key;
 use std::sync::Arc;

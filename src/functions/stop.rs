@@ -1,7 +1,7 @@
 //! 停止退出 — 设置 Engine `stop_flag`，触发程序退出。
 //! Once 模式，单次执行。
 
-use crate::engine::function::KeyFunction;
+use crate::engine::bindings::KeyFunction;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 

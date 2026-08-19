@@ -27,7 +27,7 @@
 
 use crate::engine::event::InputEvent;
 use crate::interception::SendContext;
-use crate::interception::native::{INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP};
+use crate::interception::protocol::{INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP};
 use crate::key::Key;
 use crate::utils::delay;
 use std::cell::RefCell;

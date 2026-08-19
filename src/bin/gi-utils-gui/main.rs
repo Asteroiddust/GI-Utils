@@ -10,7 +10,7 @@ use eframe::egui;
 use gi_utils::config::{self, Binding};
 use gi_utils::engine::Engine;
 use gi_utils::engine::TriggerMode;
-use gi_utils::engine::function::KeyFunction;
+use gi_utils::engine::bindings::KeyFunction;
 use gi_utils::interception::SendContext;
 use gi_utils::key::Key;
 use gi_utils::utils;
@@ -75,7 +75,7 @@ struct GuiApp {
     /// 日志面板是否可见。
     log_visible: bool,
     /// 全局日志收集器 — 每帧 drain 功能线程的 tracing 输出到日志面板。
-    log_collector: gi_utils::utils::log::LogCollector,
+    log_collector: gi_utils::utils::log_collector::LogCollector,
 
     /// 托盘消息接收端。
     tray_rx: Receiver<TrayAction>,
@@ -949,7 +949,7 @@ static IN_GUI_RETRY: AtomicBool = AtomicBool::new(false);
 /// GUI 主线程 id — 与 IN_GUI_RETRY 组合判断 panic 是否属于可恢复的渲染 panic。
 static GUI_MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
 
-fn install_panic_hook(log: gi_utils::utils::log::LogCollector) {
+fn install_panic_hook(log: gi_utils::utils::log_collector::LogCollector) {
     std::panic::set_hook(Box::new(move |info| {
         let on_gui_thread = GUI_MAIN_THREAD
             .get()
@@ -978,7 +978,7 @@ fn install_panic_hook(log: gi_utils::utils::log::LogCollector) {
 
 /// 崩溃现场落盘：panic 消息 + 日志缓冲快照写入 exe 旁 `crash.log`。
 /// 全部 best-effort — 失败静默（崩溃路径不引入新失败模式）。
-fn write_crash_log(summary: &str, log: &gi_utils::utils::log::LogCollector) {
+fn write_crash_log(summary: &str, log: &gi_utils::utils::log_collector::LogCollector) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
@@ -1035,7 +1035,7 @@ fn main() {
     // 全局日志收集：功能线程（优化游戏、坐标颜色等）的 tracing 输出
     // 经全局 subscriber 汇入共享 buffer，GUI 帧循环 drain 到日志面板。
     // 必须在配置加载（config.rs 首次生成提示）之前安装。
-    let log_collector = gi_utils::utils::log::LogCollector::install(200);
+    let log_collector = gi_utils::utils::log_collector::LogCollector::install(200);
 
     // ── 0. panic hook + 单实例保护（在任何副作用之前）────────
     install_panic_hook(log_collector.clone());

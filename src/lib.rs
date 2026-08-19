@@ -13,5 +13,4 @@ pub mod engine;
 pub mod functions;
 pub mod interception;
 pub mod key;
-pub mod scan_code;
 pub mod utils;

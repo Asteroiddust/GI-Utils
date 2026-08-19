@@ -6,18 +6,16 @@
 
 pub mod bindings;
 pub mod event;
-pub mod function;
 pub mod timeline;
 
 pub use bindings::TriggerMode;
 
-use crate::interception::native::{
+use crate::interception::protocol::{
     Device, INTERCEPTION_FILTER_KEY_ALL, INTERCEPTION_KEY_E0, INTERCEPTION_KEY_UP,
     InterceptionKeyStroke, MAX_STROKES_PER_IOCTL,
 };
 use crate::interception::{InterceptionContext, SendContext};
-use crate::key::Key;
-use crate::scan_code::ScanCode;
+use crate::key::{Key, ScanCode};
 use bindings::KeyBindings;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
