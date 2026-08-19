@@ -1,15 +1,10 @@
 //! 双玛头 (Mavuika Double Cancel) — 复杂鼠标按键序列 + S 键。
 //! 用于原神玛薇卡双坠操作。Loop 模式，按住循环。
 
-use crate::engine::event::{EventSequence, InputEvent};
+use crate::engine::event::EventSequence;
 use crate::engine::function::KeyFunction;
 use crate::interception::SendContext;
-use crate::interception::native::{
-    INTERCEPTION_KEY_DOWN, INTERCEPTION_KEY_UP, INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
-    INTERCEPTION_MOUSE_LEFT_BUTTON_UP,
-};
 use crate::key::Key;
-use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -67,58 +62,17 @@ impl 双玛头 {
 impl KeyFunction for 双玛头 {
     /// 执行双玛头操作：初始点击 → 主循环。
     ///
-    /// 初始段发送 left_click + 40ms (不可中断)。
-    /// 主循环发送展开的 5 轮序列，跟踪鼠标左键和 S 键状态，
-    /// 提前停止时自动释放粘滞键。
+    /// 初始段 left_click + 40ms（不可中断）。
+    /// 主循环播放展开的 5 轮序列 — 粘滞键追踪由 `EventSequence::play`
+    /// 内置的 HeldTracker 承担：提前停止时补发挂起键（L/S）的 release
+    /// 后立即返回，不再发送剩余动作（替代旧手工 `lbtn_held/s_held`）。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
         // ── on activate ──
-        for event in self.click_once.events() {
-            self.send_ctx.send_event(event);
-            if let InputEvent::Sleep { ms } = event {
-                delay::delay_ms(*ms);
-            }
-        }
+        self.click_once.play(&self.send_ctx, None);
 
         // ── main loop ──
         while !stop_requested.load(Ordering::Acquire) {
-            let mut lbtn_held = false;
-            let mut s_held = false;
-
-            for event in self.main_loop.events() {
-                // Track held state for cleanup on early exit
-                match event {
-                    InputEvent::Mouse { state, .. } => {
-                        if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN {
-                            lbtn_held = true;
-                        } else if *state == INTERCEPTION_MOUSE_LEFT_BUTTON_UP {
-                            lbtn_held = false;
-                        }
-                    }
-                    InputEvent::Keyboard { state, .. } => {
-                        if *state == INTERCEPTION_KEY_DOWN {
-                            s_held = true;
-                        } else if *state == INTERCEPTION_KEY_UP {
-                            s_held = false;
-                        }
-                    }
-                    _ => {}
-                }
-
-                self.send_ctx.send_event(event);
-
-                if let InputEvent::Sleep { ms } = event {
-                    delay::delay_ms_interruptible(*ms, &stop_requested);
-                    if stop_requested.load(Ordering::Acquire) {
-                        if lbtn_held {
-                            self.send_ctx.send_event(&InputEvent::left_up());
-                        }
-                        if s_held {
-                            self.send_ctx.send_event(&InputEvent::release(Key::S));
-                        }
-                        return;
-                    }
-                }
-            }
+            self.main_loop.play(&self.send_ctx, Some(&stop_requested));
         }
     }
 }

@@ -104,7 +104,7 @@ Engine (主循环, blocking)
 | **已触发即移除 + 增量同步** | 表恒为未触发条目；播放中追加条目在到期帧被 `partition_point` 捕获，不重复不遗漏（MIDI 实时编辑语义）；回放前缀通知编辑器清理，长会话内存有界 |
 | **表空不结束（live-edit）** | 表空以 0.5ms 轮询等待编辑器追加；结束只由 stop_requested 决定（MIDI 编辑器语义：播放器永不自杀） |
 | **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程，无静态表边界缝隙（对应 C++ next_press_time + scheduled_releases）；卡顿节拍重锚 — 错过即弃、不突发追拍（有意偏离 C++ 原版） |
-| **挂起键兜底清理** | 停止时补发 release（活动音符 note-off，含 At 键盘事件），防卡键 |
+| **挂起键兜底清理** | 停止时补发 release（活动音符 note-off，含 At 键盘事件），防卡键；EventSequence::play 内置 HeldTracker（双玛头手工粘滞键追踪已退役） |
 | **KeyFunction 只有 1 个方法** | `execute(&self, stop_requested: Arc<AtomicBool>)` |
 | **线程级核心分离** | 进程掩码 12-15，GUI 渲染→12,13 (LOWEST)，输入处理→14,15 (REALTIME) |
 | **pending_joins 惰性 join** | `is_finished()` 检查保留未结束句柄，GUI 帧永不阻塞 |
@@ -280,9 +280,9 @@ mode = "Loop"
 
 **设计要点**：`KeyBindings` 跟踪所有键的实时按下/松开状态；`process_key_down` 时检查修饰键是否已按住；组合键按下时触发功能，修饰键松开时不影响功能运行；兼容现有单键注册（modifier=None）。主要改动在 `bindings.rs`（状态追踪）和 `config.rs`（解析）。
 
-### 通用 held-key 清理（部分落地）
+### 通用 held-key 清理（已落地）
 
-时间轴执行器已内置挂起键清理（`TimelinePlayer::release_pending` / `RollingPlayer` 退出补发 release）。EventSequence 侧的多键 `HeldTracker` 仍待需要时再做 — 触发时机：功能需要多键同时按下（如 MIDI 键盘模拟）。
+时间轴执行器（`TimelinePlayer::release_pending` / `RollingPlayer` 退出补发 release）与 EventSequence 侧（`play()` 内置 `HeldTracker`：按下记录/松开移除/stop 中断时合并补发全部挂起键 release，2026-08-19 随双玛头 play() 化落地）双路齐备。
 
 ## 事件类型
 

@@ -70,7 +70,7 @@ impl ScrollDir {
 
 /// 单个输入动作：按键、鼠标动作或延时。
 /// A single input action: keyboard stroke, mouse stroke, or a delay.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputEvent {
     /// 按下或释放按键 (Key press or release).
     Keyboard { code: ScanCode, state: u16 },
@@ -416,6 +416,11 @@ impl EventSequence {
     /// `stop` 为 `Some` 时延时走可中断版（Loop/Toggle 即时响应）；
     /// `None` 时不可中断（Once 模式，对齐原 `delay_ms` 语义）。
     ///
+    /// **挂起键兜底**：播放期间 [`HeldTracker`] 记录按下未松开的键/鼠标
+    /// 按键；`stop` 置位导致延时提前返回时，补发全部挂起键的 release 后
+    /// 立即返回 — 不再发送剩余事件（旧行为是排空剩余序列，停止后仍会
+    /// 打出残留动作）。
+    ///
     /// Play the sequence: contiguous same-device non-Sleep events are
     /// coalesced into a single IOCTL_WRITE via [`SendContext::send_events`];
     /// delays happen at Sleep boundaries.
@@ -425,6 +430,7 @@ impl EventSequence {
         stop: Option<&std::sync::atomic::AtomicBool>,
     ) {
         let events = self.events();
+        let mut tracker = HeldTracker::new();
         let mut i = 0usize;
         while i < events.len() {
             // 收集连续非 Sleep 段（Sleep 是时序边界）
@@ -434,17 +440,177 @@ impl EventSequence {
             }
             if i > start {
                 send_ctx.send_events(&events[start..i]);
+                // 段内顺序 = 播放顺序，逐事件更新挂起追踪
+                for event in &events[start..i] {
+                    tracker.track(event);
+                }
             }
             if i < events.len() {
                 // InputEvent: Copy — 模式绑定按值拷贝，ms 即 f64
                 if let InputEvent::Sleep { ms } = events[i] {
                     match stop {
-                        Some(stop) => crate::utils::delay::delay_ms_interruptible(ms, stop),
+                        Some(stop) => {
+                            crate::utils::delay::delay_ms_interruptible(ms, stop);
+                            if stop.load(std::sync::atomic::Ordering::Acquire) {
+                                tracker.release_into(send_ctx);
+                                return;
+                            }
+                        }
                         None => crate::utils::delay::delay_ms(ms),
                     }
                 }
                 i += 1;
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HeldTracker — 播放期间的挂起键追踪（防卡键兜底）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 记录按下未松开的键盘键与鼠标按键；提前停止时补发 release。
+///
+/// 替代各功能的手工粘滞键追踪（双玛头旧实现的 `lbtn_held/s_held`），
+/// 与时间轴播放器的挂起键清理同语义。纯逻辑，可无驱动单测。
+struct HeldTracker {
+    /// 按下的键盘键（E0 标志从 state 恢复；去重）。
+    keys: Vec<crate::key::Key>,
+    /// 按下的鼠标按键（存 DOWN 位；release 为 <<1）。去重。
+    buttons: Vec<u16>,
+}
+
+impl HeldTracker {
+    fn new() -> Self {
+        Self {
+            keys: Vec::new(),
+            buttons: Vec::new(),
+        }
+    }
+
+    /// 依据事件更新挂起集：press 入集、release 出集。
+    fn track(&mut self, event: &InputEvent) {
+        match event {
+            InputEvent::Keyboard { code, state } => {
+                let key = crate::key::Key {
+                    code: *code,
+                    is_e0: *state & INTERCEPTION_KEY_E0 != 0,
+                };
+                if *state & INTERCEPTION_KEY_UP == 0 {
+                    if !self.keys.contains(&key) {
+                        self.keys.push(key);
+                    }
+                } else {
+                    self.keys.retain(|k| *k != key);
+                }
+            }
+            InputEvent::Mouse { state, .. } => {
+                for down in [
+                    INTERCEPTION_MOUSE_LEFT_BUTTON_DOWN,
+                    INTERCEPTION_MOUSE_RIGHT_BUTTON_DOWN,
+                    INTERCEPTION_MOUSE_MIDDLE_BUTTON_DOWN,
+                ] {
+                    if *state & down != 0 {
+                        if !self.buttons.contains(&down) {
+                            self.buttons.push(down);
+                        }
+                    }
+                    if *state & (down << 1) != 0 {
+                        self.buttons.retain(|b| *b != down);
+                    }
+                }
+            }
+            InputEvent::Sleep { .. } => {}
+        }
+    }
+
+    /// 把全部挂起键的 release 事件合并发给 send_ctx（防卡键兜底）。
+    fn release_into(&self, send_ctx: &crate::interception::SendContext) {
+        let releases: Vec<InputEvent> = self.release_events();
+        send_ctx.send_events(&releases);
+    }
+
+    /// 纯函数：挂起集的 release 事件（键盘先、鼠标后，供单测与合并发送）。
+    fn release_events(&self) -> Vec<InputEvent> {
+        let mut out = Vec::with_capacity(self.keys.len() + self.buttons.len());
+        for key in &self.keys {
+            out.push(InputEvent::release(*key));
+        }
+        for down in &self.buttons {
+            out.push(InputEvent::Mouse {
+                state: down << 1, // DOWN 位的 <<1 即对应 UP 位（1→2, 4→8, 0x10→0x20）
+                flags: 0,
+                rolling: 0,
+                x: 0,
+                y: 0,
+            });
+        }
+        out
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HeldTracker 单测 — 纯逻辑，无驱动依赖
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::key::Key;
+
+    #[test]
+    fn balanced_sequence_leaves_no_pending() {
+        let mut t = HeldTracker::new();
+        for event in [
+            InputEvent::press(Key::S),
+            InputEvent::release(Key::S),
+            InputEvent::left_down(),
+            InputEvent::left_up(),
+        ] {
+            t.track(&event);
+        }
+        assert!(t.release_events().is_empty());
+    }
+
+    #[test]
+    fn early_stop_releases_keyboard_and_mouse() {
+        let mut t = HeldTracker::new();
+        t.track(&InputEvent::left_down());
+        t.track(&InputEvent::press(Key::S));
+        let releases = t.release_events();
+        assert_eq!(releases.len(), 2);
+        // 键盘先、鼠标后；release 事件值正确
+        assert_eq!(releases[0], InputEvent::release(Key::S));
+        assert_eq!(
+            releases[1],
+            InputEvent::Mouse {
+                state: INTERCEPTION_MOUSE_LEFT_BUTTON_UP,
+                flags: 0,
+                rolling: 0,
+                x: 0,
+                y: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_press_tracks_once_and_e0_restored() {
+        let mut t = HeldTracker::new();
+        // 重复按下同键只记一次；E0 从 state 恢复（RAlt = 0x38 + E0）
+        t.track(&InputEvent::press(Key::RALT));
+        t.track(&InputEvent::press(Key::RALT));
+        let releases = t.release_events();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0], InputEvent::release(Key::RALT)); // E0 保留
+    }
+
+    #[test]
+    fn release_removes_pending() {
+        let mut t = HeldTracker::new();
+        t.track(&InputEvent::left_down());
+        t.track(&InputEvent::left_up());
+        t.track(&InputEvent::press(Key::S));
+        t.track(&InputEvent::release(Key::S));
+        assert!(t.release_events().is_empty());
     }
 }
