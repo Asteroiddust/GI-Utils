@@ -94,8 +94,13 @@ impl Engine {
                     // 批缓冲：一次 IOCTL_READ 取回突发输入（C 版语义本就
                     // 支持 nstroke，旧实现恒为 1 — 重写深化的系统调用削减）
                     let mut strokes = [InterceptionKeyStroke::default(); MAX_STROKES_PER_IOCTL];
-                    while self.recv_ctx.receive_keyboard(dev, &mut strokes) > 0 {
-                        for ks in &strokes {
+                    loop {
+                        // receive 返回实际读到的前缀切片 — 只遍历真实条目
+                        let got = self.recv_ctx.receive_keyboard(dev, &mut strokes);
+                        if got.is_empty() {
+                            break;
+                        }
+                        for ks in got {
                             // 1. 转发原始事件 — Forward the stroke to the system
                             send_ctx.forward_keyboard(dev, std::slice::from_ref(ks));
 
@@ -121,8 +126,12 @@ impl Engine {
                 //    解析成垃圾 Key — 原生移植顺手修正）───────────────
                 Device::Mouse(dev) => {
                     let mut strokes = [InterceptionMouseStroke::default(); MAX_STROKES_PER_IOCTL];
-                    while self.recv_ctx.receive_mouse(dev, &mut strokes) > 0 {
-                        for ms in &strokes {
+                    loop {
+                        let got = self.recv_ctx.receive_mouse(dev, &mut strokes);
+                        if got.is_empty() {
+                            break;
+                        }
+                        for ms in got {
                             send_ctx.forward_mouse(dev, std::slice::from_ref(ms));
                         }
                     }

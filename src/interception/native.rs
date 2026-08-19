@@ -608,11 +608,22 @@ impl Context {
 
     // ── 接收（类型化，栈上分批转换）──────────────────────────
 
-    /// 接收键盘 stroke 序列，返回实际读取数（对齐 `interception_receive`）。
+    /// 接收键盘 stroke 序列，返回**实际读到的前缀切片**（对齐
+    /// `interception_receive`）。
     ///
     /// 一次 IOCTL_READ 最多读 `out` 长度条（上限 [`MAX_STROKES_PER_IOCTL`]
     /// 分批）— 引擎侧以批缓冲调用，突发输入一个系统调用取回。
-    pub fn receive_keyboard(&self, device: KeyboardDevice, out: &mut [InterceptionKeyStroke]) -> usize {
+    ///
+    /// 返回切片而非条数是**防误用 API 设计**：调用方遍历返回值天然只
+    /// 覆盖真实条目 — 若返回 usize 而调用方误遍历整个缓冲，缓冲尾部的
+    /// 陈旧/零值条目会被当作真实输入转发（实测：每条真实事件后跟 31 条
+    /// 幻影 code=0 按键，取消 modifier 松开触发动作 — Win 开始菜单/
+    /// Shift 输入法切换/Win+Tab 全部失效）。
+    pub fn receive_keyboard<'a>(
+        &self,
+        device: KeyboardDevice,
+        out: &'a mut [InterceptionKeyStroke],
+    ) -> &'a mut [InterceptionKeyStroke] {
         let slot = self.device_slot(device.0 as usize + 1);
         let mut total = 0usize;
         for chunk in out.chunks_mut(MAX_STROKES_PER_IOCTL) {
@@ -647,11 +658,15 @@ impl Context {
                 break; // 读不满即无更多数据（对齐 C 版单次调用语义）
             }
         }
-        total
+        &mut out[..total]
     }
 
-    /// 接收鼠标 stroke 序列，返回实际读取数。
-    pub fn receive_mouse(&self, device: MouseDevice, out: &mut [InterceptionMouseStroke]) -> usize {
+    /// 接收鼠标 stroke 序列，返回实际读到的前缀切片。
+    pub fn receive_mouse<'a>(
+        &self,
+        device: MouseDevice,
+        out: &'a mut [InterceptionMouseStroke],
+    ) -> &'a mut [InterceptionMouseStroke] {
         let slot = self.device_slot(MAX_KEYBOARD + device.0 as usize + 1);
         let mut total = 0usize;
         for chunk in out.chunks_mut(MAX_STROKES_PER_IOCTL) {
@@ -689,6 +704,6 @@ impl Context {
                 break;
             }
         }
-        total
+        &mut out[..total]
     }
 }

@@ -75,14 +75,22 @@ impl InterceptionContext {
         self.raw.set_filter(predicate, filter);
     }
 
-    /// 从设备批量接收键盘输入，返回实际读取条数（一次 IOCTL 最多
-    /// `out` 长度条 — 引擎以批缓冲调用，突发输入一次取回）。
-    pub fn receive_keyboard(&self, device: KeyboardDevice, out: &mut [InterceptionKeyStroke]) -> usize {
+    /// 从设备批量接收键盘输入，返回实际读到的前缀切片（防误用 API —
+    /// 遍历返回值即遍历真实条目，缓冲尾部陈旧数据不可见）。
+    pub fn receive_keyboard<'a>(
+        &self,
+        device: KeyboardDevice,
+        out: &'a mut [InterceptionKeyStroke],
+    ) -> &'a mut [InterceptionKeyStroke] {
         self.raw.receive_keyboard(device, out)
     }
 
-    /// 从设备批量接收鼠标输入，返回实际读取条数。
-    pub fn receive_mouse(&self, device: MouseDevice, out: &mut [InterceptionMouseStroke]) -> usize {
+    /// 从设备批量接收鼠标输入，返回实际读到的前缀切片。
+    pub fn receive_mouse<'a>(
+        &self,
+        device: MouseDevice,
+        out: &'a mut [InterceptionMouseStroke],
+    ) -> &'a mut [InterceptionMouseStroke] {
         self.raw.receive_mouse(device, out)
     }
 }
