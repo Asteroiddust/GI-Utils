@@ -949,17 +949,21 @@ static IN_GUI_RETRY: AtomicBool = AtomicBool::new(false);
 /// GUI 主线程 id — 与 IN_GUI_RETRY 组合判断 panic 是否属于可恢复的渲染 panic。
 static GUI_MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
 
-fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
+fn install_panic_hook(log: gi_utils::utils::log::LogCollector) {
+    std::panic::set_hook(Box::new(move |info| {
         let on_gui_thread = GUI_MAIN_THREAD
             .get()
             .map(|id| std::thread::current().id() == *id)
             .unwrap_or(false);
         if IN_GUI_RETRY.load(Ordering::Relaxed) && on_gui_thread {
             // 渲染 panic 由 catch_unwind 恢复 — 不弹窗、不恢复亲和性
-            // （引擎仍在运行，恢复会破坏游戏优化）。
+            // （引擎仍在运行，恢复会破坏游戏优化）。也不落盘 —
+            // 该路径的消息已进日志面板，重试耗尽后的最终出口统一落盘。
             return;
         }
+        // 真崩溃：日志缓冲快照落盘到 exe 旁 crash.log（best-effort —
+        // panic 路径绝不 panic 或弹二次错误）
+        write_crash_log(&format!("{info}"), &log);
         let _ = utils::affinity::restore_all_affinity();
         show_message_box(
             "GI-Utils 错误",
@@ -970,6 +974,38 @@ fn install_panic_hook() {
         // （僵尸进程）— 恢复 panic=abort 时代的 fail-fast 语义。
         std::process::exit(1);
     }));
+}
+
+/// 崩溃现场落盘：panic 消息 + 日志缓冲快照写入 exe 旁 `crash.log`。
+/// 全部 best-effort — 失败静默（崩溃路径不引入新失败模式）。
+fn write_crash_log(summary: &str, log: &gi_utils::utils::log::LogCollector) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        return;
+    };
+    let mut content = format!(
+        "GI-Utils crash log — {}\npanic: {}\n\n---- log buffer ----\n",
+        chrono_now(),
+        summary
+    );
+    for line in log.snapshot() {
+        content.push_str(&line);
+        content.push('\n');
+    }
+    let _ = std::fs::write(dir.join("crash.log"), content);
+}
+
+/// 崩溃时间戳（无 chrono 依赖 — SystemTime 换算本地时刻，失败回退空串）。
+fn chrono_now() -> String {
+    use std::time::UNIX_EPOCH;
+    let Ok(dur) = std::time::SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return String::new();
+    };
+    // Windows 本地时区换算：秒数偏移（东八区 +8h 示例 — 实际时区无关紧要，
+    // 只需人类可读的近似本地时间；UTC 亦可接受，此处直接输出 UTC）
+    format!("UTC {}", dur.as_secs())
 }
 
 /// 从 panic payload 提取可读消息（&str / String / 未知）。
@@ -996,13 +1032,13 @@ fn main() {
         "Initializing...".into(),
     ];
 
-    // ── 0. panic hook + 单实例保护（在任何副作用之前）────────
-    install_panic_hook();
-
     // 全局日志收集：功能线程（优化游戏、坐标颜色等）的 tracing 输出
     // 经全局 subscriber 汇入共享 buffer，GUI 帧循环 drain 到日志面板。
     // 必须在配置加载（config.rs 首次生成提示）之前安装。
     let log_collector = gi_utils::utils::log::LogCollector::install(200);
+
+    // ── 0. panic hook + 单实例保护（在任何副作用之前）────────
+    install_panic_hook(log_collector.clone());
 
     // 单实例：已有实例时激活其窗口并退出。
     // mutex 句柄故意不释放 — 进程退出时由 OS 自动释放，保持排他。
@@ -1320,9 +1356,13 @@ fn main() {
         &stop_flag,
         &key_bindings,
     );
+    let last_error = last_error.unwrap_or_default();
     show_message_box(
         "GI-Utils 启动失败",
-        &format!("GUI 初始化失败：\n\n{}", last_error.unwrap_or_default()),
+        &format!("GUI 初始化失败：\n\n{last_error}"),
     );
+    // 渲染 panic 被 catch_unwind 捕获走的是 hook 静默路径（不落盘）—
+    // 重试耗尽后的最终出口在此统一落盘（启动错误同样记录现场）
+    write_crash_log(&last_error, &log_collector);
     std::process::exit(1);
 }

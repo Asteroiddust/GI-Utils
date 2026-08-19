@@ -42,6 +42,12 @@ impl LogCollector {
         let mut buf = self.buf.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *buf)
     }
+
+    /// 快照当前缓冲区内容（**不取走**）— panic hook 崩溃落盘用：
+    /// 自愈重试路径之外的真崩溃需要现场，而 drain 会清空面板数据。
+    pub fn snapshot(&self) -> Vec<String> {
+        self.buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 /// 写入端 — tracing-subscriber fmt 对每个事件一次 `write_all`（完整一行），
