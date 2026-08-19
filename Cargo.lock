@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "gi-utils"
-version = "1.2.3"
+version = "1.2.4"
 dependencies = [
  "eframe",
  "embed-resource",

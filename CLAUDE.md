@@ -1,4 +1,4 @@
-# GI-Utils — Rust 游戏输入自动化工具 v1.2.3
+# GI-Utils — Rust 游戏输入自动化工具 v1.2.4
 
 > **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 26 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16
 > **Build**: O3 + LTO fat + panic=unwind + rust-lld + target-cpu=native
@@ -150,7 +150,7 @@ rustflags: `-C target-cpu=native -Z threads=16`（target-cpu 已含 native 调�
 
 build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，破坏 GUI 亲和性恢复兜底。
 
-已知非目标（有意保持，见 dsh-review-result.md §3）：`cargo clippy -D warnings` 有 13 项风格 lint（缺 `Default` impl、`collapsible_if` 等，无功能错误）。rustfmt：**2026-08-19 起已全面采用**（用户拍板，全项目一次格式化），`cargo fmt --check` 应保持干净。
+已知非目标（有意保持）：`cargo clippy -D warnings` 有 13 项风格 lint（缺 `Default` impl、`collapsible_if` 等，无功能错误）。rustfmt：**2026-08-19 起已全面采用**（用户拍板，全项目一次格式化），`cargo fmt --check` 应保持干净。
 
 ## 运行
 
@@ -231,6 +231,38 @@ icon_path = ""
 5. 无需改入口 — 全部走配置驱动
 
 参考模板: `auto_clicker.rs` (Loop), `ganyu_aim_cancel.rs` (Once), `mavuika_jump.rs` (on_activate+Loop)
+
+## 选型背景 — 原 TECHNICAL_PLAN.md 并入（2026-08-19）
+
+重构前技术选型的存续结论（原文为实现前方案，细节已过时，此处仅留决策依据）：
+
+- **输入拦截三路线评估**：A) Interception 内核驱动 — 游戏兼容性最好，原 C++ 项目已验证（✅ 采用）；B) Win32 SendInput（enigo/winput）— 纯 Rust 无驱动，但大量游戏会忽略其注入；C) SetWindowsHookEx（inputbot/rdev）— 用户态 hook，反作弊易拦截。内核级驱动对游戏输入助手不可替代
+- 自行编写 FFI 绑定而非社区 interception-sys（维护状态不明）— 2026-08-19 已进一步演进为**用户层原生 Rust 移植**（`interception/native.rs`）
+- 依赖对照：fmt→`std::fmt`、spdlog→tracing、tlhelp32→windows crate、RDTSC→`core::arch`（均与最终实现一致）
+- 与早期方案的偏差（以代码为准）：未用 CancellationToken（`stop_requested: Arc<AtomicBool>` 更轻）；edition 2024；EventSequence 按 enum 设计落地；时间轴调度器为重构后新增范式
+
+## DeepSeek 审查处置 — 原 dsh-review-result.md 并入（2026-08-19）
+
+2026-08-16 对 dsh-dev 分支的 DeepSeek harness 审查（20 项），处置记录：
+
+| 编号 | 处置 | 说明 |
+|---|---|---|
+| 2.1 | ✅ | timeline sync 索引 bug + 回归测试 |
+| 2.2 | ✅ | move_absolute 归一化文档 + `normalize_absolute` |
+| 2.3 | ✅ | headless 退出顺序（先 stop_all） |
+| 3.1 | ✅ | PixelReader DC ManuallyDrop 泄漏策略 |
+| 3.2 | ⛔ 有意 | 全核掩码保持（缩减核心实测性能下降 + stutter） |
+| 3.3 | ✅ | Engine 循环 drain_pending_joins |
+| 3.4 | ⛔ 有意 | 恢复不降游戏优先级（反作弊 OpenProcess 路径） |
+| 3.5 | ✅ | NIM_ADD 前 quit 抢先检查 |
+| 3.6 | ✅ | 隐藏态两处复位 |
+| 3.7 | ✅ | 主窗口 pid 过滤 |
+| 3.8 | ✅ | register 替换先停旧线程 |
+| 3.9 | ✅ | Once 句柄回收 |
+| 4.1-4.6, 4.8 | ✅ | 低危 7 项（饱和加法 / scroll clamp / WM_DESTROY 顺序 / 配置原子写 / 防抖表清理 / 默认功能避重 / toggle 成功才翻转） |
+| 4.7 | ❌ 驳回 | AND mask 已是通用尺寸 |
+
+原生移植后续两轮审查（14 项发现全处置 + 空队列 WARN 修复）见 native-interception 分支提交记录。
 
 ## 路线图
 
