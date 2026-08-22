@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicBool;
 use tracing::{error, info, warn};
 
 /// 已知游戏进程映像名 — 采样目标名单（按序扫描取第一个命中的）。
-/// 与 optimize_game 窗口类支持面保持一致：Unity 系 + Unreal 系。
+/// 与 optimize_game 窗口类支持面一致（Unity 系 + Unreal 系）+ 终末地。
 const GAME_PROCESS_NAMES: &[&str] = &[
     "YuanShen.exe",              // 原神（国服）
     "GenshinImpact.exe",         // 原神（国际服）
@@ -21,6 +21,7 @@ const GAME_PROCESS_NAMES: &[&str] = &[
     "ZenlessZoneZero.exe",       // 绝区零
     "Client-Win64-Shipping.exe", // 鸣潮
     "b1.exe",                    // 黑神话：悟空
+    "Endfield.exe",              // 明日方舟：终末地
 ];
 
 /// 两次采样之间的间隔（毫秒）— 差分窗口。
