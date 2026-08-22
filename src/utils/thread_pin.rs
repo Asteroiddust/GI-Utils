@@ -68,6 +68,16 @@ const STRATEGIES: &[PinStrategy] = &[
                排名互换属设计内）；NVIDIA 热线程（base_pri 9，压测 #2）由白\
                名单排除；官服 mhyprot 句柄/模块全绿（2026-08-22 菜单+压测）",
     },
+    PinStrategy {
+        process_name: "ZenlessZoneZero.exe",
+        modules: &["ZenlessZoneZero.exe", "UnityPlayer.dll", "GameAssembly.dll"],
+        top_n: 2,
+        masks: &[affinity::GOLDEN_A_LP_PAIR, affinity::GOLDEN_B_LP_PAIR],
+        note: "Top-2（主线程 2568 双场景 #1 + UnityPlayer 头马 22280）；**base-15\
+               神秘线程**（ucrtbase 跳板，持续 35-44%、战斗升全场 #2）由白名单\
+               排除 — CRT 跳板不可归属，且其 base 15 调度优先已足，仅损失金核\
+               频率；官服 mhyprot 句柄/模块全绿（2026-08-22 逛图+大招战斗）",
+    },
 ];
 
 /// 按进程名查策略（大小写不敏感）。
@@ -404,6 +414,9 @@ mod tests {
         assert!(lookup_strategy("Client-Win64-Shipping.exe").is_none());
         let sr = lookup_strategy("StarRail.exe").unwrap();
         assert_eq!(sr.modules.len(), 3);
+        let zzz = lookup_strategy("ZenlessZoneZero.exe").unwrap();
+        assert_eq!(zzz.modules.len(), 3);
+        assert!(lookup_strategy("Endfield.exe").is_none()); // 保底策略（有意不注册）
         let s = lookup_strategy("YuanShen.exe").unwrap();
         assert_eq!(s.top_n, 2);
         assert_eq!(s.masks.len(), 2);
