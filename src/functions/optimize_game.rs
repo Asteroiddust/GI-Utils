@@ -122,6 +122,8 @@ impl 优化游戏 {
     /// 恢复所有进程 CPU 亲和性。成功返回 true（供 execute 翻转奇偶）。
     fn restore(&self) -> bool {
         info!("优化游戏: 恢复所有进程 CPU 亲和性");
+        // 线程级 pin 先还原（线程级掩码不被进程级 restore_all 覆盖）
+        utils::thread_pin::restore();
         if let Err(e) = utils::affinity::restore_all_affinity() {
             error!("优化游戏: 恢复失败: {}", e);
             return false;
@@ -214,6 +216,9 @@ impl 优化游戏 {
             }
         }
         info!("优化游戏: 完成");
+        // ── 7. 热线程 pinning（收尾 — 前台已切换，采样窗口测得真实负载）──
+        // 按进程名查策略（无策略跳过）；信息新鲜时沿用现有映射（2026-08-22）。
+        utils::thread_pin::apply_for_pid(pid);
         // 成功后刷新捕获基准 — 后续换游戏检测以此为对照
         self.store_info(hwnd);
         utils::beep::beep_async(750, 300);

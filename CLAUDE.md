@@ -121,6 +121,7 @@ Engine (主循环, blocking)
 | **托盘图标 [gui] icon_path** | config.toml 运行时指定 .ico，LoadImageW 加载，失败/留空回退程序生成蓝 G |
 | **exe 图标构建期嵌入** | build.rs embed-resource 嵌入 assets/icon.ico，缺失时警告跳过、构建不失败 |
 | **WM_SETICON 窗口图标同步** | eframe 默认用 egui logo 覆盖窗口图标；托盘线程找到主窗口后用同一 HICON 覆盖任务栏/标题栏/Alt-Tab |
+| **热线程 pinning 金银核** | 按进程名注册策略（`thread_pin.rs` STRATEGIES，现仅 YuanShen.exe：Top-2 → 金核 A/B LP 对）；候选域 = 起始地址在主模块内（排除 NVIDIA prio-31/Job 池/SDK），双采样 Δcycles 降序取前 N；新鲜度：同 pid 且 pin 存活 → 沿用，否则（首次/换游戏/线程死亡）还原旧 pin 后重映射；SET 权限被拒逐条降级。数据依据：2026-08-22 三采样（轻载/地图/主城），断崖稳定（#1 50-99%、#2 24-79%、#3 起步 1.5-4 倍差距）、Ideal CPU 轮转散布证明调度器不优待热线程。退出/恢复/panic 三路径兜底还原（线程级掩码不随本进程退出消失） |
 | **TSC 校准 20×100ms 阻塞启动 ~2s** | 有意保持（2026-08-22 拍板）— 启动一次性成本换最大样本稳健性。实测样本散布 ±1.45ppm（端点读偏斜 ~150ns 等效），最差样本对 10ms 时序误差 15ns 级，精度冗余远超需求；QPC 交叉测量缩窗方案（~100ms 达 <0.01%）评估过，不采用 |
 
 ## 构建
@@ -184,7 +185,9 @@ build-std 说明：不用 `panic_immediate_abort` — 它会跳过 panic hook，
 > 降级需再次 OpenProcess 游戏句柄（反作弊拦截路径），且 HIGH 留存无害。
 > **换游戏检测**（2026-08-22）：持有的 hwnd/pid 过时（游戏退出/句柄复用）
 > 时不论奇偶重新捕获并走优化方向（新游戏无"恢复"语义）；OTHER 受限后，
-> 退出路径的 `restore_all_affinity` 重新成为安全网。
+> 退出路径的 `restore_all_affinity` 重新成为安全网。热线程 pinning 挂在
+> 优化流程收尾（前台切换后 — 采样窗口测得真实负载），进程信息过期时
+> 随换游戏检测自动重映射。
 
 进程掩码 12-15。线程级收窄：GUI 主线程 → 12,13 + `THREAD_PRIORITY_LOWEST`（=22）；托盘线程 → 12,13 + `THREAD_PRIORITY_IDLE`（REALTIME class 下 =16 地板，**非字面 1**）；Engine 线程与功能线程 → 14,15（`pin_current_thread`，在 spawn 闭包内调用，优先级 24）。优先级全序阶梯：**24 输入 > 22 渲染 > 16 托盘**（2026-08-22 定 — 修正此前托盘与功能线程同级的旧不对称；`beep_async` 瞬态线程 24 未 pin，可忽略）。
 

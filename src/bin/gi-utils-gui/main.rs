@@ -863,7 +863,9 @@ fn shutdown_all(
     // 退出蜂鸣 — 异步播放（~300ms），由随后的亲和性恢复耗时覆盖
     gi_utils::utils::beep::beep_async(375, 300);
 
-    // 恢复所有进程的完整 CPU 亲和性（best-effort，静默吞错误）
+    // 恢复所有进程的完整 CPU 亲和性（best-effort，静默吞错误）。
+    // 线程级 pin 先还原（掩码留在游戏线程上不会随本进程退出消失）。
+    let _ = gi_utils::utils::thread_pin::restore();
     let _ = gi_utils::utils::affinity::restore_all_affinity();
 
     // 共享托盘图标最后销毁 — 仅当托盘线程已确认退出（"所有引用方已退出"
@@ -981,6 +983,7 @@ fn install_panic_hook(log: gi_utils::utils::log_collector::LogCollector) {
         // 真崩溃：日志缓冲快照落盘到 exe 旁 crash.log（best-effort —
         // panic 路径绝不 panic 或弹二次错误）
         write_crash_log(&format!("{info}"), &log);
+        let _ = utils::thread_pin::restore();
         let _ = utils::affinity::restore_all_affinity();
         show_message_box(
             "GI-Utils 错误",

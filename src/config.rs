@@ -296,6 +296,12 @@ key = "NumpadAdd"
 func = "优化游戏"
 mode = "Once"
 
+# 线程采样 — YuanShen.exe 线程画像（procexp Threads 自动化，分析用途）
+[[bindings]]
+key = "F20"
+func = "线程采样"
+mode = "Once"
+
 # GUI 配置 — icon_path 指向 .ico 托盘图标；font_path 指向 CJK 补充字体；
 # 两者留空均使用自动回退（程序生成图标 / 系统字体 msyh→simsun）
 [gui]
@@ -437,6 +443,7 @@ pub fn list_function_names() -> Vec<&'static str> {
         "双玛头",
         "坐标颜色",
         "优化游戏",
+        "线程采样",
     ]
 }
 
@@ -476,6 +483,7 @@ pub fn create_function(
         )),
         "坐标颜色" => Ok(Arc::new(crate::functions::mouse_color::坐标颜色::new())),
         "优化游戏" => Ok(Arc::new(crate::functions::optimize_game::优化游戏::new())),
+        "线程采样" => Ok(Arc::new(crate::functions::thread_sampler::线程采样::new())),
         _ => Err(format!("unknown function: '{}'", name)),
     }
 }

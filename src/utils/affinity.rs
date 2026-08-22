@@ -45,6 +45,13 @@ pub const GUI_CORES_MASK: usize = 0b0011_0000_0000_0000;
 /// 再在各线程内收窄到各自子集。
 pub const PROCESS_CORES_MASK: usize = GUI_CORES_MASK | ENGINE_CORES_MASK;
 
+/// 金核 A（物理核 0 → LP 0,1）— 线程 pin 目标：热线程 #1 专属。
+/// 金银核 = CPPC/PBO 实测 VID 最低的 Core 0/4；与 OTHER 掩码配合保持零后台。
+pub const GOLDEN_A_LP_PAIR: usize = 0b0000_0000_0000_0011;
+
+/// 金核 B（物理核 4 → LP 8,9）— 线程 pin 目标：热线程 #2 专属。
+pub const GOLDEN_B_LP_PAIR: usize = 0b0000_0011_0000_0000;
+
 /// 其他进程 → 物理核 2,3,6,7（逻辑 4-7 + 12-15，0xF0F0）。
 /// 金银核 Core 0/4（CPPC + PBO 实测 VID 最低）与相邻 1/5 保持零后台驻留；
 /// 物理 6,7 是本工具 REALTIME 专区，后台进程驻留无法干扰输入时序
@@ -237,6 +244,29 @@ where
         f(entry)?;
     }
     Ok(())
+}
+
+/// 按映像名查找进程 pid（大小写不敏感）— 线程采样等跨进程功能使用。
+/// 未找到返回 None；快照创建失败同样返回 None（调用方决定提示语义）。
+pub fn find_pid_by_name(name: &str) -> Option<u32> {
+    let iter = ProcessIterator::new().ok()?;
+    for entry in iter {
+        if entry.name().eq_ignore_ascii_case(name) {
+            return Some(entry.pid());
+        }
+    }
+    None
+}
+
+/// 按 pid 查找进程映像名 — 线程 pinning 的策略键（进程名 → 策略）。
+pub fn find_name_by_pid(pid: u32) -> Option<String> {
+    let iter = ProcessIterator::new().ok()?;
+    for entry in iter {
+        if entry.pid() == pid {
+            return Some(entry.name().to_string());
+        }
+    }
+    None
 }
 
 /// 将非游戏进程移出游戏核心 — Move all non-game, non-self processes off the game cores.

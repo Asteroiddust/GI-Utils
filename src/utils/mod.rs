@@ -16,6 +16,14 @@ pub mod affinity;
 /// 屏幕像素与光标 — Pixel color capture and cursor position via GDI.
 pub mod screen;
 
+/// 跨进程线程信息采样 — NT 快照 + ToolHelp + 逐线程句柄查询
+/// （Process Explorer Threads 页自动化，线程 pinning 决策数据）。
+pub mod thread_info;
+
+/// 热线程 pinning — 按进程名策略把游戏最重线程钉上金银核
+/// （候选域过滤 + Top-N + 新鲜度重映射，见 CLAUDE.md 设计决策表）。
+pub mod thread_pin;
+
 /// 全局日志收集 — Global log collection via tracing subscriber (GUI log panel).
 pub mod log_collector;
 

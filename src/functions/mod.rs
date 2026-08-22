@@ -12,3 +12,4 @@ pub mod mouse_color;
 pub mod optimize_game;
 pub mod quick_pickup;
 pub mod stop;
+pub mod thread_sampler;
