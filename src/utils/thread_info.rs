@@ -307,13 +307,33 @@ pub fn list_thread_ids(pid: u32) -> WinResult<Vec<u32>> {
 }
 
 /// 进程的模块映射（基址, 大小, 名字）— 起始地址符号化用。
-/// 快照失败（权限/反作弊）返回空表，地址退化为裸十六进制。
+/// 快照对目标进程可能暂时性失败（ERROR_PARTIAL_COPY/BAD_LENGTH — 模块
+/// 加载竞态，MSDN 推荐重试）→ 5 × 50ms 重试。最终失败（反作弊拦截模块
+/// 枚举）返回空表并告警：地址退化为裸十六进制，pinning 候选域过滤随之
+/// 失效（安全默认 — 无法验证归属的线程绝不 pin）。
 pub fn module_map(pid: u32) -> Vec<(usize, usize, String)> {
-    let snap =
-        match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) } {
-            Ok(h) => h,
-            Err(_) => return Vec::new(),
-        };
+    const RETRIES: u32 = 5;
+    let flags = TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32;
+    let mut snap = None;
+    for attempt in 0..=RETRIES {
+        match unsafe { CreateToolhelp32Snapshot(flags, pid) } {
+            Ok(h) => {
+                snap = Some(h);
+                break;
+            }
+            Err(e) if attempt < RETRIES => {
+                let _ = e;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                tracing::warn!("module_map: PID {pid} 模块快照失败（重试 {RETRIES} 次后）: {e}");
+                return Vec::new();
+            }
+        }
+    }
+    let Some(snap) = snap else {
+        return Vec::new();
+    };
     let mut entry = MODULEENTRY32W {
         dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32,
         ..Default::default()

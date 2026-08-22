@@ -15,8 +15,9 @@ from pathlib import Path
 import pandas as pd
 
 SECTION_RE = re.compile(
-    r"═+\s+YuanShen\.exe \(PID (\d+)\) (\S+)\s+采样窗口 (\d+)ms\s+"
-    r"NT快照(可用|不可用)\s+线程 (\d+)\s+═+"
+    r"═+\s+(?P<name>\S+\.exe) \(PID (?P<pid>\d+)\) (?P<at>\S+)\s+"
+    r"采样窗口 (?P<win>\d+)ms\s+"
+    r"NT快照(?P<nt>可用|不可用)\s+线程 (?P<n>\d+)\s+═+"
 )
 
 COLUMNS = [
@@ -47,10 +48,11 @@ def parse_txt(path: Path) -> pd.DataFrame:
         m = SECTION_RE.search(line)
         if m:
             meta = {
-                "pid": int(m.group(1)),
-                "sampled_at": m.group(2),
-                "nt_ok": m.group(4) == "可用",
-                "threads_declared": int(m.group(5)),
+                "process": m.group("name"),
+                "pid": int(m.group("pid")),
+                "sampled_at": m.group("at"),
+                "nt_ok": m.group("nt") == "可用",
+                "threads_declared": int(m.group("n")),
             }
             continue
         if line.startswith("TID "):  # 列头
@@ -87,8 +89,8 @@ def main() -> None:
     df.to_csv(csv_path, index=False)
     print(f"CSV 写出: {csv_path}（{len(df)} 行）\n")
 
-    for (pid, at), g in df.groupby(["pid", "sampled_at"], sort=False):
-        print(f"══ PID {pid} @ {at} — {len(g)} 线程 ══")
+    for (process, pid, at), g in df.groupby(["process", "pid", "sampled_at"], sort=False):
+        print(f"══ {process} (PID {pid}) @ {at} — {len(g)} 线程 ══")
         handles = g["cycles_total"].notna().sum()
         print(f"句柄列填充: {handles}/{len(g)}"
               f"（{'pinning 查询侧绿灯' if handles == len(g) else '存在被拒线程'}）")
