@@ -57,12 +57,13 @@ struct Row {
 
 impl KeyFunction for 线程采样 {
     fn execute(&self, _stop_requested: Arc<AtomicBool>) {
-        // 1. 按名单扫描游戏进程（第一个命中的）
+        // 1. 目标查找 — 与「优化游戏」同构的两级序：名单优先，窗口类兜底
+        //    （未登记的 Unity/UE 游戏当次即可采样，日志报进程名供登记）
         let (pid, process_name) = match find_game_process() {
             Some(found) => found,
             None => {
                 warn!(
-                    "线程采样: 名单内游戏进程均未运行（{:?}）",
+                    "线程采样: 未找到游戏（名单 {:?} 与 Unity/UE 窗口类均未命中）",
                     GAME_PROCESS_NAMES
                 );
                 return;
@@ -175,7 +176,7 @@ impl KeyFunction for 线程采样 {
         }
 
         // 7. 全表 → exe 旁 thread_sample.txt（追加）
-        let path = write_table(&rows, pid, process_name, s2.nt_available);
+        let path = write_table(&rows, pid, &process_name, s2.nt_available);
         match path {
             Ok(p) => info!("线程采样: 完整表已追加至 {}", p.display()),
             Err(e) => error!("线程采样: 写文件失败: {e}"),
@@ -184,8 +185,24 @@ impl KeyFunction for 线程采样 {
 }
 
 /// 按名单扫描游戏进程：返回 (pid, 进程名)。
-fn find_game_process() -> Option<(u32, &'static str)> {
-    utils::affinity::find_pid_by_names(GAME_PROCESS_NAMES)
+/// 目标查找 — 两级序：①名单（单次快照）→ ②窗口类兜底（未登记的
+/// Unity/UE 游戏 → pid → 进程名，供后续登记）。返回 (pid, 进程名)。
+fn find_game_process() -> Option<(u32, String)> {
+    if let Some((pid, name)) = utils::affinity::find_pid_by_names(GAME_PROCESS_NAMES) {
+        return Some((pid, name.to_string()));
+    }
+    // 窗口类兜底：找到窗口 → pid → 进程名
+    let hwnd = crate::functions::optimize_game::find_class_game_window();
+    let mut pid = 0u32;
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid))
+    };
+    if pid == 0 {
+        return None;
+    }
+    let name = utils::affinity::find_name_by_pid(pid)?;
+    info!("线程采样: 名单未命中，窗口类兜底 → {name} (PID {pid}) — 可登记进名单");
+    Some((pid, name))
 }
 
 /// FILETIME（100ns since 1601）→ 本地时刻 "HH:MM:SS.mmm"。
@@ -231,7 +248,7 @@ fn write_table(
     let now = filetime_now_local();
     let _ = writeln!(
         out,
-        "\n══ {process_name} (PID {pid}) {now}  采样窗口 {SAMPLE_INTERVAL_MS}ms  NT快照{}  线程 {} ══",
+        "══ {process_name} (PID {pid}) {now}  采样窗口 {SAMPLE_INTERVAL_MS}ms  NT快照{}  线程 {} ══",
         if nt_available { "可用" } else { "不可用" },
         rows.len(),
     );
@@ -278,9 +295,11 @@ fn write_table(
         );
     }
     use std::io::Write as _;
+    // 覆盖写入（2026-08-22 用户决策）：每次采样即最新快照，不累积历史
     let mut f = std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(&path)?;
     f.write_all(out.as_bytes())?;
     Ok(path)

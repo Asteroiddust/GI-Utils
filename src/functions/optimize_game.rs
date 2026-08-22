@@ -246,6 +246,13 @@ fn find_game_window() -> HWND {
         }
     }
     // 2. 窗口类兜底（未登记的 Unity / Unreal 游戏）
+    find_class_game_window()
+}
+
+/// 窗口类查找（三级序第 2 级 — 独立导出，「线程采样」的兜底同款）：
+/// UnityWndClass（原神/崩铁/绝区零等）→ UnrealWindow（鸣潮/黑猴等）。
+/// 未命中返回 NULL。
+pub(crate) fn find_class_game_window() -> HWND {
     unsafe {
         // 原神、崩铁、绝区零 (Unity)
         if let Ok(hwnd) = FindWindowW(windows::core::w!("UnityWndClass"), None) {
