@@ -424,6 +424,10 @@ impl TimelinePlayer {
         let start = delay::tsc_now();
         // 活动音符集合：Down 已发、Up 未到的键（对应 MIDI 活动 note 集）
         let mut pending: Vec<Key> = Vec::new();
+        // 同帧批量缓冲 — 循环外分配、每轮 clear 复用容量（播放态忙等循环
+        // 最快 0.5ms 一轮，逐轮 with_capacity 分配与热路径零分配的自我
+        // 要求不一致）
+        let mut batch: Vec<InputEvent> = Vec::new();
 
         loop {
             // 1. 增量同步（播放中动态加入 — MIDI 实时编辑）
@@ -435,7 +439,7 @@ impl TimelinePlayer {
             let due = self.state.drain_due(delay::tsc_now() - start);
             // 同帧到期条目之间无间隔 → 收集后一次 send_events 批量发送
             // （段内按 Sleep/设备类型自动切批，顺序保持）
-            let mut batch: Vec<InputEvent> = Vec::with_capacity(due.len());
+            batch.clear();
             for item in due {
                 if stop_requested.load(AtomicOrdering::Acquire) {
                     break;
@@ -462,7 +466,7 @@ impl TimelinePlayer {
 
             // 3. 停止请求 → 补发挂起键后退出（最坏停止延迟 ~100μs + 本帧突发发送）
             if stop_requested.load(AtomicOrdering::Acquire) {
-                self.release_pending(&mut pending);
+                self.release_pending(&mut pending, &mut batch);
                 return;
             }
 
@@ -473,10 +477,15 @@ impl TimelinePlayer {
         }
     }
 
-    /// 补发挂起键的 release 并清空列表（MIDI 活动音符 note-off）。
-    fn release_pending(&self, pending: &mut Vec<Key>) {
-        for key in pending.drain(..) {
-            self.send_ctx.send_event(&InputEvent::release(key));
+    /// 补发挂起键的 release 并清空列表（MIDI 活动音符 note-off）—
+    /// 收集后一次 `send_events` 合并发送（全键盘段 = 单次 IOCTL，
+    /// 与 EventSequence 侧 `HeldTracker::release_into` 同模式；
+    /// `batch` 为调用方循环缓冲，停止路径复用避免额外分配）。
+    fn release_pending(&self, pending: &mut Vec<Key>, batch: &mut Vec<InputEvent>) {
+        batch.clear();
+        batch.extend(pending.drain(..).map(|key| InputEvent::release(key)));
+        if !batch.is_empty() {
+            self.send_ctx.send_events(batch);
         }
     }
 }
@@ -609,8 +618,14 @@ impl RollingPlayer {
             // 0. 停止优先于一切发送：stop 置位 → 补发所有挂起释放后退出。
             //    （等待期 stop 在 ~100μs 检查点返回后由本检查兜底，不会多发按键）
             if stop_requested.load(AtomicOrdering::Acquire) {
-                for (_, key) in releases.drain(..) {
-                    self.send_ctx.send_event(&InputEvent::release(key));
+                // 补发合并为一次 send_events（全键盘段 = 单次 IOCTL，
+                // 与 TimelinePlayer::release_pending 同模式；冷路径，小分配可接受）
+                let releases: Vec<InputEvent> = releases
+                    .drain(..)
+                    .map(|(_, key)| InputEvent::release(key))
+                    .collect();
+                if !releases.is_empty() {
+                    self.send_ctx.send_events(&releases);
                 }
                 return;
             }
