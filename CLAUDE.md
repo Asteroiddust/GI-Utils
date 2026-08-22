@@ -143,9 +143,10 @@ cargo build --release --config .cargo/build-std.toml
 > 一律走 dev profile — release 版 O3 + fat LTO + build-std 重编 std 每次
 > 30-60s+，日常迭代太慢。**release 构建仅在用户明示"发版"时执行 — agent
 > 不主动 build release**；未定版期间测试用 `gi-utils-dev.exe`（dev 符号
-> 链接）。测试不带 build-std 的原因：全局 build-std 会让 cargo test 为
-> dev+test 双 profile 各编一份 std，两份 core 链接报 duplicate lang item
-> （cargo 已知问题）。
+> 链接）。**每次改码后必须 `cargo build` 刷新 dev 产物**（`cargo test`
+> 不更新该 exe — 符号链接指向它，2026-08-22 过期事故实证）。测试不带
+> build-std 的原因：全局 build-std 会让 cargo test 为 dev+test 双 profile
+> 各编一份 std，两份 core 链接报 duplicate lang item（cargo 已知问题）。
 
 自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入 exe；文件缺失时跳过并警告，不影响构建。
 
