@@ -39,8 +39,8 @@ const STRATEGIES: &[PinStrategy] = &[PinStrategy {
     process_name: "YuanShen.exe",
     top_n: 2,
     masks: &[affinity::GOLDEN_A_LP_PAIR, affinity::GOLDEN_B_LP_PAIR],
-    note: "金核 A=主循环(99%) B=MMCSS 关键路径(79%)，三采样断崖稳定；\
-           NVIDIA prio-31 与 Job 池由规则排除（2026-08-22）",
+    note: "Top-2（主循环+关键路径，Δcycles 现场排名定 A/B — 场景可互换）；\
+           NVIDIA prio-31 与 Job 池由规则排除（2026-08-22 四窗口数据）",
 }];
 
 /// 按进程名查策略（大小写不敏感）。
