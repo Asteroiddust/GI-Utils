@@ -25,6 +25,11 @@ use tracing::{info, warn};
 pub struct PinStrategy {
     /// 进程映像名（策略键，大小写不敏感匹配）。
     pub process_name: &'static str,
+    /// 候选域 = 起始地址落在白名单模块内的线程（`"模块名+0x"` 前缀）。
+    /// 白名单而非仅主模块：薄壳 exe 的 Unity 游戏（崩铁）工作马在
+    /// UnityPlayer/GameAssembly 里（2026-08-22 崩铁采样实证 — NVIDIA
+    /// 热线程 base_pri 仅 9，PriorityBand 规则会漏放行，白名单正确排除）。
+    pub modules: &'static [&'static str],
     /// 候选域内按 Δcycles 降序取前 N 条（金核住户上限）。
     pub top_n: usize,
     /// 第 i 热线程的目标掩码（LP 对）— 与 top_n 取 min 生效。
@@ -39,18 +44,31 @@ pub struct PinStrategy {
 /// 策略：未注册 = 只调优先级不作线程绑定**。
 ///
 /// Endfield.exe（终末地）**有意不注册**（2026-08-22）：其反作弊封锁
-/// 模块枚举（ACCESS_DENIED，管理员 procexp 亦然）→ MainModule 规则
+/// 模块枚举（ACCESS_DENIED，管理员 procexp 亦然）→ 模块白名单规则
 /// 结构性不可用；PriorityBand(5..15) 评估方案已弃（热池身份仅优先级
 /// 签名推断、无地址实证，Top-2 之一是 23 条 Unity Job 池内不可归属的
-/// 线程）→ 保底运行。线程句柄查询侧全绿（223/223），未来若获得模块
-/// 实证（如 procexp 驱动侧基址标定）可重启评估。
-const STRATEGIES: &[PinStrategy] = &[PinStrategy {
-    process_name: "YuanShen.exe",
-    top_n: 2,
-    masks: &[affinity::GOLDEN_A_LP_PAIR, affinity::GOLDEN_B_LP_PAIR],
-    note: "Top-2（主循环+关键路径，Δcycles 现场排名定 A/B — 场景可互换）；\
-           NVIDIA prio-31 与 Job 池由规则排除（2026-08-22 四窗口数据）",
-}];
+/// 线程；且崩铁数据证明 NVIDIA 热线程可低优先级、带宽规则不可靠）→
+/// 保底运行。线程句柄查询侧全绿（223/223），未来若获得模块实证
+/// （如 procexp 驱动侧基址标定）可重启评估。
+const STRATEGIES: &[PinStrategy] = &[
+    PinStrategy {
+        process_name: "YuanShen.exe",
+        modules: &["YuanShen.exe"], // 引擎静态链入 exe（热线程全在主模块）
+        top_n: 2,
+        masks: &[affinity::GOLDEN_A_LP_PAIR, affinity::GOLDEN_B_LP_PAIR],
+        note: "Top-2（主循环+关键路径，Δcycles 现场排名定 A/B — 场景可互换）；\
+               NVIDIA prio-31 与 Job 池由规则排除（2026-08-22 四窗口数据）",
+    },
+    PinStrategy {
+        process_name: "StarRail.exe",
+        modules: &["StarRail.exe", "UnityPlayer.dll", "GameAssembly.dll"],
+        top_n: 2,
+        masks: &[affinity::GOLDEN_A_LP_PAIR, affinity::GOLDEN_B_LP_PAIR],
+        note: "Top-2（主线程 23872 两场景稳居 + UnityPlayer 池头马，菜单/压测\
+               排名互换属设计内）；NVIDIA 热线程（base_pri 9，压测 #2）由白\
+               名单排除；官服 mhyprot 句柄/模块全绿（2026-08-22 菜单+压测）",
+    },
+];
 
 /// 按进程名查策略（大小写不敏感）。
 fn lookup_strategy(process_name: &str) -> Option<&'static PinStrategy> {
@@ -212,10 +230,12 @@ fn sample_ranked(pid: u32, interval_ms: u64) -> Result<Vec<Ranked>, String> {
     Ok(ranked)
 }
 
-/// 候选域过滤：起始地址在进程主模块内（`"进程名+0x"` 前缀）。
+/// 候选域过滤：起始地址在白名单模块任一之内（`"模块名+0x"` 前缀）。
 /// 模块映射不可用 → 无一通过（安全默认：无法验证归属的线程绝不 pin）。
-fn in_main_module(r: &Ranked, process_name: &str) -> bool {
-    r.start_resolved.starts_with(&format!("{process_name}+0x"))
+fn in_modules(r: &Ranked, modules: &[&str]) -> bool {
+    modules
+        .iter()
+        .any(|m| r.start_resolved.starts_with(&format!("{m}+0x")))
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -281,16 +301,16 @@ pub fn apply_for_pid(pid: u32) {
     let effective_n = strategy.top_n.min(strategy.masks.len());
     let candidates: Vec<&Ranked> = ranked
         .iter()
-        .filter(|r| in_main_module(r, &process_name))
+        .filter(|r| in_modules(r, strategy.modules))
         .take(effective_n)
         .collect();
     if candidates.is_empty() {
-        warn!("pinning: {process_name} 候选域为空（模块映射被拒或线程全闲置），跳过");
+        warn!("pinning: {process_name} 候选域为空（模块映射被拒或白名单线程全闲置），跳过");
         return;
     }
     if candidates.len() < effective_n {
         info!(
-            "pinning: 候选仅 {}/{} 条（其余未通过主模块过滤）— 按 Actual 数 pin",
+            "pinning: 候选仅 {}/{} 条（其余未通过白名单过滤）— 按 Actual 数 pin",
             candidates.len(),
             effective_n
         );
@@ -382,6 +402,8 @@ mod tests {
         assert!(lookup_strategy("YuanShen.exe").is_some());
         assert!(lookup_strategy("yuanshen.EXE").is_some());
         assert!(lookup_strategy("Client-Win64-Shipping.exe").is_none());
+        let sr = lookup_strategy("StarRail.exe").unwrap();
+        assert_eq!(sr.modules.len(), 3);
         let s = lookup_strategy("YuanShen.exe").unwrap();
         assert_eq!(s.top_n, 2);
         assert_eq!(s.masks.len(), 2);
@@ -395,22 +417,22 @@ mod tests {
             cpu_pct: 0.0,
             start_resolved: s.into(),
         };
-        // 主模块 ✓（大小写不敏感场景由进程名来源保证 — 此处测前缀语义）
-        assert!(in_main_module(
-            &mk("YuanShen.exe+0x15CD290"),
-            "YuanShen.exe"
-        ));
-        // 驱动/SDK/裸地址/空 — 全部排除
-        assert!(!in_main_module(
-            &mk("nvwgf2umx.dll+0xEBA250"),
-            "YuanShen.exe"
-        ));
-        assert!(!in_main_module(&mk("0x7FF800000000"), "YuanShen.exe"));
-        assert!(!in_main_module(&mk(""), "YuanShen.exe"));
-        // 前缀陷阱：主模块名是其他模块的前缀也不能混入
-        assert!(!in_main_module(
-            &mk("YuanShen.exe.helper.dll+0x1"),
-            "YuanShen.exe"
-        ));
+        // 崩铁白名单：exe / UnityPlayer / GameAssembly 任一 ✓
+        let srt = lookup_strategy("StarRail.exe").unwrap();
+        assert!(in_modules(&mk("StarRail.exe+0x1260"), srt.modules));
+        assert!(in_modules(&mk("UnityPlayer.dll+0xE483B0"), srt.modules));
+        assert!(in_modules(&mk("GameAssembly.dll+0x3A639E0"), srt.modules));
+        // 驱动/音频/反作弊/裸地址/空 — 全部排除（nvwgf2umx 压测 #2 热线程案例）
+        assert!(!in_modules(&mk("nvwgf2umx.dll+0xEBA250"), srt.modules));
+        assert!(!in_modules(&mk("AkSoundEngine.dll+0xBE860"), srt.modules));
+        assert!(!in_modules(&mk("MHYPBase.dll+0x119100"), srt.modules));
+        assert!(!in_modules(&mk("0x7FF800000000"), srt.modules));
+        assert!(!in_modules(&mk(""), srt.modules));
+        // 前缀陷阱：白名单模块名是其他模块的前缀也不能混入
+        assert!(!in_modules(&mk("StarRail.exe.patch.dll+0x1"), srt.modules));
+        // 原神策略仍只认主模块
+        let ys = lookup_strategy("YuanShen.exe").unwrap();
+        assert!(in_modules(&mk("YuanShen.exe+0x15CD290"), ys.modules));
+        assert!(!in_modules(&mk("UnityPlayer.dll+0xE483B0"), ys.modules));
     }
 }
