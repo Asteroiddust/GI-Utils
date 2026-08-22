@@ -42,9 +42,6 @@ struct GuiBinding {
     key_name: String,
     func: String,
     mode: TriggerMode,
-    /// 动态参数镜像（GUI 编辑时与 live store 双写；Save/re-register 的
-    /// 持久化与重建来源 — store 是运行时真值，此为配置侧快照）。
-    params: config::Params,
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -127,6 +124,9 @@ struct GuiApp {
     /// 启动时加载的 [gui] 配置 — save() 需原样写回（fail-closed：不读磁盘，
     /// 读回失败静默回退默认会清空用户 icon_path — review #3）。
     gui_config: gi_utils::config::GuiConfig,
+    /// 功能级参数表（per-function）— 参数面板编辑与 Save 持久化的真值；
+    /// 运行时值在功能实例的原子槽（live 直写），此表为配置侧快照。
+    func_params: gi_utils::config::FuncParams,
 }
 
 /// 按键捕获状态。
@@ -484,13 +484,14 @@ impl GuiApp {
         // ── 动态参数面板（live 直写：修改即刻生效，下周期应用；Save 持久化）──
         // 先不可变借用收集参数面（specs + store Arc，锁内即释），再可变借用
         // 写行镜像 — 避免 bindings_list.iter_mut 与 key_bindings 借用冲突。
-        let mut param_faces: Vec<(usize, String, Vec<ParamSpec>, Arc<ParamValues>)> = Vec::new();
+        let mut param_faces: Vec<(usize, String, String, Vec<ParamSpec>, Arc<ParamValues>)> =
+            Vec::new();
         for g in &self.bindings_list {
             if let Some(key) = g.key
                 && let Some((specs, store)) = self.key_bindings.params_of(&key)
                 && !specs.is_empty()
             {
-                param_faces.push((g.id, g.key_name.clone(), specs, store));
+                param_faces.push((g.id, g.key_name.clone(), g.func.clone(), specs, store));
             }
         }
         if !param_faces.is_empty() {
@@ -505,12 +506,9 @@ impl GuiApp {
                             ui.strong("Parameter");
                             ui.strong("Value");
                             ui.end_row();
-                            for (id, key_name, specs, store) in &param_faces {
-                                let Some(binding) =
-                                    self.bindings_list.iter_mut().find(|g| g.id == *id)
-                                else {
-                                    continue;
-                                };
+                            for (_id, key_name, func, specs, store) in &param_faces {
+                                // per-function：写功能级参数表（同功能多键共享）
+                                let entry = self.func_params.entry(func.clone()).or_default();
                                 for (si, spec) in specs.iter().enumerate() {
                                     ui.label(if si == 0 {
                                         key_name.clone()
@@ -529,7 +527,7 @@ impl GuiApp {
                                             );
                                             if resp.changed() {
                                                 store.set_f64(si, v); // live 直写
-                                                binding.params.insert(
+                                                entry.insert(
                                                     spec.name.into(),
                                                     toml::Value::Float(v),
                                                 );
@@ -543,7 +541,7 @@ impl GuiApp {
                                             );
                                             if resp.changed() {
                                                 store.set_i64(si, v);
-                                                binding.params.insert(
+                                                entry.insert(
                                                     spec.name.into(),
                                                     toml::Value::Integer(v),
                                                 );
@@ -554,7 +552,7 @@ impl GuiApp {
                                             let mut v = store.get_bool(si);
                                             if ui.checkbox(&mut v, "").changed() {
                                                 store.set_bool(si, v);
-                                                binding.params.insert(
+                                                entry.insert(
                                                     spec.name.into(),
                                                     toml::Value::Boolean(v),
                                                 );
@@ -616,7 +614,6 @@ impl GuiApp {
                     key_name: "...".into(),
                     func: default_func,
                     mode: TriggerMode::Loop,
-                    params: Default::default(),
                 });
                 // 新增行自动进入按键捕获
                 self.start_capture(id);
@@ -870,8 +867,10 @@ impl GuiApp {
                     }
                 }
             };
-            // 动态参数覆写（重注册时从镜像恢复 live 值；未知名/类型错报错）
-            if let Err(e) = config::apply_params(&func, &g.params) {
+            // 动态参数覆写（per-function：从功能级参数表取，换功能不残留 —
+            // 行参数已删，根除"同键换功能用旧参数校验报错"）
+            let params = self.func_params.get(&g.func).cloned().unwrap_or_default();
+            if let Err(e) = config::apply_params(&func, &params) {
                 errors.push(format!("'{}' params: {}", g.func, e));
                 continue;
             }
@@ -910,12 +909,12 @@ impl GuiApp {
                     key,
                     func: g.func.clone(),
                     mode: g.mode,
-                    params: g.params.clone(),
+                    params: self.func_params.get(&g.func).cloned().unwrap_or_default(),
                 })
             })
             .collect();
 
-        config::save(&bindings, &self.gui_config)
+        config::save(&bindings, &self.func_params, &self.gui_config)
     }
 }
 
@@ -1206,14 +1205,14 @@ fn main() {
     // ── 2. 加载配置 ─────────────────────────────────────────
     // config_ok 可变 — 崩溃恢复轮重载成功后同步更新（Save 可用性与磁盘
     // 可解析性保持一致，review 发现）。
-    let (config_bindings, mut config_ok) = match config::load() {
-        Ok(b) => {
+    let (config_bindings, mut startup_func_params, mut config_ok) = match config::load_full() {
+        Ok((b, fp)) => {
             startup_log.push(format!("Loaded {} bindings from config.toml", b.len()));
-            (b, true)
+            (b, fp, true)
         }
         Err(e) => {
             startup_log.push(format!("Config error: {}", e));
-            (Vec::new(), false)
+            (Vec::new(), config::FuncParams::new(), false)
         }
     };
 
@@ -1316,11 +1315,12 @@ fn main() {
         let attempt_bindings: Vec<Binding> = if attempt == 0 {
             config_bindings.clone()
         } else {
-            match config::load() {
-                Ok(b) => {
+            match config::load_full() {
+                Ok((b, fp)) => {
                     startup_log.push("配置已从 config.toml 重新加载（崩溃恢复）".into());
                     // 磁盘可解析 → 恢复 Save 可用性（与重载结果一致，review 发现）
                     config_ok = true;
+                    startup_func_params = fp;
                     b
                 }
                 Err(e) => {
@@ -1376,7 +1376,6 @@ fn main() {
                 key_name: config::key_display_name(b.key),
                 func: b.func.clone(),
                 mode: b.mode,
-                params: b.params.clone(),
             })
             .collect();
         let next_id = gui_bindings.len();
@@ -1416,6 +1415,7 @@ fn main() {
             icon_apply_deadline: None,
             show_until: None,
             gui_config: gui_cfg.clone(),
+            func_params: startup_func_params.clone(),
         };
 
         let options = eframe::NativeOptions {

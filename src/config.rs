@@ -23,6 +23,10 @@ struct RawConfig {
     bindings: Vec<RawBinding>,
     #[serde(default)]
     gui: RawGuiConfig,
+    /// 顶层 `[params.<功能名>]` — per-function 持久化（旧格式
+    /// `[bindings.params]` 仍在 RawBinding 读取兼容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    params: Option<FuncParams>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -55,6 +59,12 @@ pub struct GuiConfig {
 
 /// 动态参数表（名字 → 值；BTreeMap 序列化稳定有序）。
 pub type Params = std::collections::BTreeMap<String, toml::Value>;
+
+/// 功能级参数表 — **per-function 语义**（2026-08-22 修正）：
+/// 参数属于功能定义而非绑定行 — 同功能多键共享一份；换键换功能时
+/// 参数随功能走，不残留、不互扰（旧实现挂在 Binding 行上，同键换
+/// 功能会用旧功能参数校验新功能而报错，实证）。
+pub type FuncParams = std::collections::BTreeMap<String, Params>;
 
 /// 解析后的绑定项 — A parsed binding ready to register.
 #[derive(Clone)]
@@ -323,7 +333,9 @@ font_path = ""
 /// 每个功能只能绑定一个按键。
 /// If the file is missing, a default config is generated. Validates bidirectional
 /// uniqueness: each key maps to one function and each function maps to one key.
-pub fn load() -> Result<Vec<Binding>, String> {
+/// 加载配置（含功能级参数表）— load() 的完整形态。
+/// 返回 (绑定列表, 功能参数表)；`load()` 为仅取绑定的便捷包装。
+pub fn load_full() -> Result<(Vec<Binding>, FuncParams), String> {
     let path = config_path();
 
     if !path.exists() {
@@ -337,17 +349,28 @@ pub fn load() -> Result<Vec<Binding>, String> {
         .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
 
     let raw: RawConfig = toml::from_str(&content).map_err(|e| format!("invalid config: {}", e))?;
+    let mut func_params = raw.params.unwrap_or_default();
 
     let mut bindings = Vec::new();
     for (i, b) in raw.bindings.iter().enumerate() {
         let key = parse_key(&b.key).map_err(|e| format!("binding #{}: {}", i + 1, e))?;
         let mode = parse_mode(&b.mode).map_err(|e| format!("binding #{}: {}", i + 1, e))?;
+        // fill 语义：Binding.params = 该功能在全局表里的参数（快照），
+        // 供注册初值应用；顶层无此功能时回退旧格式 [bindings.params]（兼容）
+        let params = func_params
+            .get(&b.func)
+            .cloned()
+            .unwrap_or_else(|| b.params.clone().unwrap_or_default());
         bindings.push(Binding {
             key,
             func: b.func.clone(),
             mode,
-            params: b.params.clone().unwrap_or_default(),
+            params,
         });
+        // 旧格式迁移：顶层未登记但行内带参 → 提升进全局表（save 时持久）
+        if !func_params.contains_key(&b.func) && b.params.as_ref().is_some_and(|p| !p.is_empty()) {
+            func_params.insert(b.func.clone(), b.params.clone().unwrap_or_default());
+        }
     }
 
     // ── Validate bidirectional uniqueness ────────────────────
@@ -371,7 +394,12 @@ pub fn load() -> Result<Vec<Binding>, String> {
         }
     }
 
-    Ok(bindings)
+    Ok((bindings, func_params))
+}
+
+/// 加载配置 — 仅取绑定列表（便捷包装，注册用）。
+pub fn load() -> Result<Vec<Binding>, String> {
+    load_full().map(|(bindings, _)| bindings)
 }
 
 /// 加载 `[gui]` 段配置（图标路径等）。解析失败/缺段时返回默认值 —
@@ -397,7 +425,7 @@ pub fn load_gui_config() -> GuiConfig {
 /// [gui] 段由调用方传入的 `gui` 原样写回 — **fail-closed**：绝不读磁盘
 /// 回填（读回失败静默回退默认值会清空用户 icon_path — review #3）。
 /// 无法序列化的键返回错误（不写 "?" — "?" 下次启动解析失败会拖垮全部绑定）。
-pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
+pub fn save(bindings: &[Binding], func_params: &FuncParams, gui: &GuiConfig) -> Result<(), String> {
     let raw_bindings: Vec<RawBinding> = bindings
         .iter()
         .map(|b| {
@@ -422,6 +450,11 @@ pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
         gui: RawGuiConfig {
             icon_path: gui.icon_path.clone(),
             font_path: gui.font_path.clone(),
+        },
+        params: if func_params.is_empty() {
+            None
+        } else {
+            Some(func_params.clone())
         },
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;
