@@ -34,7 +34,16 @@ pub struct PinStrategy {
 }
 
 /// 策略注册表。新游戏：先跑「线程采样」（F20）拿数据，再加一行。
-/// 没有策略的进程 → pinning 步骤静默跳过，「优化游戏」其余步骤不受影响。
+/// 没有策略的进程 → pinning 步骤静默跳过，「优化游戏」其余步骤
+/// （优先级 HIGH + OTHER 隔离 + 前台切换）不受影响 — **这即是保底
+/// 策略：未注册 = 只调优先级不作线程绑定**。
+///
+/// Endfield.exe（终末地）**有意不注册**（2026-08-22）：其反作弊封锁
+/// 模块枚举（ACCESS_DENIED，管理员 procexp 亦然）→ MainModule 规则
+/// 结构性不可用；PriorityBand(5..15) 评估方案已弃（热池身份仅优先级
+/// 签名推断、无地址实证，Top-2 之一是 23 条 Unity Job 池内不可归属的
+/// 线程）→ 保底运行。线程句柄查询侧全绿（223/223），未来若获得模块
+/// 实证（如 procexp 驱动侧基址标定）可重启评估。
 const STRATEGIES: &[PinStrategy] = &[PinStrategy {
     process_name: "YuanShen.exe",
     top_n: 2,

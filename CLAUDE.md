@@ -121,7 +121,7 @@ Engine (主循环, blocking)
 | **托盘图标 [gui] icon_path** | config.toml 运行时指定 .ico，LoadImageW 加载，失败/留空回退程序生成蓝 G |
 | **exe 图标构建期嵌入** | build.rs embed-resource 嵌入 assets/icon.ico，缺失时警告跳过、构建不失败 |
 | **WM_SETICON 窗口图标同步** | eframe 默认用 egui logo 覆盖窗口图标；托盘线程找到主窗口后用同一 HICON 覆盖任务栏/标题栏/Alt-Tab |
-| **热线程 pinning 金银核** | 按进程名注册策略（`thread_pin.rs` STRATEGIES，现仅 YuanShen.exe：Top-2 → 金核 A/B LP 对）；候选域 = 起始地址在主模块内（排除 NVIDIA prio-31/Job 池/SDK），双采样 Δcycles 降序取前 N；新鲜度：同 pid 且 pin 存活 → 沿用，否则（首次/换游戏/线程死亡）还原旧 pin 后重映射；SET 权限被拒逐条降级。数据依据：2026-08-22 三采样（轻载/地图/主城），断崖稳定（#1 50-99%、#2 24-79%、#3 起步 1.5-4 倍差距）、Ideal CPU 轮转散布证明调度器不优待热线程。退出/恢复/panic 三路径兜底还原（线程级掩码不随本进程退出消失） |
+| **热线程 pinning 金银核** | 按进程名注册策略（`thread_pin.rs` STRATEGIES，现仅 YuanShen.exe：Top-2 → 金核 A/B LP 对）；候选域 = 起始地址在主模块内（排除 NVIDIA prio-31/Job 池/SDK），双采样 Δcycles 降序取前 N；新鲜度：同 pid 且 pin 存活 → 沿用，否则（首次/换游戏/线程死亡）还原旧 pin 后重映射；SET 权限被拒逐条降级。数据依据：2026-08-22 三采样（轻载/地图/主城），断崖稳定（#1 50-99%、#2 24-79%、#3 起步 1.5-4 倍差距）、Ideal CPU 轮转散布证明调度器不优待热线程。退出/恢复/panic 三路径兜底还原（线程级掩码不随本进程退出消失）。**未注册游戏 = 保底策略**：只优先级 HIGH + OTHER 隔离，无 pin。**Endfield（终末地）有意不注册**（2026-08-22）：反作弊封锁模块枚举 → MainModule 规则不可用，PriorityBand 替代方案因热池身份缺乏地址实证而弃，保底运行；线程查询侧句柄全绿，待有实证可重启评估 |
 | **TSC 校准 20×100ms 阻塞启动 ~2s** | 有意保持（2026-08-22 拍板）— 启动一次性成本换最大样本稳健性。实测样本散布 ±1.45ppm（端点读偏斜 ~150ns 等效），最差样本对 10ms 时序误差 15ns 级，精度冗余远超需求；QPC 交叉测量缩窗方案（~100ms 达 <0.01%）评估过，不采用 |
 
 ## 构建
