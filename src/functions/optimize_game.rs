@@ -1,6 +1,16 @@
-//! 优化游戏 — 查找游戏窗口、提升优先级、切换前台。
-//! 用于原神/崩铁/绝区零/终末地 (UnityWndClass) 以及鸣潮/黑猴 (UnrealWindow)。
-//! Once 模式，按下 NumpadAdd 执行一次。
+//! 优化游戏 — 三档模式（2026-08-22 拆档）：
+//!
+//! - **优化游戏**（Advanced）：全量 — 游戏进程亲和性（GAME_CORES_MASK）
+//!   + OTHER 进程隔离（isolate_game_cores）+ 优先级 HIGH + 前台切换
+//!   + 热线程 pinning（按进程名策略，见 thread_pin::STRATEGIES）
+//! - **优化游戏标准**（Standard）：minimal + OTHER 进程隔离
+//!   （不改游戏自身亲和性、不 pin）
+//! - **优化游戏简易**（Minimal）：仅提升游戏进程优先级 + 前台切换
+//!   （不碰任何亲和性 — no-op 场景：不想动系统级核心布局时）
+//!
+//! 三种模式共享：找窗三级序（名单 → 窗口类 → 失败）、换游戏检测
+//! （hwnd+pid 双校验，过时不论奇偶重捕获走优化）、`HIGH` 留存无害
+//! （3.4 决策）；奇偶 toggle 按模式独立（防多键绑定间串扰）。
 
 use crate::engine::bindings::KeyFunction;
 use crate::utils;
@@ -17,13 +27,49 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsWindow, IsWindowVisible, SwitchToThisWindow,
 };
-use windows::core::BOOL;
 
-/// 优化游戏功能 — Once 模式。
-///
-/// 查找游戏窗口 → 获取 PID → CPU 核心隔离 → 提升优先级 → 切换前台。
-/// 支持原神/崩铁/绝区零/终末地 (UnityWndClass) 以及鸣潮/黑猴 (UnrealWindow)。
-pub struct 优化游戏 {
+// ═══════════════════════════════════════════════════════════════════
+// 模式定义
+// ═══════════════════════════════════════════════════════════════════
+
+/// 优化档位 — 决定 optimize/restore 各做多少。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizeMode {
+    /// 全量：游戏亲和性 + OTHER 隔离 + 优先级 + pinning。
+    Advanced,
+    /// minimal + OTHER 隔离（不动游戏自身、不 pin）。
+    Standard,
+    /// 仅优先级 + 前台（不碰任何亲和性）。
+    Minimal,
+}
+
+impl OptimizeMode {
+    fn idx(self) -> usize {
+        match self {
+            OptimizeMode::Advanced => 0,
+            OptimizeMode::Standard => 1,
+            OptimizeMode::Minimal => 2,
+        }
+    }
+}
+
+const MODE_COUNT: usize = 3;
+
+/// 奇偶切换状态 — 每模式独立（进程级共享）。
+/// 实例会被 live-apply 与崩溃恢复重建：状态若随实例走，重建后奇偶归零，
+/// 已隔离的游戏会被二次隔离而非恢复（review 发现）。
+/// 三模式各自独立 — 多键绑定不同档位时互不干扰奇偶。
+static TOGGLE_STATE: [AtomicBool; MODE_COUNT] = [
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+
+// ═══════════════════════════════════════════════════════════════════
+// Core — 三种模式共享的实现（找窗/换游戏检测/流程分派）
+// ═══════════════════════════════════════════════════════════════════
+
+struct Core {
     /// 上次捕获的游戏窗口（原子存 HWND 原始值 — 实例跨线程共享，
     /// 换游戏后可刷新）。
     hwnd: AtomicIsize,
@@ -32,19 +78,8 @@ pub struct 优化游戏 {
     pid: AtomicU32,
 }
 
-/// 奇偶切换状态 — 模块级 static（进程级共享）。
-/// 实例会被 live-apply 与崩溃恢复重建：状态若随实例走，重建后奇偶归零，
-/// 已隔离的游戏会被二次隔离而非恢复（review 发现）。
-static OPTIMIZE_TOGGLE: AtomicBool = AtomicBool::new(false);
-
-// hwnd/pid 为原子字段（HWND 以 isize 原始值存储）— Send/Sync 自动派生。
-
-impl 优化游戏 {
-    /// 创建 `优化游戏` 实例。
-    ///
-    /// 捕获当前游戏窗口与 pid（换游戏检测的基准）。找不到时不 panic，
-    /// `execute` 中会重新查找。
-    pub fn new() -> Self {
+impl Core {
+    fn new() -> Self {
         let hwnd = find_game_window();
         let mut pid = 0u32;
         if is_valid_window(hwnd) {
@@ -55,51 +90,12 @@ impl 优化游戏 {
             pid: AtomicU32::new(pid),
         }
     }
-}
 
-impl KeyFunction for 优化游戏 {
-    fn execute(&self, _stop_requested: Arc<AtomicBool>) {
-        // 换游戏检测（2026-08-22）：持有的 hwnd/pid 过时（游戏退出/句柄被
-        // 复用）→ 不论奇偶，重新捕获并走**优化**方向 — 新游戏没有被优化过，
-        // "恢复"对它无语义；toggle 置 true（原本 true 则不变）。找不到
-        // 新游戏则按奇偶原逻辑（恢复=清场释放隔离，优化=失败重试）。
-        if !self.info_valid() {
-            let hwnd = find_game_window();
-            if is_valid_window(hwnd) {
-                self.store_info(hwnd);
-                if self.optimize() {
-                    OPTIMIZE_TOGGLE.store(true, Ordering::Release);
-                }
-                return;
-            }
-        }
-
-        // 切换奇偶：odd → 优化，even → 恢复（进程级共享状态）。
-        // 仅在分支成功后翻转 — 先翻后执行时失败路径会永久卡在错误的
-        // 奇偶相（如找不到窗口，下次按下误走恢复 — review 4.8）。
-        let optimize = !OPTIMIZE_TOGGLE.load(Ordering::Acquire);
-        let succeeded = if optimize {
-            self.optimize()
-        } else {
-            self.restore()
-        };
-        if succeeded {
-            OPTIMIZE_TOGGLE.fetch_xor(true, Ordering::AcqRel);
-        }
-    }
-}
-
-// ── 换游戏检测辅助 ────────────────────────────────────────────
-
-impl 优化游戏 {
-    /// 当前持有的窗口句柄（0 = 从未捕获或无效）。
     fn current_hwnd(&self) -> HWND {
         HWND(self.hwnd.load(Ordering::Acquire) as *mut std::ffi::c_void)
     }
 
     /// 持有信息是否仍有效：窗口存活 **且** pid 未变。
-    /// pid 双重校验防御 HWND 复用 — 换游戏后旧句柄可能被无关窗口占用，
-    /// 此时 IsWindow 仍为真但归属进程已不同。
     fn info_valid(&self) -> bool {
         let hwnd = self.current_hwnd();
         if !is_valid_window(hwnd) {
@@ -110,35 +106,79 @@ impl 优化游戏 {
         pid != 0 && pid == self.pid.load(Ordering::Acquire)
     }
 
-    /// 刷新持有的窗口/pid（优化成功后与新游戏捕获时调用）。
     fn store_info(&self, hwnd: HWND) {
         let mut pid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
         self.hwnd.store(hwnd.0 as isize, Ordering::Release);
         self.pid.store(pid, Ordering::Release);
     }
-}
 
-impl 优化游戏 {
-    /// 恢复所有进程 CPU 亲和性。成功返回 true（供 execute 翻转奇偶）。
-    fn restore(&self) -> bool {
-        info!("优化游戏: 恢复所有进程 CPU 亲和性");
-        // 线程级 pin 先还原（线程级掩码不被进程级 restore_all 覆盖）
-        utils::thread_pin::restore();
-        if let Err(e) = utils::affinity::restore_all_affinity() {
-            error!("优化游戏: 恢复失败: {}", e);
-            return false;
+    fn execute(&self, mode: OptimizeMode, _stop_requested: Arc<AtomicBool>) {
+        // 换游戏检测（2026-08-22）：持有的 hwnd/pid 过时（游戏退出/句柄被
+        // 复用）→ 不论奇偶，重新捕获并走**优化**方向 — 新游戏没有被优化过，
+        // "恢复"对它无语义；toggle 置相应档位（原本 true 则不变）。找不到
+        // 新游戏则按奇偶原逻辑。
+        if !self.info_valid() {
+            let hwnd = find_game_window();
+            if is_valid_window(hwnd) {
+                self.store_info(hwnd);
+                if self.optimize(mode) {
+                    TOGGLE_STATE[mode.idx()].store(true, Ordering::Release);
+                }
+                return;
+            }
         }
-        info!("优化游戏: 已恢复");
-        utils::beep::beep_async(375, 300);
+
+        // 切换奇偶：odd → 优化，even → 恢复（每模式独立）。
+        // 仅在分支成功后翻转 — 先翻后执行时失败路径会永久卡在错误的
+        // 奇偶相（如找不到窗口，下次按下误走恢复 — review 4.8）。
+        let optimize = !TOGGLE_STATE[mode.idx()].load(Ordering::Acquire);
+        let succeeded = if optimize {
+            self.optimize(mode)
+        } else {
+            self.restore(mode)
+        };
+        if succeeded {
+            TOGGLE_STATE[mode.idx()].fetch_xor(true, Ordering::AcqRel);
+        }
+    }
+
+    /// 恢复 — 按模式撤销各自动过的状态。
+    /// 成功返回 true（供 execute 翻转奇偶）。
+    fn restore(&self, mode: OptimizeMode) -> bool {
+        info!("优化游戏: 恢复（{:?} 模式）", mode);
+        match mode {
+            OptimizeMode::Advanced => {
+                // 线程级 pin 先还原（线程级掩码不被进程级 restore_all 覆盖）
+                utils::thread_pin::restore();
+                if let Err(e) = utils::affinity::restore_all_affinity() {
+                    error!("优化游戏: 恢复失败: {}", e);
+                    return false;
+                }
+            }
+            OptimizeMode::Standard => {
+                // OTHER 隔离的撤销：恢复全表进程掩码
+                if let Err(e) = utils::affinity::restore_all_affinity() {
+                    error!("优化游戏: 恢复失败: {}", e);
+                    return false;
+                }
+            }
+            OptimizeMode::Minimal => {
+                // 未动任何状态 — HIGH 留存无害（3.4：降级需再 OpenProcess
+                // 游戏句柄（反作弊拦截路径），且 HIGH 随进程退出即消亡）
+                info!("优化游戏: 简易模式无需要恢复的状态");
+            }
+        }
+        if mode != OptimizeMode::Minimal {
+            info!("优化游戏: 已恢复");
+            utils::beep::beep_async(375, 300);
+        }
         true
     }
-}
 
-impl 优化游戏 {
     /// 执行优化流程。任何一步失败返回 false（execute 不翻转奇偶，
     /// 下次按下重试同一动作）。
-    fn optimize(&self) -> bool {
+    fn optimize(&self, mode: OptimizeMode) -> bool {
         // ── 1. 窗口验证 / 重新查找 ────────────────────
         let mut hwnd = self.current_hwnd();
         if !is_valid_window(hwnd) {
@@ -162,14 +202,15 @@ impl 优化游戏 {
         let title = get_window_title(hwnd);
 
         info!(
-            "优化游戏: {} (PID: {}, HWND: {:?})",
+            "优化游戏: {} (PID: {}, HWND: {:?}) — {:?}",
             if title.is_empty() {
                 "(unknown)"
             } else {
                 &title
             },
             pid,
-            hwnd.0
+            hwnd.0,
+            mode
         );
 
         // ── 3. 打开进程 ───────────────────────────────
@@ -184,22 +225,32 @@ impl 优化游戏 {
             }
         };
 
-        // ── 4. CPU 核心隔离 ─────────────────────────────
-        if let Err(e) =
-            unsafe { SetProcessAffinityMask(h_process, utils::affinity::GAME_CORES_MASK) }
-        {
-            error!("优化游戏: 设置 CPU 亲和性失败: {}", e);
-        }
-        if let Err(e) = utils::affinity::isolate_game_cores(pid) {
-            error!("优化游戏: 隔离其他进程失败: {}", e);
+        // ── 4. 亲和性与隔离（按模式；advanced 才动游戏自身）──
+        match mode {
+            OptimizeMode::Advanced => {
+                if let Err(e) =
+                    unsafe { SetProcessAffinityMask(h_process, utils::affinity::GAME_CORES_MASK) }
+                {
+                    error!("优化游戏: 设置 CPU 亲和性失败: {}", e);
+                }
+                if let Err(e) = utils::affinity::isolate_game_cores(pid) {
+                    error!("优化游戏: 隔离其他进程失败: {}", e);
+                }
+            }
+            OptimizeMode::Standard => {
+                if let Err(e) = utils::affinity::isolate_game_cores(pid) {
+                    error!("优化游戏: 隔离其他进程失败: {}", e);
+                }
+            }
+            OptimizeMode::Minimal => {}
         }
 
-        // ── 5. 提升优先级 ───────────────────────────────
+        // ── 5. 提升优先级（三模式共有）──────────────────
         unsafe { SetPriorityClass(h_process, HIGH_PRIORITY_CLASS) }.ok();
         unsafe { windows::Win32::Foundation::CloseHandle(h_process) }.ok();
         info!("优化游戏: 进程优先级已提升为高");
 
-        // ── 6. 切换到前台 ─────────────────────────────
+        // ── 6. 切换到前台（三模式共有）─────────────────
         // 最多重试 40 次 (× 50ms = 2s)，防止前台锁定导致死循环
         let foreground = unsafe { GetForegroundWindow() };
         if foreground != hwnd {
@@ -217,13 +268,70 @@ impl 优化游戏 {
             }
         }
         info!("优化游戏: 完成");
-        // ── 7. 热线程 pinning（收尾 — 前台已切换，采样窗口测得真实负载）──
-        // 按进程名查策略（无策略跳过）；信息新鲜时沿用现有映射（2026-08-22）。
-        utils::thread_pin::apply_for_pid(pid);
+        // ── 7. 热线程 pinning（仅 advanced — 前台已切换，采样窗口测得真实负载）──
+        if mode == OptimizeMode::Advanced {
+            utils::thread_pin::apply_for_pid(pid);
+        }
         // 成功后刷新捕获基准 — 后续换游戏检测以此为对照
         self.store_info(hwnd);
         utils::beep::beep_async(750, 300);
         true
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 三个公开功能 struct — 工厂按名分派，共享 Core
+// ═══════════════════════════════════════════════════════════════════
+
+/// 优化游戏（Advanced）— 全量档：游戏亲和性 + OTHER 隔离 + 优先级
+/// + 前台 + 热线程 pinning。Once 模式，按下 NumpadAdd 执行一次。
+pub struct 优化游戏 {
+    core: Core,
+}
+
+impl 优化游戏 {
+    pub fn new() -> Self {
+        Self { core: Core::new() }
+    }
+}
+
+impl KeyFunction for 优化游戏 {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
+        self.core.execute(OptimizeMode::Advanced, stop_requested);
+    }
+}
+
+/// 优化游戏标准（Standard）— 仅加 OTHER 进程隔离，不动游戏自身、不 pin。
+pub struct 优化游戏标准 {
+    core: Core,
+}
+
+impl 优化游戏标准 {
+    pub fn new() -> Self {
+        Self { core: Core::new() }
+    }
+}
+
+impl KeyFunction for 优化游戏标准 {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
+        self.core.execute(OptimizeMode::Standard, stop_requested);
+    }
+}
+
+/// 优化游戏简易（Minimal）— 仅提升优先级 + 前台，不碰任何亲和性。
+pub struct 优化游戏简易 {
+    core: Core,
+}
+
+impl 优化游戏简易 {
+    pub fn new() -> Self {
+        Self { core: Core::new() }
+    }
+}
+
+impl KeyFunction for 优化游戏简易 {
+    fn execute(&self, stop_requested: Arc<AtomicBool>) {
+        self.core.execute(OptimizeMode::Minimal, stop_requested);
     }
 }
 
@@ -284,15 +392,15 @@ fn find_window_by_pid(pid: u32) -> HWND {
         any: HWND,
     }
 
-    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
         let ctx = unsafe { &mut *(lparam.0 as *mut Ctx) };
         let mut wpid = 0u32;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&mut wpid)) };
         if wpid != ctx.pid {
-            return BOOL::from(true); // 继续枚举
+            return windows::core::BOOL::from(true); // 继续枚举
         }
         if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
-            return BOOL::from(true);
+            return windows::core::BOOL::from(true);
         }
         let has_title = unsafe { GetWindowTextLengthW(hwnd) } > 0;
         if has_title && ctx.titled.is_invalid() {
@@ -301,7 +409,7 @@ fn find_window_by_pid(pid: u32) -> HWND {
         if ctx.any.is_invalid() {
             ctx.any = hwnd;
         }
-        BOOL::from(true)
+        windows::core::BOOL::from(true)
     }
 
     let mut ctx = Ctx {

@@ -458,6 +458,8 @@ pub fn list_function_names() -> Vec<&'static str> {
         "双玛头",
         "坐标颜色",
         "优化游戏",
+        "优化游戏标准",
+        "优化游戏简易",
         "线程采样",
     ]
 }
@@ -501,6 +503,12 @@ pub fn create_function(
         )),
         "坐标颜色" => Ok(Arc::new(crate::functions::mouse_color::坐标颜色::new())),
         "优化游戏" => Ok(Arc::new(crate::functions::optimize_game::优化游戏::new())),
+        "优化游戏标准" => Ok(Arc::new(
+            crate::functions::optimize_game::优化游戏标准::new(),
+        )),
+        "优化游戏简易" => Ok(Arc::new(
+            crate::functions::optimize_game::优化游戏简易::new(),
+        )),
         "线程采样" => Ok(Arc::new(crate::functions::thread_sampler::线程采样::new())),
         _ => Err(format!("unknown function: '{}'", name)),
     }
