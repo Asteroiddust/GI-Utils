@@ -1,15 +1,27 @@
-//! 线程采样 — YuanShen.exe 专属的线程画像采集（Once）。
+//! 线程采样 — 游戏进程画像采集（Once）。
 //!
 //! Process Explorer Threads 页的自动化版：两次采样差分得到 CPU%/Cycles
 //! Delta，全列输出到 exe 旁 `thread_sample.txt`（追加），日志面板给
 //! 摘要（线程数 / 句柄打开率 = pinning 可行性信号 / Top 5）。
 //! 为"热线程 pin 到金银核"功能做决策数据（2026-08-22）。
+//! 目标进程按 GAME_PROCESS_NAMES 名单扫描（新游戏在此追加）。
 
 use crate::engine::bindings::KeyFunction;
 use crate::utils;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tracing::{error, info, warn};
+
+/// 已知游戏进程映像名 — 采样目标名单（按序扫描取第一个命中的）。
+/// 与 optimize_game 窗口类支持面保持一致：Unity 系 + Unreal 系。
+const GAME_PROCESS_NAMES: &[&str] = &[
+    "YuanShen.exe",              // 原神（国服）
+    "GenshinImpact.exe",         // 原神（国际服）
+    "StarRail.exe",              // 崩铁
+    "ZenlessZoneZero.exe",       // 绝区零
+    "Client-Win64-Shipping.exe", // 鸣潮
+    "b1.exe",                    // 黑神话：悟空
+];
 
 /// 两次采样之间的间隔（毫秒）— 差分窗口。
 const SAMPLE_INTERVAL_MS: u64 = 1000;
@@ -55,11 +67,14 @@ struct Row {
 
 impl KeyFunction for 线程采样 {
     fn execute(&self, _stop_requested: Arc<AtomicBool>) {
-        // 1. 按映像名找 pid（affinity::ProcessIterator — TH32CS_SNAPPROCESS）
-        let pid = match find_yuanshen_pid() {
-            Some(pid) => pid,
+        // 1. 按名单扫描游戏进程（第一个命中的）
+        let (pid, process_name) = match find_game_process() {
+            Some(found) => found,
             None => {
-                warn!("线程采样: 未找到 YuanShen.exe 进程");
+                warn!(
+                    "线程采样: 名单内游戏进程均未运行（{:?}）",
+                    GAME_PROCESS_NAMES
+                );
                 return;
             }
         };
@@ -136,7 +151,7 @@ impl KeyFunction for 线程采样 {
         // 6. 摘要 → 日志面板（句柄打开率 = 线程级 pinning 可行性信号）
         let total = s2.entries.len();
         info!(
-            "线程采样: YuanShen.exe (PID {pid}) — {total} 线程，句柄打开 {}/{} {}，NT 快照{}",
+            "线程采样: {process_name} (PID {pid}) — {total} 线程，句柄打开 {}/{} {}，NT 快照{}",
             s2.handles_opened,
             total,
             if s2.handles_opened == total {
@@ -170,7 +185,7 @@ impl KeyFunction for 线程采样 {
         }
 
         // 7. 全表 → exe 旁 thread_sample.txt（追加）
-        let path = write_table(&rows, pid, s2.nt_available);
+        let path = write_table(&rows, pid, process_name, s2.nt_available);
         match path {
             Ok(p) => info!("线程采样: 完整表已追加至 {}", p.display()),
             Err(e) => error!("线程采样: 写文件失败: {e}"),
@@ -178,9 +193,14 @@ impl KeyFunction for 线程采样 {
     }
 }
 
-/// 按映像名查找 YuanShen.exe 的 pid。
-fn find_yuanshen_pid() -> Option<u32> {
-    utils::affinity::find_pid_by_name("YuanShen.exe")
+/// 按名单扫描游戏进程：返回 (pid, 进程名)。
+fn find_game_process() -> Option<(u32, &'static str)> {
+    for name in GAME_PROCESS_NAMES {
+        if let Some(pid) = utils::affinity::find_pid_by_name(name) {
+            return Some((pid, name));
+        }
+    }
+    None
 }
 
 /// FILETIME（100ns since 1601）→ 本地时刻 "HH:MM:SS.mmm"。
@@ -208,7 +228,12 @@ fn format_cpu_time(user_ms: i64, kernel_ms: i64) -> String {
 }
 
 /// 全列表写文件，返回路径。
-fn write_table(rows: &[Row], pid: u32, nt_available: bool) -> std::io::Result<std::path::PathBuf> {
+fn write_table(
+    rows: &[Row],
+    pid: u32,
+    process_name: &str,
+    nt_available: bool,
+) -> std::io::Result<std::path::PathBuf> {
     let path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -221,7 +246,7 @@ fn write_table(rows: &[Row], pid: u32, nt_available: bool) -> std::io::Result<st
     let now = filetime_now_local();
     let _ = writeln!(
         out,
-        "\n══ YuanShen.exe (PID {pid}) {now}  采样窗口 {SAMPLE_INTERVAL_MS}ms  NT快照{}  线程 {} ══",
+        "\n══ {process_name} (PID {pid}) {now}  采样窗口 {SAMPLE_INTERVAL_MS}ms  NT快照{}  线程 {} ══",
         if nt_available { "可用" } else { "不可用" },
         rows.len(),
     );
