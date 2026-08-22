@@ -11,7 +11,7 @@
 
 use crate::key::Key;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -31,6 +31,142 @@ pub trait KeyFunction: Send + Sync {
     /// Run until `stop_requested` becomes true (set by the manager on
     /// key-up / toggle-off).
     fn execute(&self, stop_requested: Arc<AtomicBool>);
+
+    /// 动态参数声明（数量/类型实现期固定；空 = 无参数功能，
+    /// 既有功能零改动继承默认实现）。
+    fn parameters(&self) -> &[ParamSpec] {
+        &[]
+    }
+
+    /// 参数值存储（GUI live 直写用；`None` = 无参数）。
+    /// 功能线程每周期经 `ParamValues` 读快照 — GUI 改动下周期生效，
+    /// 不停线程、不触发注册表替换。
+    fn param_store(&self) -> Option<Arc<ParamValues>> {
+        None
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 动态参数 — ParamSpec / ParamValues（2026-08-22 路线图落地）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 参数类型（固定三档 — TOML 原生类型对齐，GUI 类型化控件）。
+#[derive(Clone)]
+pub enum ParamKind {
+    /// f64（毫秒/比率类）— default/min/max/step。
+    Float {
+        default: f64,
+        min: f64,
+        max: f64,
+        step: f64,
+    },
+    /// 整数（次数/档位类）。
+    Int { default: i64, min: i64, max: i64 },
+    /// 布尔开关。
+    Bool { default: bool },
+}
+
+/// 单个参数的声明（名字 + 类型/范围/默认值）。
+#[derive(Clone)]
+pub struct ParamSpec {
+    pub name: &'static str,
+    pub kind: ParamKind,
+}
+
+impl ParamSpec {
+    pub const fn float(name: &'static str, default: f64, min: f64, max: f64, step: f64) -> Self {
+        Self {
+            name,
+            kind: ParamKind::Float {
+                default,
+                min,
+                max,
+                step,
+            },
+        }
+    }
+    pub const fn int(name: &'static str, default: i64, min: i64, max: i64) -> Self {
+        Self {
+            name,
+            kind: ParamKind::Int { default, min, max },
+        }
+    }
+    pub const fn boolean(name: &'static str, default: bool) -> Self {
+        Self {
+            name,
+            kind: ParamKind::Bool { default },
+        }
+    }
+}
+
+/// 进程级共享参数值槽 — 与 `parameters()` 顺序对齐，全部原子读写
+/// （REALTIME 功能线程每周期读快照零锁；GUI 直写即刻生效）。
+pub struct ParamValues {
+    slots: Vec<Slot>,
+}
+
+enum Slot {
+    /// f64 以位模式存 AtomicU64。
+    Float(AtomicU64),
+    Int(AtomicI64),
+    Bool(AtomicBool),
+}
+
+impl ParamValues {
+    /// 按 specs 建槽并填默认值。
+    pub fn new(specs: &[ParamSpec]) -> Self {
+        let slots = specs
+            .iter()
+            .map(|s| match &s.kind {
+                ParamKind::Float { default, .. } => Slot::Float(AtomicU64::new(default.to_bits())),
+                ParamKind::Int { default, .. } => Slot::Int(AtomicI64::new(*default)),
+                ParamKind::Bool { default } => Slot::Bool(AtomicBool::new(*default)),
+            })
+            .collect();
+        Self { slots }
+    }
+
+    pub fn get_f64(&self, idx: usize) -> f64 {
+        match &self.slots[idx] {
+            Slot::Float(a) => f64::from_bits(a.load(Ordering::Acquire)),
+            _ => panic!("param slot {idx} is not Float"),
+        }
+    }
+
+    pub fn set_f64(&self, idx: usize, v: f64) {
+        match &self.slots[idx] {
+            Slot::Float(a) => a.store(v.to_bits(), Ordering::Release),
+            _ => panic!("param slot {idx} is not Float"),
+        }
+    }
+
+    pub fn get_i64(&self, idx: usize) -> i64 {
+        match &self.slots[idx] {
+            Slot::Int(a) => a.load(Ordering::Acquire),
+            _ => panic!("param slot {idx} is not Int"),
+        }
+    }
+
+    pub fn set_i64(&self, idx: usize, v: i64) {
+        match &self.slots[idx] {
+            Slot::Int(a) => a.store(v, Ordering::Release),
+            _ => panic!("param slot {idx} is not Int"),
+        }
+    }
+
+    pub fn get_bool(&self, idx: usize) -> bool {
+        match &self.slots[idx] {
+            Slot::Bool(a) => a.load(Ordering::Acquire),
+            _ => panic!("param slot {idx} is not Bool"),
+        }
+    }
+
+    pub fn set_bool(&self, idx: usize, v: bool) {
+        match &self.slots[idx] {
+            Slot::Bool(a) => a.store(v, Ordering::Release),
+            _ => panic!("param slot {idx} is not Bool"),
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -267,6 +403,17 @@ impl KeyBindings {
     }
 
     /// 停止所有运行中的绑定并清空注册表。
+    /// 取已注册功能的参数面（specs + live store）— GUI 参数面板渲染与
+    /// 直写入口。键未注册或功能无参数返回 `None`。
+    /// GUI 每帧调用：读走 specs 克隆与 store 的 Arc，锁立即释放，
+    /// 后续读写全部经原子槽无锁进行。
+    pub fn params_of(&self, key: &Key) -> Option<(Vec<ParamSpec>, Arc<ParamValues>)> {
+        let bindings = self.bindings.lock().unwrap();
+        let entry = bindings.get(key)?;
+        let store = entry.func.param_store()?;
+        Some((entry.func.parameters().to_vec(), store))
+    }
+
     /// Stop all running bindings and clear the registry.
     /// 用于 GUI live-apply 时全量替换绑定列表。
     ///
@@ -445,6 +592,38 @@ impl Drop for KeyBindings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn param_values_roundtrip_and_defaults() {
+        let specs = [
+            ParamSpec::float("interval_ms", 10.0, 1.0, 1000.0, 0.5),
+            ParamSpec::int("count", 3, 1, 9),
+            ParamSpec::boolean("enabled", true),
+        ];
+        let pv = ParamValues::new(&specs);
+        // 默认值填充
+        assert_eq!(pv.get_f64(0), 10.0);
+        assert_eq!(pv.get_i64(1), 3);
+        assert!(pv.get_bool(2));
+        // 原子读写往返（f64 位模式）
+        pv.set_f64(0, 42.5);
+        pv.set_i64(1, 7);
+        pv.set_bool(2, false);
+        assert_eq!(pv.get_f64(0), 42.5);
+        assert_eq!(pv.get_i64(1), 7);
+        assert!(!pv.get_bool(2));
+    }
+
+    #[test]
+    fn key_function_param_defaults_empty() {
+        // 无参数功能零改动继承默认实现
+        struct NoParam;
+        impl KeyFunction for NoParam {
+            fn execute(&self, _: std::sync::Arc<AtomicBool>) {}
+        }
+        assert!(NoParam.parameters().is_empty());
+        assert!(NoParam.param_store().is_none());
+    }
     use crate::key::Key;
     use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};

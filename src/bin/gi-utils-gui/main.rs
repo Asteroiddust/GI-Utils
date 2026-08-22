@@ -10,7 +10,7 @@ use eframe::egui;
 use gi_utils::config::{self, Binding};
 use gi_utils::engine::Engine;
 use gi_utils::engine::TriggerMode;
-use gi_utils::engine::bindings::KeyFunction;
+use gi_utils::engine::bindings::{KeyFunction, ParamKind, ParamSpec, ParamValues};
 use gi_utils::interception::SendContext;
 use gi_utils::key::Key;
 use gi_utils::utils;
@@ -42,6 +42,9 @@ struct GuiBinding {
     key_name: String,
     func: String,
     mode: TriggerMode,
+    /// 动态参数镜像（GUI 编辑时与 live store 双写；Save/re-register 的
+    /// 持久化与重建来源 — store 是运行时真值，此为配置侧快照）。
+    params: config::Params,
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -478,6 +481,94 @@ impl GuiApp {
             });
         }); // add_enabled_ui — 捕获期间禁用
 
+        // ── 动态参数面板（live 直写：修改即刻生效，下周期应用；Save 持久化）──
+        // 先不可变借用收集参数面（specs + store Arc，锁内即释），再可变借用
+        // 写行镜像 — 避免 bindings_list.iter_mut 与 key_bindings 借用冲突。
+        let mut param_faces: Vec<(usize, String, Vec<ParamSpec>, Arc<ParamValues>)> = Vec::new();
+        for g in &self.bindings_list {
+            if let Some(key) = g.key
+                && let Some((specs, store)) = self.key_bindings.params_of(&key)
+                && !specs.is_empty()
+            {
+                param_faces.push((g.id, g.key_name.clone(), specs, store));
+            }
+        }
+        if !param_faces.is_empty() {
+            egui::CollapsingHeader::new("⚙ 参数（修改即刻生效 · Save 持久化）")
+                .default_open(true)
+                .show(ui, |ui| {
+                    egui::Grid::new("param_grid")
+                        .striped(true)
+                        .min_col_width(90.0)
+                        .show(ui, |ui| {
+                            ui.strong("Binding");
+                            ui.strong("Parameter");
+                            ui.strong("Value");
+                            ui.end_row();
+                            for (id, key_name, specs, store) in &param_faces {
+                                let Some(binding) =
+                                    self.bindings_list.iter_mut().find(|g| g.id == *id)
+                                else {
+                                    continue;
+                                };
+                                for (si, spec) in specs.iter().enumerate() {
+                                    ui.label(if si == 0 {
+                                        key_name.clone()
+                                    } else {
+                                        String::new()
+                                    });
+                                    ui.label(spec.name);
+                                    match &spec.kind {
+                                        ParamKind::Float { min, max, step, .. } => {
+                                            let mut v = store.get_f64(si);
+                                            let resp = ui.add(
+                                                egui::DragValue::new(&mut v)
+                                                    .range(*min..=*max)
+                                                    .speed(*step)
+                                                    .fixed_decimals(1),
+                                            );
+                                            if resp.changed() {
+                                                store.set_f64(si, v); // live 直写
+                                                binding.params.insert(
+                                                    spec.name.into(),
+                                                    toml::Value::Float(v),
+                                                );
+                                                self.dirty = true;
+                                            }
+                                        }
+                                        ParamKind::Int { min, max, .. } => {
+                                            let mut v = store.get_i64(si);
+                                            let resp = ui.add(
+                                                egui::DragValue::new(&mut v).range(*min..=*max),
+                                            );
+                                            if resp.changed() {
+                                                store.set_i64(si, v);
+                                                binding.params.insert(
+                                                    spec.name.into(),
+                                                    toml::Value::Integer(v),
+                                                );
+                                                self.dirty = true;
+                                            }
+                                        }
+                                        ParamKind::Bool { .. } => {
+                                            let mut v = store.get_bool(si);
+                                            if ui.checkbox(&mut v, "").changed() {
+                                                store.set_bool(si, v);
+                                                binding.params.insert(
+                                                    spec.name.into(),
+                                                    toml::Value::Boolean(v),
+                                                );
+                                                self.dirty = true;
+                                            }
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                });
+        }
+
         // 延迟处理（避免在 grid 闭包中 borrow self）
         if let Some(idx) = remove_idx {
             // 删除捕获目标行时同步取消捕获，避免 id 悬空
@@ -525,6 +616,7 @@ impl GuiApp {
                     key_name: "...".into(),
                     func: default_func,
                     mode: TriggerMode::Loop,
+                    params: Default::default(),
                 });
                 // 新增行自动进入按键捕获
                 self.start_capture(id);
@@ -778,6 +870,11 @@ impl GuiApp {
                     }
                 }
             };
+            // 动态参数覆写（重注册时从镜像恢复 live 值；未知名/类型错报错）
+            if let Err(e) = config::apply_params(&func, &g.params) {
+                errors.push(format!("'{}' params: {}", g.func, e));
+                continue;
+            }
 
             self.key_bindings.register(key, g.mode, func);
         }
@@ -813,6 +910,7 @@ impl GuiApp {
                     key,
                     func: g.func.clone(),
                     mode: g.mode,
+                    params: g.params.clone(),
                 })
             })
             .collect();
@@ -933,6 +1031,10 @@ fn register_all_bindings(
                 }
             }
         };
+        // 动态参数覆写（配置侧初值 — 未知名/类型错仅记日志不阻断启动）
+        if let Err(e) = config::apply_params(&func, &b.params) {
+            log.push(format!("  WARN: '{}' params: {}", b.func, e));
+        }
         key_bindings.register(b.key, b.mode, func);
     }
     log
@@ -1274,6 +1376,7 @@ fn main() {
                 key_name: config::key_display_name(b.key),
                 func: b.func.clone(),
                 mode: b.mode,
+                params: b.params.clone(),
             })
             .collect();
         let next_id = gui_bindings.len();

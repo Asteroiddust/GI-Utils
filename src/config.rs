@@ -5,7 +5,7 @@
 //! If the file is missing, a default config is generated.
 
 use crate::engine::TriggerMode;
-use crate::engine::bindings::KeyFunction;
+use crate::engine::bindings::{KeyFunction, ParamKind};
 use crate::interception::SendContext;
 use crate::key::Key;
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,9 @@ struct RawBinding {
     key: String,
     func: String,
     mode: String,
+    /// 动态参数初值（按名应用；无参数功能忽略 — 未知名/类型不符报错）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    params: Option<std::collections::BTreeMap<String, toml::Value>>,
 }
 
 #[derive(Deserialize, Serialize, Default)]
@@ -50,12 +53,17 @@ pub struct GuiConfig {
     pub font_path: String,
 }
 
+/// 动态参数表（名字 → 值；BTreeMap 序列化稳定有序）。
+pub type Params = std::collections::BTreeMap<String, toml::Value>;
+
 /// 解析后的绑定项 — A parsed binding ready to register.
 #[derive(Clone)]
 pub struct Binding {
     pub key: Key,
     pub func: String,
     pub mode: TriggerMode,
+    /// 动态参数初值（空 = 全默认）。
+    pub params: Params,
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -338,6 +346,7 @@ pub fn load() -> Result<Vec<Binding>, String> {
             key,
             func: b.func.clone(),
             mode,
+            params: b.params.clone().unwrap_or_default(),
         });
     }
 
@@ -400,6 +409,11 @@ pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
                     .to_string(),
                 func: b.func.clone(),
                 mode: format!("{:?}", b.mode),
+                params: if b.params.is_empty() {
+                    None
+                } else {
+                    Some(b.params.clone())
+                },
             })
         })
         .collect::<Result<_, String>>()?;
@@ -434,6 +448,7 @@ pub fn key_display_name(key: Key) -> String {
 pub fn list_function_names() -> Vec<&'static str> {
     vec![
         "停止退出",
+        "连点器",
         "连点器v1",
         "连点器v2",
         "快速拾取",
@@ -460,6 +475,9 @@ pub fn create_function(
     send_ctx: Arc<SendContext>,
 ) -> Result<Arc<dyn KeyFunction>, String> {
     match name {
+        "连点器" => Ok(Arc::new(crate::functions::auto_clicker::连点器::new(
+            send_ctx,
+        ))),
         "连点器v1" => Ok(Arc::new(crate::functions::auto_clicker::连点器v1::new(
             send_ctx,
         ))),
@@ -485,5 +503,149 @@ pub fn create_function(
         "优化游戏" => Ok(Arc::new(crate::functions::optimize_game::优化游戏::new())),
         "线程采样" => Ok(Arc::new(crate::functions::thread_sampler::线程采样::new())),
         _ => Err(format!("unknown function: '{}'", name)),
+    }
+}
+
+/// 把配置参数按名应用到功能实例（注册前调用 — 工厂产出默认值后覆写）。
+/// 未知名 / 类型不匹配 → Err（配置错误显式暴露，不静默吞）。
+/// 整数槽接受 toml Integer（f64 若整值也接受 — TOML 区分但用户手写
+/// `interval = 10`（整数）配 float 槽属常见笔误，宽容转换）。
+pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), String> {
+    let Some(store) = func.param_store() else {
+        if params.is_empty() {
+            return Ok(());
+        }
+        return Err(format!(
+            "功能无参数，却配置了 params: {:?}",
+            params.keys().collect::<Vec<_>>()
+        ));
+    };
+    let specs = func.parameters();
+    for (name, value) in params {
+        let Some((idx, spec)) = specs
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.name == name.as_str())
+        else {
+            let avail: Vec<&str> = specs.iter().map(|s| s.name).collect();
+            return Err(format!("未知参数 '{name}'（可用: {avail:?}）"));
+        };
+        match (&spec.kind, value) {
+            (ParamKind::Float { min, max, .. }, toml::Value::Float(v)) => {
+                store.set_f64(idx, v.clamp(*min, *max));
+            }
+            (ParamKind::Float { min, max, .. }, toml::Value::Integer(v)) => {
+                // 整值宽容转换（手写 "10" 意图即 10.0）
+                store.set_f64(idx, (*v as f64).clamp(*min, *max));
+            }
+            (ParamKind::Int { min, max, .. }, toml::Value::Integer(v)) => {
+                store.set_i64(idx, (*v).clamp(*min, *max));
+            }
+            (ParamKind::Bool { .. }, toml::Value::Boolean(v)) => {
+                store.set_bool(idx, *v);
+            }
+            (kind, v) => {
+                return Err(format!(
+                    "参数 '{name}' 类型不匹配: 值 {v:?} 无法用于 {kind_name}",
+                    kind_name = match kind {
+                        ParamKind::Float { .. } => "Float",
+                        ParamKind::Int { .. } => "Int",
+                        ParamKind::Bool { .. } => "Bool",
+                    }
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// apply_params 单测 — 按名/类型匹配与错误语义
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod param_tests {
+    use super::*;
+    use crate::engine::bindings::{KeyFunction, ParamSpec, ParamValues};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    struct ParamFunc {
+        store: Arc<ParamValues>,
+    }
+    const SPEC: &[ParamSpec] = &[
+        ParamSpec::float("interval_ms", 10.0, 1.0, 100.0, 0.5),
+        ParamSpec::boolean("turbo", false),
+    ];
+    impl KeyFunction for ParamFunc {
+        fn execute(&self, _: Arc<AtomicBool>) {}
+        fn parameters(&self) -> &[ParamSpec] {
+            SPEC
+        }
+        fn param_store(&self) -> Option<Arc<ParamValues>> {
+            Some(self.store.clone())
+        }
+    }
+    struct NoParamFunc;
+    impl KeyFunction for NoParamFunc {
+        fn execute(&self, _: Arc<AtomicBool>) {}
+    }
+
+    fn mk(params: &[(&str, toml::Value)]) -> (Arc<ParamFunc>, Params) {
+        let mut map = Params::new();
+        for (k, v) in params {
+            map.insert((*k).into(), v.clone());
+        }
+        (
+            Arc::new(ParamFunc {
+                store: Arc::new(ParamValues::new(SPEC)),
+            }),
+            map,
+        )
+    }
+
+    #[test]
+    fn apply_by_name_and_typed_write() {
+        let (f, params) = mk(&[
+            ("interval_ms", toml::Value::Float(25.0)),
+            ("turbo", toml::Value::Boolean(true)),
+        ]);
+        apply_params(&(f.clone() as Arc<dyn KeyFunction>), &params).unwrap();
+        assert_eq!(f.store.get_f64(0), 25.0);
+        assert!(f.store.get_bool(1));
+    }
+
+    #[test]
+    fn integer_tolerance_for_float_slot() {
+        // 手写 interval_ms = 10（整值）配 float 槽 → 宽容转换
+        let (f, params) = mk(&[("interval_ms", toml::Value::Integer(10))]);
+        apply_params(&(f.clone() as Arc<dyn KeyFunction>), &params).unwrap();
+        assert_eq!(f.store.get_f64(0), 10.0);
+    }
+
+    #[test]
+    fn unknown_name_rejected() {
+        let (f, params) = mk(&[("nope", toml::Value::Float(1.0))]);
+        assert!(apply_params(&(f as Arc<dyn KeyFunction>), &params).is_err());
+    }
+
+    #[test]
+    fn wrong_type_rejected_and_clamped() {
+        // 类型不符
+        let (f, params) = mk(&[("interval_ms", toml::Value::String("x".into()))]);
+        assert!(apply_params(&(f as Arc<dyn KeyFunction>), &params).is_err());
+        // 超范围 clamp
+        let (f, params) = mk(&[("interval_ms", toml::Value::Float(999.0))]);
+        apply_params(&(f.clone() as Arc<dyn KeyFunction>), &params).unwrap();
+        assert_eq!(f.store.get_f64(0), 100.0); // max
+    }
+
+    #[test]
+    fn no_param_function_rejects_params_and_accepts_empty() {
+        let f: Arc<dyn KeyFunction> = Arc::new(NoParamFunc);
+        assert!(apply_params(&f, &Params::new()).is_ok());
+        let mut p = Params::new();
+        p.insert("x".into(), toml::Value::Boolean(true));
+        assert!(apply_params(&f, &p).is_err());
     }
 }
