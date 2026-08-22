@@ -21,6 +21,7 @@ use windows::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::THREAD_PRIORITY_IDLE;
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICON_VERSION_4,
     NOTIFYICONDATAW, Shell_NotifyIconW,
@@ -208,10 +209,16 @@ pub fn run_tray_thread(
     use std::mem;
     use windows::core::w;
 
-    // GUI 侧线程：pin 12,13（普通优先级）— 与渲染线程同核但非时序关键；
-    // 避免落上 14,15 与 REALTIME 输入线程争抢（CLAUDE.md 核心分离纪律）。
+    // GUI 侧线程：pin 12,13 — 与渲染线程同核但非时序关键；避免落上 14,15
+    // 与 REALTIME 输入线程争抢（CLAUDE.md 核心分离纪律）。
     let _ =
         gi_utils::utils::affinity::pin_current_thread(gi_utils::utils::affinity::GUI_CORES_MASK);
+    // 消息泵降档至 class 地板：IDLE 在 REALTIME class = 16（非字面 1 —
+    // 映射陷阱见 set_current_thread_priority 文档）。阶梯 24（输入）>
+    // 22（GUI 渲染）> 16（托盘）— 修正此前托盘与功能线程同级、还高于
+    // 渲染线程的旧不对称（2026-08-22 审查）。失败不致命 — 退化为与
+    // 渲染线程同级轮转（消息泵阻塞态为主，实际无争用）。
+    let _ = gi_utils::utils::affinity::set_current_thread_priority(THREAD_PRIORITY_IDLE);
 
     unsafe {
         // ── ① 图标解析 ──────────────────────────────────────────

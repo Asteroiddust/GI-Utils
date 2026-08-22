@@ -17,13 +17,15 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Threading::{
     GetCurrentThread, OpenProcess, PROCESS_CREATION_FLAGS, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS, SetPriorityClass, SetProcessAffinityMask,
-    SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_LOWEST,
+    SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY, THREAD_PRIORITY_LOWEST,
 };
 
 // ── Core masks ────────────────────────────────────────────────
-// 8C16T layout:  物理核 0    1-5      6        7
-//                线程  [0,1] [2-11]  [12,13]  [14,15]
-//                用途  系统  游戏   GUI渲染  输入处理
+// 8C16T layout:  物理核 0     1-5       6         7
+//                线程  [0,1]  [2-11]   [12,13]   [14,15]
+//                用途  零后台 游戏     GUI渲染   输入处理
+// （金银核 = 物理 0/4 — CPPC/PBO 实测 VID 最低；后台进程 → 物理 2,3 + 6,7，
+//   见 OTHER_CORES_MASK）
 
 /// ALL MASK
 pub const ALL_CORES_MASK: usize = 0b1111_1111_1111_1111;
@@ -43,8 +45,12 @@ pub const GUI_CORES_MASK: usize = 0b0011_0000_0000_0000;
 /// 再在各线程内收窄到各自子集。
 pub const PROCESS_CORES_MASK: usize = GUI_CORES_MASK | ENGINE_CORES_MASK;
 
-/// 其他进程
-pub const OTHER_CORES_MASK: usize = ALL_CORES_MASK;
+/// 其他进程 → 物理核 2,3,6,7（逻辑 4-7 + 12-15，0xF0F0）。
+/// 金银核 Core 0/4（CPPC + PBO 实测 VID 最低）与相邻 1/5 保持零后台驻留；
+/// 物理 6,7 是本工具 REALTIME 专区，后台进程驻留无法干扰输入时序
+/// （优先级 24 压制普通进程动态带上限 15）。2026-08-22 由全核掩码
+/// （3.2 旧决策）改为试行隔离。
+pub const OTHER_CORES_MASK: usize = 0b1111_0000_1111_0000;
 
 // ── Error type ────────────────────────────────────────────────
 
@@ -278,6 +284,19 @@ pub fn pin_current_thread(mask: usize) -> Result<(), Error> {
     }
 }
 
+/// 设置当前线程优先级档位（相对进程 class 基线）— Set the current
+/// thread's relative priority tier.
+///
+/// ⚠️ 命名陷阱：`THREAD_PRIORITY_IDLE` 在 REALTIME class 下映射 **16**
+/// （real-time 带地板）而非字面 1 — 仅非 real-time class 映射 1
+/// （MSDN SetThreadPriority）。本进程为 REALTIME class（基线 24），
+/// 线程优先级全序阶梯：输入线程 24 > GUI 渲染 22（LOWEST）> 托盘
+/// 16（IDLE）— 普通进程动态带上限 15，阶梯全体仍高于系统普通线程。
+pub fn set_current_thread_priority(priority: THREAD_PRIORITY) -> Result<(), Error> {
+    unsafe { SetThreadPriority(GetCurrentThread(), priority) }
+        .map_err(|e| Error::SetThreadPriority { source: e })
+}
+
 /// GUI 版线程配置 — GUI variant: widen the process mask to 12-15 and pin
 /// the calling thread (eframe main/UI thread) to the GUI render cores at
 /// reduced thread priority.
@@ -300,8 +319,7 @@ pub fn configure_gui_self() -> Result<(), Error> {
     // 3. GUI 线程降为线程级最低优先级（REALTIME base 24 - 2 = 22）：
     //    渲染线程不应抢占输入线程（24）的调度 — 渲染降级不牺牲注入时序。
     //    22 仍高于所有普通进程（HIGH 为 13），不影响响应性。
-    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) }
-        .map_err(|e| Error::SetThreadPriority { source: e })
+    set_current_thread_priority(THREAD_PRIORITY_LOWEST)
 }
 
 /// 配置当前进程 — Set this process's own CPU affinity and priority to real-time.

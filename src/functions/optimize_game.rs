@@ -6,7 +6,7 @@ use crate::engine::bindings::KeyFunction;
 use crate::utils;
 use crate::utils::delay;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use tracing::{error, info};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::{
@@ -23,7 +23,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// 查找游戏窗口 → 获取 PID → CPU 核心隔离 → 提升优先级 → 切换前台。
 /// 支持原神/崩铁/绝区零/终末地 (UnityWndClass) 以及鸣潮/黑猴 (UnrealWindow)。
 pub struct 优化游戏 {
-    hwnd: HWND,
+    /// 上次捕获的游戏窗口（原子存 HWND 原始值 — 实例跨线程共享，
+    /// 换游戏后可刷新）。
+    hwnd: AtomicIsize,
+    /// 上次捕获的游戏 pid — HWND 复用双重校验：换游戏后旧句柄可能被
+    /// 无关窗口复用，仅 IsWindow 不充分。
+    pid: AtomicU32,
 }
 
 /// 奇偶切换状态 — 模块级 static（进程级共享）。
@@ -31,24 +36,43 @@ pub struct 优化游戏 {
 /// 已隔离的游戏会被二次隔离而非恢复（review 发现）。
 static OPTIMIZE_TOGGLE: AtomicBool = AtomicBool::new(false);
 
-// 窗口句柄在进程生命周期内有效，跨线程共享是安全的。
-unsafe impl Send for 优化游戏 {}
-unsafe impl Sync for 优化游戏 {}
+// hwnd/pid 为原子字段（HWND 以 isize 原始值存储）— Send/Sync 自动派生。
 
 impl 优化游戏 {
     /// 创建 `优化游戏` 实例。
     ///
-    /// 依次尝试查找 UnityWndClass → UnrealWindow 窗口。
-    /// 找不到时不 panic，`execute` 中会重新查找。
+    /// 捕获当前游戏窗口与 pid（换游戏检测的基准）。找不到时不 panic，
+    /// `execute` 中会重新查找。
     pub fn new() -> Self {
+        let hwnd = find_game_window();
+        let mut pid = 0u32;
+        if is_valid_window(hwnd) {
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        }
         Self {
-            hwnd: find_game_window(),
+            hwnd: AtomicIsize::new(hwnd.0 as isize),
+            pid: AtomicU32::new(pid),
         }
     }
 }
 
 impl KeyFunction for 优化游戏 {
     fn execute(&self, _stop_requested: Arc<AtomicBool>) {
+        // 换游戏检测（2026-08-22）：持有的 hwnd/pid 过时（游戏退出/句柄被
+        // 复用）→ 不论奇偶，重新捕获并走**优化**方向 — 新游戏没有被优化过，
+        // "恢复"对它无语义；toggle 置 true（原本 true 则不变）。找不到
+        // 新游戏则按奇偶原逻辑（恢复=清场释放隔离，优化=失败重试）。
+        if !self.info_valid() {
+            let hwnd = find_game_window();
+            if is_valid_window(hwnd) {
+                self.store_info(hwnd);
+                if self.optimize() {
+                    OPTIMIZE_TOGGLE.store(true, Ordering::Release);
+                }
+                return;
+            }
+        }
+
         // 切换奇偶：odd → 优化，even → 恢复（进程级共享状态）。
         // 仅在分支成功后翻转 — 先翻后执行时失败路径会永久卡在错误的
         // 奇偶相（如找不到窗口，下次按下误走恢复 — review 4.8）。
@@ -61,6 +85,36 @@ impl KeyFunction for 优化游戏 {
         if succeeded {
             OPTIMIZE_TOGGLE.fetch_xor(true, Ordering::AcqRel);
         }
+    }
+}
+
+// ── 换游戏检测辅助 ────────────────────────────────────────────
+
+impl 优化游戏 {
+    /// 当前持有的窗口句柄（0 = 从未捕获或无效）。
+    fn current_hwnd(&self) -> HWND {
+        HWND(self.hwnd.load(Ordering::Acquire) as *mut std::ffi::c_void)
+    }
+
+    /// 持有信息是否仍有效：窗口存活 **且** pid 未变。
+    /// pid 双重校验防御 HWND 复用 — 换游戏后旧句柄可能被无关窗口占用，
+    /// 此时 IsWindow 仍为真但归属进程已不同。
+    fn info_valid(&self) -> bool {
+        let hwnd = self.current_hwnd();
+        if !is_valid_window(hwnd) {
+            return false;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        pid != 0 && pid == self.pid.load(Ordering::Acquire)
+    }
+
+    /// 刷新持有的窗口/pid（优化成功后与新游戏捕获时调用）。
+    fn store_info(&self, hwnd: HWND) {
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        self.hwnd.store(hwnd.0 as isize, Ordering::Release);
+        self.pid.store(pid, Ordering::Release);
     }
 }
 
@@ -83,7 +137,7 @@ impl 优化游戏 {
     /// 下次按下重试同一动作）。
     fn optimize(&self) -> bool {
         // ── 1. 窗口验证 / 重新查找 ────────────────────
-        let mut hwnd = self.hwnd;
+        let mut hwnd = self.current_hwnd();
         if !is_valid_window(hwnd) {
             hwnd = find_game_window();
         }
@@ -160,6 +214,8 @@ impl 优化游戏 {
             }
         }
         info!("优化游戏: 完成");
+        // 成功后刷新捕获基准 — 后续换游戏检测以此为对照
+        self.store_info(hwnd);
         utils::beep::beep_async(750, 300);
         true
     }
