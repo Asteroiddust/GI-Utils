@@ -4,25 +4,14 @@
 //! Delta，全列输出到 exe 旁 `thread_sample.txt`（追加），日志面板给
 //! 摘要（线程数 / 句柄打开率 = pinning 可行性信号 / Top 5）。
 //! 为"热线程 pin 到金银核"功能做决策数据（2026-08-22）。
-//! 目标进程按 GAME_PROCESS_NAMES 名单扫描（新游戏在此追加）。
+//! 目标进程按共享名单扫描（functions::GAME_PROCESS_NAMES）。
 
 use crate::engine::bindings::KeyFunction;
+use crate::functions::GAME_PROCESS_NAMES;
 use crate::utils;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tracing::{error, info, warn};
-
-/// 已知游戏进程映像名 — 采样目标名单（按序扫描取第一个命中的）。
-/// 与 optimize_game 窗口类支持面一致（Unity 系 + Unreal 系）+ 终末地。
-const GAME_PROCESS_NAMES: &[&str] = &[
-    "YuanShen.exe",              // 原神（国服）
-    "GenshinImpact.exe",         // 原神（国际服）
-    "StarRail.exe",              // 崩铁
-    "ZenlessZoneZero.exe",       // 绝区零
-    "Client-Win64-Shipping.exe", // 鸣潮
-    "b1.exe",                    // 黑神话：悟空
-    "Endfield.exe",              // 明日方舟：终末地
-];
 
 /// 两次采样之间的间隔（毫秒）— 差分窗口。
 const SAMPLE_INTERVAL_MS: u64 = 1000;
@@ -196,12 +185,7 @@ impl KeyFunction for 线程采样 {
 
 /// 按名单扫描游戏进程：返回 (pid, 进程名)。
 fn find_game_process() -> Option<(u32, &'static str)> {
-    for name in GAME_PROCESS_NAMES {
-        if let Some(pid) = utils::affinity::find_pid_by_name(name) {
-            return Some((pid, name));
-        }
-    }
-    None
+    utils::affinity::find_pid_by_names(GAME_PROCESS_NAMES)
 }
 
 /// FILETIME（100ns since 1601）→ 本地时刻 "HH:MM:SS.mmm"。

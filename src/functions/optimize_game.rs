@@ -8,15 +8,16 @@ use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use tracing::{error, info};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::System::Threading::{
     HIGH_PRIORITY_CLASS, OpenProcess, PROCESS_SET_INFORMATION, SetPriorityClass,
     SetProcessAffinityMask,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
-    SwitchToThisWindow,
+    EnumWindows, FindWindowW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible, SwitchToThisWindow,
 };
+use windows::core::BOOL;
 
 /// 优化游戏功能 — Once 模式。
 ///
@@ -228,10 +229,25 @@ impl 优化游戏 {
 
 // ── Helpers ────────────────────────────────────────────
 
-/// 按类名依次查找游戏窗口。
+/// 找游戏窗口 — 三级序（2026-08-22 定）：
+/// 1. **已登记名单优先**：进程名 → pid → 该进程的可见主窗口
+///    （覆盖窗口类不明的游戏，如 Endfield）；
+/// 2. 窗口类兜底：UnityWndClass / UnrealWindow（未登记游戏）；
+/// 3. 均未命中 → NULL（调用方报错）。
 fn find_game_window() -> HWND {
+    // 1. 名单序（同开多游戏时按名单顺序取胜）
+    if let Some((pid, name)) =
+        utils::affinity::find_pid_by_names(crate::functions::GAME_PROCESS_NAMES)
+    {
+        let hwnd = find_window_by_pid(pid);
+        if is_valid_window(hwnd) {
+            info!("优化游戏: 名单命中 {name} (PID {pid})");
+            return hwnd;
+        }
+    }
+    // 2. 窗口类兜底（未登记的 Unity / Unreal 游戏）
     unsafe {
-        // 原神、崩铁、绝区零、终末地 (Unity)
+        // 原神、崩铁、绝区零 (Unity)
         if let Ok(hwnd) = FindWindowW(windows::core::w!("UnityWndClass"), None) {
             if !hwnd.is_invalid() {
                 return hwnd;
@@ -250,6 +266,49 @@ fn find_game_window() -> HWND {
 /// 检查窗口句柄是否有效。
 fn is_valid_window(hwnd: HWND) -> bool {
     !hwnd.is_invalid() && unsafe { IsWindow(Some(hwnd)) }.as_bool()
+}
+
+/// 枚举顶层窗口，找 pid 的可见主窗口（有标题者优先 — 启动器/覆盖层等
+/// 无标题或辅助窗口退居其次）。未找到返回 NULL。
+fn find_window_by_pid(pid: u32) -> HWND {
+    struct Ctx {
+        pid: u32,
+        titled: HWND,
+        any: HWND,
+    }
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = unsafe { &mut *(lparam.0 as *mut Ctx) };
+        let mut wpid = 0u32;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut wpid)) };
+        if wpid != ctx.pid {
+            return BOOL::from(true); // 继续枚举
+        }
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            return BOOL::from(true);
+        }
+        let has_title = unsafe { GetWindowTextLengthW(hwnd) } > 0;
+        if has_title && ctx.titled.is_invalid() {
+            ctx.titled = hwnd;
+        }
+        if ctx.any.is_invalid() {
+            ctx.any = hwnd;
+        }
+        BOOL::from(true)
+    }
+
+    let mut ctx = Ctx {
+        pid,
+        titled: HWND::default(),
+        any: HWND::default(),
+    };
+    // EnumWindows 同步回调；失败（如无权限）按未找到处理
+    let _ = unsafe { EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut Ctx as isize)) };
+    if is_valid_window(ctx.titled) {
+        ctx.titled
+    } else {
+        ctx.any
+    }
 }
 
 /// 获取窗口标题。

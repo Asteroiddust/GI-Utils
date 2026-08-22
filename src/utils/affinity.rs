@@ -269,6 +269,20 @@ pub fn find_name_by_pid(pid: u32) -> Option<String> {
     None
 }
 
+/// 按名单查找首个命中的进程 — 单次快照（避免逐名字各扫一遍）。
+/// 返回 (pid, 命中的名单项)。
+pub fn find_pid_by_names<'a>(names: &[&'a str]) -> Option<(u32, &'a str)> {
+    let iter = ProcessIterator::new().ok()?;
+    for entry in iter {
+        for name in names {
+            if entry.name().eq_ignore_ascii_case(name) {
+                return Some((entry.pid(), name));
+            }
+        }
+    }
+    None
+}
+
 /// 将非游戏进程移出游戏核心 — Move all non-game, non-self processes off the game cores.
 pub fn isolate_game_cores(game_pid: u32) -> Result<(), Error> {
     let self_pid = process::id();
