@@ -281,6 +281,12 @@ pub struct InterceptionMouseStroke {
     pub information: u32,
 }
 
+// 与 interception.h 布局一致（MouseStroke 的 rolling 后有 2 字节填充至 4 对齐）
+const _: () = assert!(std::mem::size_of::<InterceptionKeyStroke>() == 8);
+const _: () = assert!(std::mem::align_of::<InterceptionKeyStroke>() == 4);
+const _: () = assert!(std::mem::size_of::<InterceptionMouseStroke>() == 20);
+const _: () = assert!(std::mem::align_of::<InterceptionMouseStroke>() == 4);
+
 // ═══════════════════════════════════════════════════════════════════
 // 驱动线上格式 — hidclass 输入报告（IOCTL 读写缓冲，WDK 文档结构）
 // ═══════════════════════════════════════════════════════════════════
@@ -526,7 +532,9 @@ fn ioctl_write(handle: HANDLE, input: &[u8]) -> Result<u32> {
 }
 
 /// 分批写入骨架：栈上构造线上格式（`fill`）→ ioctl_write → 字节换算。
-/// 部分写/失败即停并告警（C 版失败后返回垃圾计数 — 此处确定语义）。
+/// 部分写/失败即停并告警，返回值恰为已写入条数（C 版失败时
+/// lpBytesReturned 按契约未定义 — 初始化 0 兜底，实践返回 0；
+/// 此处无未定义行为，契约确定）。
 fn write_chunks<Raw, Out>(handle: HANDLE, input: &[Out], fill: impl Fn(&Out) -> Raw) -> usize
 where
     Raw: Copy + Default,
@@ -742,8 +750,9 @@ impl Context {
 
     /// 发送键盘 stroke 序列，返回实际写入数（对齐 `interception_send`）。
     ///
-    /// DeviceIoControl 失败即停：返回值是确定语义（C 版失败后读取未定义的
-    /// bytes_returned，返回垃圾计数 — 文档化改进）。
+    /// DeviceIoControl 失败即停并告警：返回值恰为已写入条数，无未定义
+    /// 行为（C 版失败时 lpBytesReturned 未定义 — 初始化 0 兜底，实践
+    /// 返回 0）。
     pub fn send_keyboard(
         &self,
         device: KeyboardDevice,

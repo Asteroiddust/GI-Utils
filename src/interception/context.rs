@@ -101,6 +101,10 @@ impl InterceptionContext {
 /// 仅暴露 `send_event()` 与 `forward_*` 方法。
 /// Interception 驱动明确支持通过同一个句柄并发发送。
 ///
+/// 发送是尽力而为：失败不向上传播，由 protocol 层 `warn!` 落日志即失败
+/// 信号（底层 send_* 返回的实际写入数在此层有意不消费 — 注入失败无法
+/// 有意义地重试，驱动级故障靠日志诊断即可）。
+///
 /// Thread-safe to share across threads. Exposes only send
 /// methods — the driver supports concurrent sends through one handle.
 pub struct SendContext {
