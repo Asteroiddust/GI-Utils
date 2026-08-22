@@ -139,11 +139,13 @@ cargo build --release --config .cargo/build-std.toml
 # 输出: target/release/gi-utils-gui.exe (~6.8MB)
 ```
 
-> **策略（2026-08-19 定）**：日常编译/测试/功能验证一律走 dev profile —
-> release 版 O3 + fat LTO + build-std 重编 std 每次 30-60s+，日常迭代太慢。
-> release 构建仅在部署/发版时运行。测试不带 build-std 的原因：全局 build-std
-> 会让 cargo test 为 dev+test 双 profile 各编一份 std，两份 core 链接报
-> duplicate lang item（cargo 已知问题）。
+> **策略（2026-08-19 定；2026-08-22 补发版纪律）**：日常编译/测试/功能验证
+> 一律走 dev profile — release 版 O3 + fat LTO + build-std 重编 std 每次
+> 30-60s+，日常迭代太慢。**release 构建仅在用户明示"发版"时执行 — agent
+> 不主动 build release**；未定版期间测试用 `gi-utils-dev.exe`（dev 符号
+> 链接）。测试不带 build-std 的原因：全局 build-std 会让 cargo test 为
+> dev+test 双 profile 各编一份 std，两份 core 链接报 duplicate lang item
+> （cargo 已知问题）。
 
 自定义图标：`assets/icon.ico` 由 build.rs（embed-resource）嵌入 exe；文件缺失时跳过并警告，不影响构建。
 
