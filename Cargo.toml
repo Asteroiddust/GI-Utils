@@ -33,7 +33,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # persistence（窗口状态持久化，本项目用 config.toml 自行保存）、x11/wayland。
 eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
-    "glow",
+    "wgpu",
 ] }
 
 [build-dependencies]
@@ -53,6 +53,12 @@ incremental = true            # 开启增量编译
 opt-level = 2
 debug = 0
 
+# libm 例外：wgpu→naga→libm 的 asm 数学函数在 LLVM 21 触发 branch folding
+# SEH bug（llvm#199290，Missing .seh_endepilogue）— opt 0 跳过该 pass 绕过。
+# 上游修复合入 nightly 后可移除（跟踪 llvm/llvm-project#199290）。
+[profile.dev.package.libm]
+opt-level = 0
+
 # ==============================================================================
 # 2. release 模式：激进极限优化（不惜编译时间，压榨极致体积与执行性能）
 # ==============================================================================
@@ -69,3 +75,7 @@ strip = true                  # 彻底剥离符号信息
 panic = "unwind"              
 debug = false                 # 关闭调试符号
 incremental = false           # Release 必须关闭增量，确保最高代码生成质量
+
+# libm 例外：同 dev profile 的 LLVM#199290 绕过（wgpu 依赖链独有）
+[profile.release.package.libm]
+opt-level = 0

@@ -671,7 +671,7 @@ pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), 
             (ParamKind::Int { .. }, toml::Value::String(name_val)) if spec.name == "key" => {
                 // 键槽（SpamKey）：持久化为键名 — GUI 捕获写 String；
                 // 解析回打包值（解析失败显式报错，不静默回落）
-                let Some(key) = crate::config::parse_key(name_val).ok() else {
+                let Some(key) = crate::profile::parse_key(name_val).ok() else {
                     return Err(format!("参数 '{name}' 键名无效: '{name_val}'"));
                 };
                 store.set_i64(idx, crate::functions::spam_key::pack_key(key));
@@ -707,13 +707,13 @@ mod default_config_tests {
     /// 第一份配置，解析失败即首启报错 — 回归网）
     #[test]
     fn default_config_parses_with_params_table() {
-        let raw: toml::Value = toml::from_str(crate::config::DEFAULT_CONFIG)
+        let raw: toml::Value = toml::from_str(crate::profile::DEFAULT_CONFIG)
             .expect("DEFAULT_CONFIG must be valid TOML");
         // 顶层 per-function 参数表存在且归属正确
         assert!(raw.get("params").is_some());
         assert!(raw["params"]["连点器"]["interval_ms"].as_float() == Some(10.0));
         // 行内旧格式不得再出现（skip_serializing 只管写出 — 此处保证模板源头干净）
-        let text = crate::config::DEFAULT_CONFIG;
+        let text = crate::profile::DEFAULT_CONFIG;
         assert!(!text.contains("[bindings.params]"), "行内 params 已废弃");
     }
 }

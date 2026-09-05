@@ -128,14 +128,14 @@ impl KeyFunction for SpamKey {
 /// 打包值 → 配置键名（KEY_PAIRS 反查；未知码返回 "0x%04X" 兜底）。
 pub fn key_slot_name(v: i64) -> String {
     let k = unpack_key(v);
-    crate::config::key_to_config_name(k)
+    crate::profile::key_to_config_name(k)
         .map(str::to_string)
         .unwrap_or_else(|| format!("0x{:04X}", k.code.raw()))
 }
 
 /// 配置键名 → 打包值（大小写不敏感；未知名返回 None）。
 pub fn key_slot_value(name: &str) -> Option<i64> {
-    crate::config::parse_key(name).ok().map(pack_key)
+    crate::profile::parse_key(name).ok().map(pack_key)
 }
 
 /// 键槽直写打包值（面板切换键时用 — 走 Int 槽 i64 路径）。
