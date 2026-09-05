@@ -276,8 +276,12 @@ mode = "Once"
 
 [[bindings]]
 key = "F13"
-func = "连点器v1"
+func = "连点器"
 mode = "Loop"
+
+[bindings.params]
+interval_ms = 10.0
+hold_ms = 0.0
 
 [[bindings]]
 key = "F14"
@@ -482,8 +486,6 @@ pub fn list_function_names() -> Vec<&'static str> {
     vec![
         "停止退出",
         "连点器",
-        "连点器v1",
-        "连点器v2",
         "快速拾取",
         "鬼畜走路",
         "火神跳喷",
@@ -511,12 +513,6 @@ pub fn create_function(
 ) -> Result<Arc<dyn KeyFunction>, String> {
     match name {
         "连点器" => Ok(Arc::new(crate::functions::auto_clicker::连点器::new(
-            send_ctx,
-        ))),
-        "连点器v1" => Ok(Arc::new(crate::functions::auto_clicker::连点器v1::new(
-            send_ctx,
-        ))),
-        "连点器v2" => Ok(Arc::new(crate::functions::auto_clicker::连点器v2::new(
             send_ctx,
         ))),
         "快速拾取" => Ok(Arc::new(crate::functions::quick_pickup::快速拾取::new(
