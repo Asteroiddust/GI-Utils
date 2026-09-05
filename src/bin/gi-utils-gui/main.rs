@@ -10,7 +10,7 @@ use eframe::egui;
 use gi_utils::config::{self, Binding};
 use gi_utils::engine::Engine;
 use gi_utils::engine::TriggerMode;
-use gi_utils::engine::bindings::{KeyFunction, ParamKind, ParamSpec, ParamValues};
+use gi_utils::engine::bindings::{KeyFunction, ParamKind};
 use gi_utils::interception::SendContext;
 use gi_utils::key::Key;
 use gi_utils::utils;
@@ -406,6 +406,8 @@ impl GuiApp {
         let mut need_apply = false;
         let mut remove_idx: Option<usize> = None;
         let mut capture_idx: Option<usize> = None;
+        let mut gear_idx: Option<usize> = None;
+        let mut gear_response: Option<(usize, egui::Response)> = None;
         let function_names = self.function_names.clone(); // 循环外克隆一次
 
         // L3: 捕获期间禁用表格交互 — 防止捕获中改/删行导致 binding_id 悬空
@@ -482,6 +484,22 @@ impl GuiApp {
                                 if ui.button("Set Key").clicked() {
                                     capture_idx = Some(i);
                                 }
+                                // ⚙ 仅渲染于有参数的功能行（params_of 查注册表）
+                                let has_params = binding.key.is_some_and(|k| {
+                                    self.key_bindings
+                                        .params_of(&k)
+                                        .is_some_and(|(specs, _)| !specs.is_empty())
+                                });
+                                if has_params {
+                                    let resp = ui.button("⚙");
+                                    if resp.clicked() {
+                                        gear_idx = Some(i);
+                                    }
+                                    gear_response = Some((i, resp));
+                                } else {
+                                    ui.add_enabled(false, egui::Button::new("⚙"))
+                                        .on_disabled_hover_text("此功能无参数");
+                                }
                                 if ui.small_button("Del").clicked() {
                                     remove_idx = Some(i);
                                 }
@@ -493,137 +511,19 @@ impl GuiApp {
             });
         }); // add_enabled_ui — 捕获期间禁用
 
-        // ── 动态参数面板（live 直写：修改即刻生效，下周期应用；Save 持久化）──
-        // 先不可变借用收集参数面（specs + store Arc，锁内即释），再可变借用
-        // 写行镜像 — 避免 bindings_list.iter_mut 与 key_bindings 借用冲突。
-        let mut param_faces: Vec<(usize, String, String, Vec<ParamSpec>, Arc<ParamValues>)> =
-            Vec::new();
-        for g in &self.bindings_list {
-            if let Some(key) = g.key
-                && let Some((specs, store)) = self.key_bindings.params_of(&key)
-                && !specs.is_empty()
+        // ── 动态参数：齿轮按钮（Actions 列）+ 弹窗编辑 ──
+        // 2026-08-22 用户方案：参数属于各自绑定行 — 底部合并大 table 删除，
+        // 有参数的功能在 Actions 列渲染 ⚙ 按钮，点击开 popup 就地编辑
+        //（live 直写：修改即刻生效，下周期应用；Save 持久化）。
+        // 借用策略：show_param_popup 独立方法（&mut self）— popup 内直接
+        // 读写 key_bindings/func_params，无跨闭包借用问题。
+        if let Some((idx, resp)) = gear_response {
+            // 行循环与 gear 执行同帧先后发生，行未被删除（Del 互斥触发）
+            if let Some(g) = self.bindings_list.get(idx)
+                && let Some(key) = g.key
             {
-                param_faces.push((g.id, g.key_name.clone(), g.func.clone(), specs, store));
+                self.show_param_popup(&resp, g.id, &key);
             }
-        }
-        let mut keyslot_capture: Option<CaptureTarget> = None;
-        if !param_faces.is_empty() {
-            egui::CollapsingHeader::new("⚙ 参数（修改即刻生效 · Save 持久化）")
-                .default_open(true)
-                .show(ui, |ui| {
-                    egui::Grid::new("param_grid")
-                        .striped(true)
-                        .min_col_width(90.0)
-                        .show(ui, |ui| {
-                            ui.strong("Binding");
-                            ui.strong("Parameter");
-                            ui.strong("Value");
-                            ui.end_row();
-                            for (_id, key_name, func, specs, store) in &param_faces {
-                                // per-function：写功能级参数表（同功能多键共享）
-                                let entry = self.func_params.entry(func.clone()).or_default();
-                                for (si, spec) in specs.iter().enumerate() {
-                                    ui.label(if si == 0 {
-                                        key_name.clone()
-                                    } else {
-                                        String::new()
-                                    });
-                                    ui.label(spec.name);
-                                    match &spec.kind {
-                                        ParamKind::Float { min, max, step, .. } => {
-                                            let mut v = store.get_f64(si);
-                                            let resp = ui.add(
-                                                egui::DragValue::new(&mut v)
-                                                    .range(*min..=*max)
-                                                    .speed(*step)
-                                                    .fixed_decimals(1),
-                                            );
-                                            if resp.changed() {
-                                                store.set_f64(si, v); // live 直写
-                                                entry.insert(
-                                                    spec.name.into(),
-                                                    toml::Value::Float(v),
-                                                );
-                                                self.dirty = true;
-                                            }
-                                        }
-                                        ParamKind::Int {
-                                            min: 0,
-                                            max: 0x1FFFF,
-                                            ..
-                                        } if spec.name == "key" => {
-                                            // 键槽特例（SpamKey）：打包 ScanCode+E0。
-                                            // 复用 Set Key 捕获通道（2026-08-22 用户方案）—
-                                            // 能抓任意键（含 KEY_PAIRS 之外的异形键），
-                                            // 比键名下拉强；capture_tx 键槽捕获与绑定键
-                                            // 捕获同通道，按 binding_id 区分目标。
-                                            let v = store.get_i64(si);
-                                            let current =
-                                                gi_utils::functions::spam_key::key_slot_name(v);
-                                            if ui.button(current.as_str()).clicked()
-                                                && !self.capture.active
-                                            {
-                                                // 延迟到面板闭包外执行（entry 借用仍活着）
-                                                keyslot_capture = Some(CaptureTarget::KeySlot {
-                                                    binding_id: *_id,
-                                                    slot: si,
-                                                });
-                                            }
-                                        }
-                                        ParamKind::Int { min, max, .. } => {
-                                            let mut v = store.get_i64(si);
-                                            let resp = ui.add(
-                                                egui::DragValue::new(&mut v).range(*min..=*max),
-                                            );
-                                            if resp.changed() {
-                                                store.set_i64(si, v);
-                                                entry.insert(
-                                                    spec.name.into(),
-                                                    toml::Value::Integer(v),
-                                                );
-                                                self.dirty = true;
-                                            }
-                                        }
-                                        ParamKind::Bool { .. } => {
-                                            let mut v = store.get_bool(si);
-                                            if ui.checkbox(&mut v, "").changed() {
-                                                store.set_bool(si, v);
-                                                entry.insert(
-                                                    spec.name.into(),
-                                                    toml::Value::Boolean(v),
-                                                );
-                                                self.dirty = true;
-                                            }
-                                        }
-                                    }
-                                    ui.end_row();
-                                }
-                            }
-                        });
-                });
-        }
-
-        // 延迟处理（避免在 grid 闭包中 borrow self）
-        if let Some(idx) = remove_idx {
-            // 删除捕获目标行时同步取消捕获，避免 id 悬空
-            let row_id = self.bindings_list.get(idx).map(|g| g.id);
-            match self.capture.target {
-                Some(CaptureTarget::Binding(id)) if row_id == Some(id) => self.cancel_capture(),
-                Some(CaptureTarget::KeySlot { binding_id, .. }) if row_id == Some(binding_id) => {
-                    self.cancel_capture()
-                }
-                _ => {}
-            }
-            self.bindings_list.remove(idx);
-            need_apply = true;
-        }
-        if let Some(idx) = capture_idx {
-            if let Some(id) = self.bindings_list.get(idx).map(|g| g.id) {
-                self.start_capture(CaptureTarget::Binding(id));
-            }
-        }
-        if let Some(target) = keyslot_capture {
-            self.start_capture(target);
         }
         if need_apply {
             self.live_apply();
@@ -805,6 +705,98 @@ impl GuiApp {
         self.capture.active = true;
         self.capture.target = Some(target);
         self.capture.rx = Some(self.key_bindings.enable_capture());
+    }
+
+    /// 参数弹窗 — 齿轮按钮下方弹出（from_toggle_button_response：按钮
+    /// 点击即 toggle 开关，点外部自动关），渲染该绑定功能的全部参数行
+    /// （live 直写 + func_params 持久化镜像）。
+    fn show_param_popup(&mut self, button: &egui::Response, id: usize, key: &Key) {
+        let Some((specs, store)) = self.key_bindings.params_of(key) else {
+            return;
+        };
+        let Some(row) = self.bindings_list.iter().find(|g| g.id == id) else {
+            return; // 行已删除
+        };
+        let key_name = row.key_name.clone();
+        let func = row.func.clone();
+        let mut keyslot_capture: Option<CaptureTarget> = None;
+        let mut changed = false;
+
+        egui::Popup::from_toggle_button_response(button)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(240.0);
+                ui.strong(format!("{key_name} — {}", func));
+                ui.separator();
+                egui::Grid::new(egui::Id::new(("param_grid", id)))
+                    .num_columns(2)
+                    .min_col_width(90.0)
+                    .show(ui, |ui| {
+                        // per-function：写功能级参数表（同功能多键共享）
+                        let entry = self.func_params.entry(func.clone()).or_default();
+                        for (si, spec) in specs.iter().enumerate() {
+                            ui.label(spec.name);
+                            match &spec.kind {
+                                ParamKind::Float { min, max, step, .. } => {
+                                    let mut v = store.get_f64(si);
+                                    let resp = ui.add(
+                                        egui::DragValue::new(&mut v)
+                                            .range(*min..=*max)
+                                            .speed(*step)
+                                            .fixed_decimals(1),
+                                    );
+                                    if resp.changed() {
+                                        store.set_f64(si, v); // live 直写
+                                        entry.insert(spec.name.into(), toml::Value::Float(v));
+                                        changed = true;
+                                    }
+                                }
+                                ParamKind::Int {
+                                    min: 0,
+                                    max: 0x1FFFF,
+                                    ..
+                                } if spec.name == "key" => {
+                                    // 键槽特例（SpamKey）：打包 ScanCode+E0，
+                                    // Set Key 捕获按钮（能抓任意键，含异形键）
+                                    let v = store.get_i64(si);
+                                    let current = gi_utils::functions::spam_key::key_slot_name(v);
+                                    if ui.button(current.as_str()).clicked() && !self.capture.active
+                                    {
+                                        keyslot_capture = Some(CaptureTarget::KeySlot {
+                                            binding_id: id,
+                                            slot: si,
+                                        });
+                                    }
+                                }
+                                ParamKind::Int { min, max, .. } => {
+                                    let mut v = store.get_i64(si);
+                                    let resp =
+                                        ui.add(egui::DragValue::new(&mut v).range(*min..=*max));
+                                    if resp.changed() {
+                                        store.set_i64(si, v);
+                                        entry.insert(spec.name.into(), toml::Value::Integer(v));
+                                        changed = true;
+                                    }
+                                }
+                                ParamKind::Bool { .. } => {
+                                    let mut v = store.get_bool(si);
+                                    if ui.checkbox(&mut v, "").changed() {
+                                        store.set_bool(si, v);
+                                        entry.insert(spec.name.into(), toml::Value::Boolean(v));
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+                if changed {
+                    self.dirty = true;
+                }
+            });
+        // popup 关闭判定（CloseOnClickOutside）— open 参数为 false 时 egui
+        // 不渲染；用 popup 内部状态跟踪不可靠，改为齿轮按钮 toggle open，
+        // 点击行外由 close_behavior 自动关（此处仅同步 open 状态）
     }
 
     /// 取消按键捕获（弹窗 Cancel 按钮）。
