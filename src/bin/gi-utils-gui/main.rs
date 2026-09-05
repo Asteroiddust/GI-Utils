@@ -346,12 +346,31 @@ impl eframe::App for GuiApp {
             });
         });
 
-        // 4. 右侧日志面板 — 必须先于中央内容（见上）
+        // 4. 状态栏 — 先于 Log 面板声明：bottom 先占底部条带，right 高度被
+        // 挤压到其上方（后声明者接收剩余空间 — 修复 Log 覆盖状态栏）
+        egui::Panel::bottom("status").show(central_ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Status: Running");
+                if self.dirty {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::from_rgb(255, 200, 0), "(unsaved changes)");
+                }
+            });
+        });
+
+        // 5. 右侧日志面板 — 面板顺序：header → status(bottom) → log(right) →
+        // 中央内容。bottom 先声明占住底部，right 不再覆盖状态栏；
+        // max_size 限制拖宽 — 右边界不得越过主编辑区（中央内容至少
+        // 保留 ~55% 窗口宽度）
         if self.log_visible {
+            let win_width = central_ui.input(|i| i.viewport_rect().width());
             egui::Panel::right("log_panel")
                 .resizable(true)
                 .default_size(320.0)
                 .min_size(160.0)
+                // 拖宽上限：主编辑区至少保留 55% 窗口宽度（用户要求 —
+                // 左边界不得越过主编辑区）
+                .max_size(win_width * 0.45)
                 .show(central_ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.strong("Log");
@@ -374,17 +393,6 @@ impl eframe::App for GuiApp {
                         });
                 });
         }
-
-        // 5. 状态栏
-        egui::Panel::bottom("status").show(central_ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Status: Running");
-                if self.dirty {
-                    ui.separator();
-                    ui.colored_label(egui::Color32::from_rgb(255, 200, 0), "(unsaved changes)");
-                }
-            });
-        });
 
         // 6. 中央内容最后
         // App::ui 的 root_ui 无背景 frame（0.31 时由 CentralPanel 绘制），
