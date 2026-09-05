@@ -203,7 +203,7 @@ keys…).
 ```
 src/
 ├── bin/gi-utils-gui/     GUI binary (panel, tray, window ops)
-├── config.rs             TOML config + function factory
+├── profile.rs             TOML config + function factory
 ├── key.rs                ScanCode newtype + Key (scan code + E0) + constants
 ├── interception/
 │   ├── protocol.rs       Native Rust port of the Interception user-mode

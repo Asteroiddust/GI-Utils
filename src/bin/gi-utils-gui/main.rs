@@ -308,10 +308,16 @@ impl eframe::App for GuiApp {
             }
         }
 
-        // 0. 首次加载 CJK 字体
+        // 0. 首次加载 CJK 字体 + 驱动线程掩码收窄
         if !self.font_loaded {
             self.load_cjk_font(&ctx);
             self.font_loaded = true;
+            // wgpu 初始化（首帧前完成）已建齐 Vulkan 驱动线程 — 一次性把
+            // 未 pin 线程收窄到 GUI 核（防驱动 worker 落 14,15 输入核）
+            let narrowed = gi_utils::utils::affinity::narrow_unpinned_threads_to_gui();
+            if narrowed > 0 {
+                self.log(format!("Narrowed {narrowed} driver threads to GUI cores"));
+            }
         }
 
         // 1. 处理异步事件
@@ -1166,7 +1172,7 @@ impl Drop for GuiApp {
 /// 顺序：托盘收尾 → 停引擎 → stop_all（先于亲和性恢复，防优化游戏竞态）
 /// → 蜂鸣 → 恢复亲和性（决策 21）→ 共享图标销毁（最后，确认托盘线程已退出）。
 fn shutdown_all(
-    engine_handle: Option<JoinHandle<()>>,
+    engine_handle: JoinHandle<()>,
     tray_handle: Option<JoinHandle<()>>,
     tray_quit: &AtomicBool,
     tray_icon: Option<tray_icon::SharedIcon>,
@@ -1174,11 +1180,10 @@ fn shutdown_all(
     key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
 ) {
     // 先停引擎（stop_flag → join），再收尾托盘 — 托盘收尾最坏有 2s 有界等待，
-    // 放前面会拖长退出路径（review #14）。
+    // 放前面会拖长退出路径（review #14）。engine_handle 为直值（单次运行
+    // 语义 — v1.7.0 自愈循环退役后不再需要 Option）。
     stop_flag.store(true, Ordering::Release);
-    if let Some(handle) = engine_handle {
-        let _ = handle.join();
-    }
+    let _ = engine_handle.join();
 
     // 有界等待托盘线程退出；返回值 = 线程已确认退出（共享图标引用方清零）。
     let tray_exited = stop_tray_thread(tray_handle, tray_quit);
@@ -1235,12 +1240,7 @@ fn register_all_bindings(
     stop_func: &Arc<dyn KeyFunction>,
     bindings: &[Binding],
     send_ctx: &Arc<SendContext>,
-    replace_existing: bool,
 ) -> Vec<String> {
-    if replace_existing {
-        key_bindings.stop_all();
-        key_bindings.clear_all();
-    }
     let mut log = Vec::new();
     for b in bindings {
         let func: Arc<dyn KeyFunction> = if b.func == "停止退出" {
@@ -1300,8 +1300,14 @@ fn show_message_box(title: &str, msg: &str) {
 /// catch_unwind 重试）已随 glow 后端一起移除 — wgpu surface Lost 逐帧
 /// 自愈，渲染层不再 panic（睡眠唤醒实测通过）。hook 现为纯兜底：
 /// 任何线程 panic = 落盘 + 还原 + 弹窗 + fail-fast（防 Loop 功能僵尸注入）。
-fn install_panic_hook(log: gi_utils::utils::log_collector::LogCollector) {
+fn install_panic_hook(
+    log: gi_utils::utils::log_collector::LogCollector,
+    stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     std::panic::set_hook(Box::new(move |info| {
+        // 先停机再交互 — 弹窗是模态阻塞的，期间 engine/Loop 功能线程若
+        // 仍运行会持续注入（fail-fast 语义；顺序：停机 → 落盘 → 还原 → 弹窗）
+        stop_flag.store(true, std::sync::atomic::Ordering::Release);
         // 崩溃现场落盘（best-effort — panic 路径绝不 panic 或弹二次错误）
         write_crash_log(&format!("{info}"), &log);
         let _ = utils::thread_pin::restore();
@@ -1376,8 +1382,7 @@ fn main() {
     // 必须在配置加载（config.rs 首次生成提示）之前安装。
     let log_collector = gi_utils::utils::log_collector::LogCollector::install(200);
 
-    // ── 0. panic hook + 单实例保护（在任何副作用之前）────────
-    install_panic_hook(log_collector.clone());
+    // ── 0. 单实例保护（在任何副作用之前）────────
 
     // 单实例：已有实例时激活其窗口并退出。
     // mutex 句柄故意不释放 — 进程退出时由 OS 自动释放，保持排他。
@@ -1441,6 +1446,12 @@ fn main() {
     let send_ctx = engine.send_context();
     let stop_flag = engine.stop_flag();
 
+    // panic hook 需持有 stop_flag（panic 时弹窗前置位停机 — 模态弹窗
+    // 阻塞期间 engine/Loop 功能线程不得继续注入）。安装晚于 Engine 创建：
+    // Engine::new 自身的 panic（驱动缺失）无亲和性需要还原，且其 unwrap
+    // 消息经默认 hook 亦可读。
+    install_panic_hook(log_collector.clone(), stop_flag.clone());
+
     // ── 4. 注册初始绑定 ─────────────────────────────────────
     let stop_func: Arc<dyn KeyFunction> = Arc::new(gi_utils::functions::stop::停止退出::new(
         stop_flag.clone(),
@@ -1450,7 +1461,6 @@ fn main() {
         &stop_func,
         &config_bindings,
         &send_ctx,
-        false,
     ));
 
     // ── 5. 托盘图标：主线程预加载一次（健康 GDI/WIC 状态），跨崩溃恢复
@@ -1472,26 +1482,24 @@ fn main() {
         ));
     }
 
-    // ── 6. 启动 Engine 后台线程（只 spawn 一次 — 重试循环之外）──
-    // 句柄留在 main（shutdown_all 需要），app 不再持有 — 渲染 panic 回卷时
-    // Drop 不会碰它（见 GuiApp::drop 的注释）。
-    let mut engine_handle = Some(
-        std::thread::Builder::new()
-            .name("engine".into())
-            .spawn(move || {
-                engine.run();
-                // run() 仅因 stop_flag 置位返回（"停止退出"热键的语义标志，
-                // 按键由 config 绑定）— 此处直接向主窗口投 WM_CLOSE。
-                // 真实机制（review 实证）：CloseRequested → egui-winit 强制
-                // 同步 update（隐藏窗口也执行）→ 帧监视器驱动退出。隐藏态
-                // 下没有周期帧（winit 挂起 redraw），窗口消息是唯一即时
-                // 通道 — 退出不再延迟到窗口唤出，也不依赖托盘线程存活。
-                if let Some(hwnd) = window_ops::find_main_window() {
-                    window_ops::post_close(hwnd);
-                }
-            })
-            .expect("Failed to spawn engine thread"),
-    );
+    // ── 6. 启动 Engine 后台线程 ──
+    // 句柄留在 main（shutdown_all 需要），app 不持有 — 关机仅由
+    // main 的 shutdown_all 执行。
+    let engine_handle = std::thread::Builder::new()
+        .name("engine".into())
+        .spawn(move || {
+            engine.run();
+            // run() 仅因 stop_flag 置位返回（"停止退出"热键的语义标志，
+            // 按键由 config 绑定）— 此处直接向主窗口投 WM_CLOSE。
+            // 真实机制（review 实证）：CloseRequested → egui-winit 强制
+            // 同步 update（隐藏窗口也执行）→ 帧监视器驱动退出。隐藏态
+            // 下没有周期帧（winit 挂起 redraw），窗口消息是唯一即时
+            // 通道 — 退出不再延迟到窗口唤出，也不依赖托盘线程存活。
+            if let Some(hwnd) = window_ops::find_main_window() {
+                window_ops::post_close(hwnd);
+            }
+        })
+        .expect("Failed to spawn engine thread");
     startup_log.push("Engine running.".into());
 
     // 托盘可用性 / 窗口隐藏态 — 进程级共享（GuiApp 持 Arc；tray 线程失败
@@ -1604,7 +1612,7 @@ fn main() {
         // 正常退出（窗口关闭 / 托盘退出）— 完整关机序列
         Ok(()) => {
             shutdown_all(
-                engine_handle.take(),
+                engine_handle,
                 tray_handle,
                 &tray_quit,
                 preloaded_icon.take(),
@@ -1615,7 +1623,7 @@ fn main() {
         // 启动错误（非 panic）— 完整关机后提示退出
         Err(e) => {
             shutdown_all(
-                engine_handle.take(),
+                engine_handle,
                 tray_handle,
                 &tray_quit,
                 preloaded_icon.take(),

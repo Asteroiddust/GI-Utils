@@ -28,9 +28,9 @@ toml = "1"
 tracing = "0.1"
 # 只用 fmt 订阅器 — 关闭默认的 ansi/tracing-log/smallvec
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
-# GUI 只需 glow 渲染后端（Renderer::default 优先 Glow，代码不显式设 renderer）
-# + 内置字体。关闭默认的 wgpu、accesskit（无障碍）、links（超链接）、
-# persistence（窗口状态持久化，本项目用 config.toml 自行保存）、x11/wayland。
+# GUI 用 wgpu+Vulkan 渲染后端（v1.7.0 — 睡眠唤醒修复，见 main.rs NativeOptions
+# 注释）+ 内置字体。关闭默认的 accesskit（无障碍）、links（超链接）、
+# persistence（窗口状态持久化，本项目用 profile 体系自行保存）、x11/wayland。
 eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
     "wgpu",
@@ -48,12 +48,12 @@ debug = 0                     # 彻底关闭调试信息，零 PDB 磁盘写入�
 codegen-units = 256           # 最大化代码生成并行度
 incremental = true            # 开启增量编译
 
-# 关键：第三方依赖开启 2 级优化，保证 eframe/glow 界面拖拽丝滑不掉帧，且依赖只需编译一次
+# 关键：第三方依赖开启 2 级优化，保证 eframe 界面拖拽丝滑不掉帧，且依赖只需编译一次
 [profile.dev.package."*"]
 opt-level = 2
 debug = 0
 
-# libm 例外：wgpu→naga→libm 的 asm 数学函数在 LLVM 21 触发 branch folding
+# libm 例外：naga/vello→libm 的 asm 数学函数在 LLVM 21 触发 branch folding
 # SEH bug（llvm#199290，Missing .seh_endepilogue）— opt 0 跳过该 pass 绕过。
 # 上游修复合入 nightly 后可移除（跟踪 llvm/llvm-project#199290）。
 [profile.dev.package.libm]
@@ -76,6 +76,7 @@ panic = "unwind"
 debug = false                 # 关闭调试符号
 incremental = false           # Release 必须关闭增量，确保最高代码生成质量
 
-# libm 例外：同 dev profile 的 LLVM#199290 绕过（wgpu 依赖链独有）
+# libm 例外：同 dev profile 的 LLVM#199290 绕过（naga/vello 数学链共享，
+# 移除前需复查依赖树）
 [profile.release.package.libm]
 opt-level = 0

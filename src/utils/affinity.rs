@@ -246,6 +246,45 @@ where
     Ok(())
 }
 
+/// 把本进程内仍持有完整进程掩码的线程收窄到 GUI 核（12,13）。
+///
+/// wgpu/Vulkan 初始化时 GPU 驱动（NVIDIA/AMD ICD）会 spawn worker/编译
+/// 线程 — 新线程继承**进程**掩码 12-15，且进程为 REALTIME class，驱动
+/// 线程默认 24 与输入线程同级，落在 14,15 会击穿输入核专区（review：
+/// glow 时代 WGL 已有此暴露面，Vulkan ICD 线程更多）。在 GUI 主线程
+/// wgpu 初始化完成后调用一次：枚举本进程线程（NT 快照），掩码 ≠ 各
+/// 已知子掩码（未被显式 pin）的线程统一收窄 12,13。自线程已被 pin，
+/// SetThreadAffinityMask 对他人线程的调用需要 THREAD_SET_INFORMATION
+/// （自己进程内可开，反作弊无关）。
+pub fn narrow_unpinned_threads_to_gui() -> usize {
+    use windows::Win32::System::Threading::{
+        OpenThread, SetThreadAffinityMask, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION,
+    };
+    let self_pid = process::id();
+    let tids = crate::utils::thread_info::list_thread_ids(self_pid).unwrap_or_default();
+    let mut narrowed = 0usize;
+    for tid in tids {
+        let handle = unsafe {
+            OpenThread(
+                THREAD_SET_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION,
+                false,
+                tid,
+            )
+        };
+        let h = match handle {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        let prev = unsafe { SetThreadAffinityMask(h, GUI_CORES_MASK) };
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(h) };
+        // prev 为 0 = 失败（权限）；prev == GUI_CORES_MASK = 已是目标掩码（本线程）
+        if prev != 0 && prev != GUI_CORES_MASK {
+            narrowed += 1;
+        }
+    }
+    narrowed
+}
+
 /// 按 pid 查找进程映像名 — 线程 pinning 的策略键（进程名 → 策略）。
 pub fn find_name_by_pid(pid: u32) -> Option<String> {
     let iter = ProcessIterator::new().ok()?;

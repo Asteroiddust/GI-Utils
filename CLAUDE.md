@@ -45,7 +45,7 @@ src/
 │       ├── tray.rs            # 托盘线程 (Shell_NotifyIconW + 消息窗口/泵 + quit 标志收尾)
 │       ├── tray_icon.rs       # 图标原料 + SharedIcon 共享句柄 (启动预加载, L4 WIC 污染防御)
 │       └── window_ops.rs      # HWND 安全包装唯一入口 (IsWindow 重校验 + 跨进程 pid 过滤, L3 幽灵窗口防御)
-├── config.rs                  # TOML 配置解析 + 函数工厂 + [gui] 图标配置
+├── profile.rs                 # 配置与 Profile 系统（profiles/ 目录 + TOML 解析 + 函数工厂）
 ├── key.rs                     # ScanCode(u16) 新类型 + Key (ScanCode + is_e0) + 90+ 常量
 
 ├── interception/              # Interception 用户层原生实现（替代预编译 lib）
@@ -253,7 +253,7 @@ icon_path = ""
 1. 从 `E:\Projects\fmttest\main.cpp` 找到对应类的 EventSequence 构造逻辑
 2. 在 `src/functions/` 下新建文件，中文 struct 名照搬原项目
 3. 实现 `KeyFunction` trait
-4. 在 `src/config.rs` 的 `create_function` 和 `DEFAULT_CONFIG` 各加一行
+4. 在 `src/profile.rs` 的 `create_function` 和 `DEFAULT_CONFIG` 各加一行
 5. 无需改入口 — 全部走配置驱动
 
 参考模板: `auto_clicker.rs` (Loop), `ganyu_aim_cancel.rs` (Once), `mavuika_jump.rs` (on_activate+Loop)
@@ -330,7 +330,7 @@ func = "连点器"
 mode = "Loop"
 ```
 
-**设计要点**：`KeyBindings` 跟踪所有键的实时按下/松开状态；`process_key_down` 时检查修饰键是否已按住；组合键按下时触发功能，修饰键松开时不影响功能运行；兼容现有单键注册（modifier=None）。主要改动在 `bindings.rs`（状态追踪）和 `config.rs`（解析）。
+**设计要点**：`KeyBindings` 跟踪所有键的实时按下/松开状态；`process_key_down` 时检查修饰键是否已按住；组合键按下时触发功能，修饰键松开时不影响功能运行；兼容现有单键注册（modifier=None）。主要改动在 `bindings.rs`（状态追踪）和 `profile.rs`（解析）。
 
 ### 通用 held-key 清理（已落地）
 

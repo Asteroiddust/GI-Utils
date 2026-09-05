@@ -1,4 +1,3 @@
-//! 热键绑定配置 — TOML-based key binding configuration.
 //!
 //! 配置与 Profile 系统 — exe 旁 `profiles/` 目录，每个 `*.toml` 一个
 //! profile（文件名即 profile 名）。启动加载活动 profile，不存在则生成
@@ -265,7 +264,6 @@ fn parse_mode(name: &str) -> Result<TriggerMode, String> {
 // Public API
 // ═══════════════════════════════════════════════════════════════════
 
-/// 配置文件路径（与 exe 同目录）— Path to the config file (next to the exe).
 /// profiles 目录 — exe 旁 `profiles/`，每个 `*.toml` 即一个 profile
 /// （文件名去扩展名 = profile 名）。2026-08-22 v1.5.2 配置系统改造。
 pub fn profiles_dir() -> PathBuf {
@@ -286,17 +284,28 @@ pub fn list_profiles() -> Vec<String> {
         .filter_map(|e| {
             e.file_name()
                 .to_str()
-                .map(|n| n.trim_end_matches(".toml").to_string())
+                .and_then(|n| n.strip_suffix(".toml").map(str::to_string))
         })
         .collect();
     names.sort();
     names
 }
 
+/// Windows 保留设备名（大小写不敏感）— "nul.toml" 打开的是 NUL 设备，
+/// 写入"成功"但文件不存在。
+const WINDOWS_RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 /// profile 文件路径（名 → profiles/<名>.toml；名含路径分隔符返回 None —
 /// 防目录穿越，profile 名只允许文件名级）。
 pub fn profile_path(name: &str) -> Option<PathBuf> {
+    let base = name.strip_suffix(".toml").unwrap_or(name); // 见 list_profiles 单次剥离对称
     if name.is_empty()
+        || WINDOWS_RESERVED
+            .iter()
+            .any(|r| base.eq_ignore_ascii_case(r))
         || name
             .chars()
             .any(|c| matches!(c, '/' | ':' | '\u{5C}') || c.is_control())
@@ -423,6 +432,11 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
     if !path.exists() {
         tracing::info!("  No config file detected.");
         tracing::info!("  Generating default config: {}", path.display());
+        // profiles/ 目录可能不存在（全新安装 — migrate 仅在有 legacy
+        // 文件时建目录）：写前建父目录，否则首启即 Err(NotFound)
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         std::fs::write(&path, DEFAULT_CONFIG)
             .map_err(|e| format!("failed to write default config: {}", e))?;
     }

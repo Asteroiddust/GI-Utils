@@ -195,7 +195,7 @@ icon_path = ""
 ```
 src/
 ├── bin/gi-utils-gui/     GUI 二进制（面板、托盘、窗口操作）
-├── config.rs             TOML 配置 + 函数工厂
+├── profile.rs             TOML 配置 + 函数工厂
 ├── key.rs                ScanCode 新类型 + Key（扫描码+E0）+ 常量表
 ├── interception/
 │   ├── protocol.rs       Interception 用户层协议的原生 Rust 移植
