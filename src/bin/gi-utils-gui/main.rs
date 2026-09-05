@@ -65,6 +65,9 @@ struct GuiApp {
     /// 按键捕获状态。
     capture: CaptureState,
 
+    /// 参数弹窗打开中的绑定 id（None = 关闭；同一时刻至多一个）。
+    param_popup: Option<usize>,
+
     /// 所有可用功能名称（下拉框选项）。
     function_names: Vec<&'static str>,
 
@@ -384,7 +387,7 @@ impl eframe::App for GuiApp {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
-                    self.show_binding_table(ui);
+                    self.show_binding_table(&ctx, ui);
                     ui.add_space(8.0);
                     self.show_action_buttons(ui);
                 });
@@ -402,7 +405,7 @@ impl eframe::App for GuiApp {
 
 impl GuiApp {
     /// 绑定表格 — egui::Grid 展示所有绑定。
-    fn show_binding_table(&mut self, ui: &mut egui::Ui) {
+    fn show_binding_table(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let mut need_apply = false;
         let mut remove_idx: Option<usize> = None;
         let mut capture_idx: Option<usize> = None;
@@ -515,15 +518,23 @@ impl GuiApp {
         // 2026-08-22 用户方案：参数属于各自绑定行 — 底部合并大 table 删除，
         // 有参数的功能在 Actions 列渲染 ⚙ 按钮，点击开 popup 就地编辑
         //（live 直写：修改即刻生效，下周期应用；Save 持久化）。
-        // 借用策略：show_param_popup 独立方法（&mut self）— popup 内直接
-        // 读写 key_bindings/func_params，无跨闭包借用问题。
-        if let Some((idx, resp)) = gear_response {
+        // 渲染在帧尾统一执行（show_param_window）— 此处仅 toggle 开关。
+        if let Some(idx) = gear_idx {
             // 行循环与 gear 执行同帧先后发生，行未被删除（Del 互斥触发）
-            if let Some(g) = self.bindings_list.get(idx)
-                && let Some(key) = g.key
-            {
-                self.show_param_popup(&resp, g.id, &key);
+            if let Some(g) = self.bindings_list.get(idx) {
+                // toggle：同 id 再点齿轮关闭
+                self.param_popup = if self.param_popup == Some(g.id) {
+                    None
+                } else {
+                    Some(g.id)
+                };
             }
+        }
+        if let Some(popup_id) = self.param_popup
+            && let Some(g) = self.bindings_list.iter().find(|x| x.id == popup_id)
+            && let Some(key) = g.key
+        {
+            self.show_param_window(ctx, popup_id, &key);
         }
         if need_apply {
             self.live_apply();
@@ -707,36 +718,31 @@ impl GuiApp {
         self.capture.rx = Some(self.key_bindings.enable_capture());
     }
 
-    /// 参数弹窗 — 齿轮按钮下方弹出（from_toggle_button_response：按钮
-    /// 点击即 toggle 开关，点外部自动关），渲染该绑定功能的全部参数行
-    /// （live 直写 + func_params 持久化镜像）。
-    fn show_param_popup(&mut self, button: &egui::Response, id: usize, key: &Key) {
+    /// 参数弹窗 — egui::Window 浮窗（2026-08-22 实测替代 Popup：popup 的
+    /// from_toggle_button_response + CloseOnClickOutside 与弹窗内按钮点击
+    /// 互相干扰（按钮 clicked 永远 false），Window 无该层拦截；齿轮
+    /// clicked toggle `param_popup` id，× 或再点齿轮关闭）。
+    fn show_param_window(&mut self, ctx: &egui::Context, id: usize, key: &Key) {
         let Some((specs, store)) = self.key_bindings.params_of(key) else {
+            self.param_popup = None;
             return;
         };
         let Some(row) = self.bindings_list.iter().find(|g| g.id == id) else {
-            return; // 行已删除
+            self.param_popup = None; // 行已删除
+            return;
         };
         let key_name = row.key_name.clone();
         let func = row.func.clone();
+        let mut open = true;
         let mut keyslot_capture: Option<CaptureTarget> = None;
-        let mut changed = false;
 
-        // 捕获进行中用 IgnoreClicks — 捕获弹窗（egui modal）的点击属"弹窗
-        // 外"，CloseOnClickOutside 会把参数 popup 关掉，键槽捕获失去可见的
-        // 取消入口、回来时状态丢失（实测 bug）；忽略点击 = 捕获期间弹窗
-        // 稳定驻留，结束后恢复点外自动关。
-        let close_behavior = if self.capture.active {
-            egui::PopupCloseBehavior::IgnoreClicks
-        } else {
-            egui::PopupCloseBehavior::CloseOnClickOutside
-        };
-        egui::Popup::from_toggle_button_response(button)
-            .close_behavior(close_behavior)
-            .show(|ui| {
+        egui::Window::new(egui::RichText::new(format!("{key_name} — {func}")).strong())
+            .id(egui::Id::new(("param_window", id)))
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
                 ui.set_min_width(240.0);
-                ui.strong(format!("{key_name} — {}", func));
-                ui.separator();
                 egui::Grid::new(egui::Id::new(("param_grid", id)))
                     .num_columns(2)
                     .min_col_width(90.0)
@@ -757,7 +763,7 @@ impl GuiApp {
                                     if resp.changed() {
                                         store.set_f64(si, v); // live 直写
                                         entry.insert(spec.name.into(), toml::Value::Float(v));
-                                        changed = true;
+                                        self.dirty = true;
                                     }
                                 }
                                 ParamKind::Int {
@@ -784,7 +790,7 @@ impl GuiApp {
                                     if resp.changed() {
                                         store.set_i64(si, v);
                                         entry.insert(spec.name.into(), toml::Value::Integer(v));
-                                        changed = true;
+                                        self.dirty = true;
                                     }
                                 }
                                 ParamKind::Bool { .. } => {
@@ -792,20 +798,21 @@ impl GuiApp {
                                     if ui.checkbox(&mut v, "").changed() {
                                         store.set_bool(si, v);
                                         entry.insert(spec.name.into(), toml::Value::Boolean(v));
-                                        changed = true;
+                                        self.dirty = true;
                                     }
                                 }
                             }
                             ui.end_row();
                         }
                     });
-                if changed {
-                    self.dirty = true;
-                }
             });
-        // popup 关闭判定（CloseOnClickOutside）— open 参数为 false 时 egui
-        // 不渲染；用 popup 内部状态跟踪不可靠，改为齿轮按钮 toggle open，
-        // 点击行外由 close_behavior 自动关（此处仅同步 open 状态）
+        if !open {
+            self.param_popup = None; // × 关闭
+        }
+
+        if let Some(target) = keyslot_capture {
+            self.start_capture(target);
+        }
     }
 
     /// 取消按键捕获（弹窗 Cancel 按钮）。
@@ -1471,6 +1478,7 @@ fn main() {
                 target: None,
                 rx: None,
             },
+            param_popup: None,
             function_names: function_names.clone(),
             font_loaded: false,
             // 每轮尝试都携带完整启动历史（panic 消息可见于日志面板）
