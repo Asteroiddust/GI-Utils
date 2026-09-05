@@ -135,7 +135,7 @@ struct GuiApp {
 /// 按键捕获状态。
 /// 按键捕获目标 — 绑定键（Key 列 Set Key）或功能参数键槽（SpamKey 等）。
 #[derive(Clone, Copy, PartialEq)]
-enum CaptureTarget {
+pub(crate) enum CaptureTarget {
     /// 绑定某功能的按键（写 GuiBinding.key）。
     Binding(usize),
     /// 功能参数键槽（写参数 Int 槽 + func_params；绑定的 `GuiBinding.id`
@@ -410,7 +410,6 @@ impl GuiApp {
         let mut remove_idx: Option<usize> = None;
         let mut capture_idx: Option<usize> = None;
         let mut gear_idx: Option<usize> = None;
-        let mut gear_response: Option<(usize, egui::Response)> = None;
         let function_names = self.function_names.clone(); // 循环外克隆一次
 
         // L3: 捕获期间禁用表格交互 — 防止捕获中改/删行导致 binding_id 悬空
@@ -433,10 +432,8 @@ impl GuiApp {
                                 && self.capture.target == Some(CaptureTarget::Binding(binding.id))
                             {
                                 ui.label("(capturing...)");
-                            } else if let Some(ref name) =
-                                binding.key.map(|_| binding.key_name.clone())
-                            {
-                                ui.label(name);
+                            } else if binding.key.is_some() {
+                                ui.label(&binding.key_name);
                             } else {
                                 ui.colored_label(
                                     egui::Color32::from_rgb(150, 150, 150),
@@ -493,13 +490,10 @@ impl GuiApp {
                                         .params_of(&k)
                                         .is_some_and(|(specs, _)| !specs.is_empty())
                                 });
-                                if has_params {
-                                    let resp = ui.button("⚙");
-                                    if resp.clicked() {
-                                        gear_idx = Some(i);
-                                    }
-                                    gear_response = Some((i, resp));
-                                } else {
+                                if has_params && ui.button("⚙").clicked() {
+                                    gear_idx = Some(i);
+                                }
+                                if !has_params {
                                     ui.add_enabled(false, egui::Button::new("⚙"))
                                         .on_disabled_hover_text("此功能无参数");
                                 }
@@ -539,6 +533,9 @@ impl GuiApp {
                     self.cancel_capture()
                 }
                 _ => {}
+            }
+            if self.param_popup == row_id {
+                self.param_popup = None; // 弹窗指向行已删 — 同步清除
             }
             self.bindings_list.remove(idx);
             need_apply = true;
@@ -586,6 +583,7 @@ impl GuiApp {
                     func: default_func,
                     mode: TriggerMode::Loop,
                 });
+                self.dirty = true; // 空行已可见 — Esc 放弃也应提示未保存
                 // 新增行自动进入按键捕获
                 self.start_capture(CaptureTarget::Binding(id));
             }
@@ -731,6 +729,9 @@ impl GuiApp {
     }
     /// 开始按键捕获。`binding_id` 是目标行的 `GuiBinding.id`（与行号无关）。
     fn start_capture(&mut self, target: CaptureTarget) {
+        if self.capture.active {
+            return; // 重入守卫 — 防旧 rx 被静默替换泄漏
+        }
         self.capture.active = true;
         self.capture.target = Some(target);
         self.capture.rx = Some(self.key_bindings.enable_capture());
@@ -892,10 +893,13 @@ impl GuiApp {
                                 return;
                             }
                             store.set_i64(slot, packed);
+                            // 持久化 packed 整数（apply_params 的 Int 臂直收；
+                            // String 臂仅兼容手写键名 — 存 String 会让重启
+                            // 恢复/GUI 重注册走解析路径，无谓增加失败面）
                             self.func_params
                                 .entry(row.func.clone())
                                 .or_default()
-                                .insert("key".into(), toml::Value::String(name.clone()));
+                                .insert("key".into(), toml::Value::Integer(packed));
                             self.dirty = true;
                             self.log(format!(
                                 "Parameter key → '{}' ({} / slot {slot})",
@@ -937,6 +941,7 @@ impl GuiApp {
         // HashMap::insert 静默后写覆盖（表格显示两行、实际只有一行生效）
         if let Err(e) = self.validate_bindings() {
             self.error_msg = Some(e);
+            self.dirty = true; // 表格已是新状态而引擎仍旧绑定 — 提示未保存
             return;
         }
 
@@ -964,12 +969,12 @@ impl GuiApp {
                     }
                 }
             };
-            // 动态参数覆写（per-function：从功能级参数表取，换功能不残留 —
-            // 行参数已删，根除"同键换功能用旧参数校验报错"）
+            // 动态参数覆写（per-function：从功能级参数表取，换功能不残留）。
+            // 失败语义与启动路径一致：WARN + 按默认参数注册 — 不因单个参数
+            // 坏值使整行热键失效（参数错误应可见但不破坏绑定）
             let params = self.func_params.get(&g.func).cloned().unwrap_or_default();
             if let Err(e) = config::apply_params(&func, &params) {
-                errors.push(format!("'{}' params: {}", g.func, e));
-                continue;
+                errors.push(format!("'{}' params: {}（按默认参数注册）", g.func, e));
             }
 
             self.key_bindings.register(key, g.mode, func);
@@ -1427,8 +1432,9 @@ fn main() {
             }
         };
 
-        // 注册表对齐：重试轮先停旧功能线程（clear_all 只移除条目，旧线程
-        // 会永久失联存活）再全量替换（review #8）
+        // 注册表对齐：重试轮先停旧功能线程再全量替换（review #8）—
+        // stop_all 在恢复轮的价值是同步 join（旧 app 帧循环已死、
+        // clear_all 的 pending 队列无人回收）
         if attempt > 0 {
             startup_log.extend(register_all_bindings(
                 &key_bindings,

@@ -342,6 +342,7 @@ font_path = ""
 /// If the file is missing, a default config is generated. Validates bidirectional
 /// uniqueness: each key maps to one function and each function maps to one key.
 /// 加载配置（含功能级参数表）— load() 的完整形态。
+/// 校验仅键唯一（功能可绑多键，2026-08-22）。
 /// 返回 (绑定列表, 功能参数表)；`load()` 为仅取绑定的便捷包装。
 pub fn load_full() -> Result<(Vec<Binding>, FuncParams), String> {
     let path = config_path();
@@ -569,11 +570,24 @@ pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), 
         };
         match (&spec.kind, value) {
             (ParamKind::Float { min, max, .. }, toml::Value::Float(v)) => {
+                // NaN/Inf 显式拒绝 — clamp 不滤 NaN，穿透会致下游
+                // clamp(min,max) 断言 panic（功能线程 panic = 全进程退出）
+                if !v.is_finite() {
+                    return Err(format!("参数 '{name}' 非有限值: {v}"));
+                }
                 store.set_f64(idx, v.clamp(*min, *max));
             }
             (ParamKind::Float { min, max, .. }, toml::Value::Integer(v)) => {
                 // 整值宽容转换（手写 "10" 意图即 10.0）
                 store.set_f64(idx, (*v as f64).clamp(*min, *max));
+            }
+            (ParamKind::Int { .. }, toml::Value::String(name_val)) if spec.name == "key" => {
+                // 键槽（SpamKey）：持久化为键名 — GUI 捕获写 String；
+                // 解析回打包值（解析失败显式报错，不静默回落）
+                let Some(key) = crate::config::parse_key(name_val).ok() else {
+                    return Err(format!("参数 '{name}' 键名无效: '{name_val}'"));
+                };
+                store.set_i64(idx, crate::functions::spam_key::pack_key(key));
             }
             (ParamKind::Int { min, max, .. }, toml::Value::Integer(v)) => {
                 store.set_i64(idx, (*v).clamp(*min, *max));

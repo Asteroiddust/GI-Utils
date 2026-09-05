@@ -245,8 +245,10 @@ impl Core {
             OptimizeMode::Minimal => {}
         }
 
-        // ── 5. 提升优先级（三模式共有）──────────────────
-        unsafe { SetPriorityClass(h_process, HIGH_PRIORITY_CLASS) }.ok();
+        // ── 5. 提升优先级（三模式共有；失败告警不阻断 — 与亲和性步骤同粒度）──
+        if let Err(e) = unsafe { SetPriorityClass(h_process, HIGH_PRIORITY_CLASS) } {
+            error!("优化游戏: 提升优先级失败: {}", e);
+        }
         unsafe { windows::Win32::Foundation::CloseHandle(h_process) }.ok();
         info!("优化游戏: 进程优先级已提升为高");
 

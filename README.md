@@ -109,7 +109,7 @@ Build configuration highlights:
   (unwind powers the GUI crash self-healing)
 - dev: `opt-level=0` for own code, deps at `opt-level=2` (smooth UI)
 
-Tests: `cargo test` — 46 unit tests + doctests, no driver required.
+Tests: `cargo test` — 56 unit tests + doctests, no driver required.
 
 ## Configuration
 
@@ -125,7 +125,7 @@ mode = "Once"
 
 [[bindings]]
 key = "F13"
-func = "连点器v1"
+func = "连点器"
 mode = "Loop"
 
 [[bindings]]
@@ -168,7 +168,7 @@ mode = "Once"
 icon_path = ""
 ```
 
-Function names are Chinese (matching the in-game terminology); key names
+Function names are mostly Chinese (plus English `SpamKey`) (matching the in-game terminology); key names
 accept any key in the 90+ constants table (F1–F24, letters, numpad, media
 keys…).
 
@@ -177,15 +177,18 @@ keys…).
 | Config name | Default key | Mode | Behavior |
 |---|---|---|---|
 | 停止退出 | F12 | Once | Sets the engine stop flag → clean shutdown |
-| 连点器v1 | F13 | Loop | Auto-click LMB at 10 ms cycles while held |
-| 连点器v2 | — | Loop | Auto-click variant, 8 ms down / 8 ms up (independently tunable) |
+| 连点器 | F13 | Loop | Auto-click LMB — dynamic params (interval_ms / hold_ms, ⚙ panel live-edit) |
+| SpamKey | F20 | Once | Repeat-strike any configured key (key / interval_ms / hold_ms dynamic params) |
+| 线程采样 | F20* | Once | Thread-profile sampler → thread_sample.txt (analysis tool, no injection) |
 | 快速拾取 | F14 | Loop | Taps F + scrolls wheel down repeatedly (loot pickup) |
 | 鬼畜走路 | F15 | Loop | WASD rolling taps (50 ms interval, 1 ms hold) |
 | 火神跳喷 | F16 | Loop | Initial jump, then repeating space taps |
 | 甘雨走A | F17 | Once | Aim-cancel combo: L/R clicks + R key |
 | 双玛头 | F18 | Loop | Mavuika double-cancel choreography (L hold + R clicks + S) |
 | 坐标颜色 | F19 | Loop | Prints cursor position + pixel RGB continuously |
-| 优化游戏 | NumpadAdd | Once (toggle) | Odd press: raise game priority + foreground; even press: restore |
+| 优化游戏 | NumpadAdd | Once (toggle) | Advanced: game affinity + OTHER isolation + priority + hot-thread pinning |
+| 优化游戏标准 | — | Once (toggle) | Standard: OTHER isolation + priority (no game affinity / pinning) |
+| 优化游戏简易 | — | Once (toggle) | Minimal: priority + foreground only (no affinity changes) |
 
 ## Trigger Modes
 

@@ -27,11 +27,12 @@ def classify(text: str) -> tuple[int, int, int]:
         while i < len(line):
             two = line[i : i + 2]
             if in_block:
-                ct += 1
                 if two == "*/":
+                    ct += 2
                     in_block = False
                     i += 2
                 else:
+                    ct += 1
                     i += 1
                 continue
             if two == "//":

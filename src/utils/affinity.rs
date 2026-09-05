@@ -246,18 +246,6 @@ where
     Ok(())
 }
 
-/// 按映像名查找进程 pid（大小写不敏感）— 线程采样等跨进程功能使用。
-/// 未找到返回 None；快照创建失败同样返回 None（调用方决定提示语义）。
-pub fn find_pid_by_name(name: &str) -> Option<u32> {
-    let iter = ProcessIterator::new().ok()?;
-    for entry in iter {
-        if entry.name().eq_ignore_ascii_case(name) {
-            return Some(entry.pid());
-        }
-    }
-    None
-}
-
 /// 按 pid 查找进程映像名 — 线程 pinning 的策略键（进程名 → 策略）。
 pub fn find_name_by_pid(pid: u32) -> Option<String> {
     let iter = ProcessIterator::new().ok()?;

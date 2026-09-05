@@ -1,7 +1,7 @@
 //! 线程采样 — 游戏进程画像采集（Once）。
 //!
 //! Process Explorer Threads 页的自动化版：两次采样差分得到 CPU%/Cycles
-//! Delta，全列输出到 exe 旁 `thread_sample.txt`（追加），日志面板给
+//! Delta，全列覆盖写入 exe 旁 `thread_sample.txt`，日志面板给
 //! 摘要（线程数 / 句柄打开率 = pinning 可行性信号 / Top 5）。
 //! 为"热线程 pin 到金银核"功能做决策数据（2026-08-22）。
 //! 目标进程按共享名单扫描（functions::GAME_PROCESS_NAMES）。
@@ -175,7 +175,7 @@ impl KeyFunction for 线程采样 {
             );
         }
 
-        // 7. 全表 → exe 旁 thread_sample.txt（追加）
+        // 7. 全表覆盖写入 exe 旁 thread_sample.txt
         let path = write_table(&rows, pid, &process_name, s2.nt_available);
         match path {
             Ok(p) => info!("线程采样: 完整表已追加至 {}", p.display()),

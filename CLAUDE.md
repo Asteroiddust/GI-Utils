@@ -1,6 +1,6 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.5.0
 
-> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 32 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16 · 原生移植审查 14 项全处置，2026-08-19
+> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 56+ 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16 · 原生移植审查 14 项全处置，2026-08-19
 > **Build**: O3 + LTO fat + panic=unwind + rust-lld + target-cpu=native
 
 ## 项目概述
@@ -68,7 +68,7 @@ src/
 
 └── functions/
     ├── stop.rs                #   停止退出 (F12, Once)
-    ├── auto_clicker.rs        #   连点器v1 (F13, Loop) + 连点器v2（同文件独立复制版）
+    ├── auto_clicker.rs        #   连点器 (F13, Loop) — 动态参数版（v1/v2 已归并）
     ├── quick_pickup.rs        #   快速拾取 (F14, Loop)
     ├── ghost_walk.rs          #   鬼畜走路 (F15, Loop)
     ├── mavuika_jump.rs        #   火神跳喷 (F16, Loop)
@@ -113,7 +113,8 @@ Engine (主循环, blocking)
 | **表空不结束（live-edit）** | 表空以 0.5ms 轮询等待编辑器追加；结束只由 stop_requested 决定（MIDI 编辑器语义：播放器永不自杀） |
 | **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程，无静态表边界缝隙（对应 C++ next_press_time + scheduled_releases）；卡顿节拍重锚 — 错过即弃、不突发追拍（有意偏离 C++ 原版） |
 | **挂起键兜底清理** | 停止时补发 release（活动音符 note-off，含 At 键盘事件），防卡键；EventSequence::play 内置 HeldTracker（双玛头手工粘滞键追踪已退役） |
-| **KeyFunction 只有 1 个方法** | `execute(&self, stop_requested: Arc<AtomicBool>)` |
+| **KeyFunction 1 必需方法 + 2 参数默认方法** | `execute(stop_requested)`；`parameters()`/`param_store()` 默认空实现（动态参数，2026-08-22 — 既有功能零改动继承） |
+| **动态参数函数** | 参数槽数量/类型实现期固定（Float/Int/Bool 三档 ParamSpec），`ParamValues` 全原子槽（f64 位模式存 AtomicU64）— GUI ⚙ 弹窗**直写 store** 即刻生效（不停线程、不触发注册表替换）；持久化走**顶层 `[params.<功能名>]`** per-function 语义（同功能多键共享配置初值，换功能零残留；行内 `[bindings.params]` 已废弃 — TOML 归属歧义，读兼容迁移、写禁用）；`apply_params` NaN/Inf 显式拒绝（clamp 不滤 NaN，穿透致下游 assert panic → 全进程退出）；键槽（SpamKey）= 打包 ScanCode+E0 存 Int 槽，捕获通道复用 Set Key，持久化 Integer |
 | **线程级核心分离** | 进程掩码 12-15，GUI 渲染→12,13 (LOWEST)，输入处理→14,15 (REALTIME) |
 | **pending_joins 惰性 join** | `is_finished()` 检查保留未结束句柄，GUI 帧永不阻塞 |
 | **GUI live-apply + 托盘隐藏** | 修改即时生效；关闭隐藏到托盘，F12/菜单退出 |
@@ -216,7 +217,7 @@ mode = "Once"
 
 [[bindings]]
 key = "F13"
-func = "连点器v1"
+func = "连点器"
 mode = "Loop"
 
 # GUI 配置 — icon_path 指向 .ico 托盘图标；留空使用程序生成图标
@@ -229,8 +230,9 @@ icon_path = ""
 | 功能 | 状态 | 优先级 | 难度 | 备注 |
 |------|:----:|:------:|:----:|------|
 | 停止退出 | ✅ | — | — | |
-| 连点器v1 | ✅ | — | — | |
-| 连点器v2 | ✅ | — | — | v1 同文件复制版（调参互不影响） |
+| 连点器 | ✅ | — | — | 动态参数版（v1/v2 已归并，interval/hold 可调） |
+| SpamKey | ✅ | — | — | 任意键敲击（key/interval/hold 动态参数） |
+| 线程采样 | ✅ | — | — | F20 — 线程画像分析工具（非注入功能） |
 | 快速拾取 | ✅ | — | — | |
 | 鬼畜走路 | ✅ | — | — | |
 | 火神跳喷 | ✅ | — | — | |
@@ -322,7 +324,7 @@ Save 是全量 stop + 重注册线程，参数改动须走**共享状态直写**
 [[bindings]]
 key = "F13"
 modifier = "Ctrl"        # None / Ctrl / Alt / Shift / Win
-func = "连点器v1"
+func = "连点器"
 mode = "Loop"
 ```
 
@@ -336,5 +338,5 @@ mode = "Loop"
 
 | 类型 | 模型 | 代表功能 |
 |------|------|---------|
-| **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器v1/v2、快速拾取、甘雨走A、双玛头、火神跳喷 |
+| **Serial** (Sequence based) | `EventSequence` 链式 API | 连点器、快速拾取、甘雨走A、双玛头、火神跳喷 |
 | **Timestamp** (Time based) | 时间轴调度器 `Timeline`/`RollingKeys`（`engine/timeline.rs`） | 鬼畜走路 ✅、未来钢琴模式 |

@@ -109,11 +109,15 @@ def main() -> None:
                   f"总 {total_cpu:6.1f}%（{share:5.1f}% 集中度）")
 
         print("\n── 按起始地址聚合（线程层）──")
+        def ideal_range(s):
+            s = s.dropna()
+            return f"{s.min():.0f}-{s.max():.0f}" if not s.empty else "-"
+
         agg = (g.groupby("start")
                  .agg(threads=("tid", "count"),
                       cpu_sum=("cpu_pct", "sum"),
                       cpu_max=("cpu_pct", "max"),
-                      ideal_range=("ideal_cpu", lambda s: f"{s.min():.0f}-{s.max():.0f}"))
+                      ideal_range=("ideal_cpu", ideal_range))
                  .sort_values("cpu_sum", ascending=False))
         print(agg.head(12).to_string())
 

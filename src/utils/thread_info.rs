@@ -50,7 +50,6 @@ const NT_THREAD_STRIDE: usize = 80;
 mod thr_off {
     pub const KERNEL_TIME: usize = 0; // i64（100ns）
     pub const USER_TIME: usize = 8; // i64
-    pub const WAIT_TIME: usize = 24; // u32
     pub const PRIORITY: usize = 56; // i32（当前/动态优先级）
     pub const BASE_PRIORITY: usize = 60; // i32
     pub const CONTEXT_SWITCHES: usize = 64; // u32
@@ -79,16 +78,24 @@ fn read_usize(buf: &[u8], off: usize) -> usize {
     unsafe { (buf.as_ptr().add(off) as *const usize).read_unaligned() }
 }
 
-/// 快照里读到的 UNICODE_STRING → String（越界防御：指针空或长度 0 返回空）。
+/// 快照里读到的 UNICODE_STRING → String。
+/// 防御：指针空/长度 0/缓冲越界均返回空 — NT 布局漂移时 buffer 字段是
+/// 任意垃圾值，不校验就解引用属 UB（review：此前仅判空，越界未防）。
 fn read_nt_string(buf: &[u8], off: usize) -> String {
-    let length = read_u32(buf, off) as usize; // USHORT Length + USHORT MaximumLength
-    let length = length & 0xFFFF;
+    let length = (read_u32(buf, off) as usize) & 0xFFFF; // USHORT Length
     let buffer = read_usize(buf, off + 8);
     if length == 0 || buffer == 0 {
         return String::new();
     }
-    // 指针指向内核拷贝到我们缓冲内的数据，但仍做边界防御
-    let slice = unsafe { std::slice::from_raw_parts(buffer as *const u16, length / 2) };
+    let byte_len = length.min(length / 2 * 2); // 偶数字节对齐
+    let start = buffer as usize;
+    // UNICODE_STRING.Buffer 应指向本缓冲内（内核拷贝）；越界 = 布局漂移
+    let buf_start = buf.as_ptr() as usize;
+    let buf_end = buf_start + buf.len();
+    if start < buf_start || start + byte_len > buf_end {
+        return String::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(start as *const u16, byte_len / 2) };
     String::from_utf16_lossy(slice)
 }
 
@@ -475,7 +482,7 @@ pub fn snapshot_threads(pid: u32) -> Result<Snapshot, String> {
     }
 
     let nt = nt_snapshot_threads(pid);
-    let nt_available = nt.is_ok();
+    let nt_available = nt.is_ok(); // false = 校验失败降级为仅句柄列（文档语义）
 
     let mut entries: Vec<ThreadEntry> = tids
         .into_iter()
@@ -487,10 +494,15 @@ pub fn snapshot_threads(pid: u32) -> Result<Snapshot, String> {
     if let Ok(nt_entries) = &nt {
         let map: std::collections::HashMap<u32, &ThreadEntry> =
             nt_entries.iter().map(|(tid, e)| (*tid, e)).collect();
-        // 健全性交叉校验：NT 与 ToolHelp 的 TID 重叠 ≥ 一半，否则布局可疑
+        // 健全性交叉校验：NT 与 ToolHelp 的 TID 重叠 ≥ 一半 — 可疑则整体
+        // 降级为无 NT 列（文档承诺），绝不给错数据、也不放弃句柄列
         let overlap = entries.iter().filter(|e| map.contains_key(&e.tid)).count();
         if overlap * 2 < entries.len() {
-            return Err("NT/ToolHelp tid overlap too low — layout suspect".into());
+            return Ok(Snapshot {
+                entries,
+                handles_opened: 0,
+                nt_available: false,
+            });
         }
         for e in entries.iter_mut() {
             if let Some(nt_e) = map.get(&e.tid) {
