@@ -269,7 +269,7 @@ fn config_path() -> PathBuf {
 }
 
 /// 默认配置内容（首次运行时写入）— Default config content, written on first run.
-const DEFAULT_CONFIG: &str = r#"# GI-Utils 热键配置
+pub(crate) const DEFAULT_CONFIG: &str = r#"# GI-Utils 热键配置
 # 格式: [[bindings]]  key = "按键名"  func = "功能名"  mode = "Once/Loop/Toggle"
 
 [[bindings]]
@@ -281,10 +281,6 @@ mode = "Once"
 key = "F13"
 func = "连点器"
 mode = "Loop"
-
-[bindings.params]
-interval_ms = 10.0
-hold_ms = 0.0
 
 [[bindings]]
 key = "F14"
@@ -326,6 +322,11 @@ mode = "Once"
 key = "F20"
 func = "线程采样"
 mode = "Once"
+
+# 动态参数 — per-function（[params.<功能名>]，GUI ⚙ 面板修改后 Save 同步）
+[params."连点器"]
+interval_ms = 10.0
+hold_ms = 0.0
 
 # GUI 配置 — icon_path 指向 .ico 托盘图标；font_path 指向 CJK 补充字体；
 # 两者留空均使用自动回退（程序生成图标 / 系统字体 msyh→simsun）
@@ -598,6 +599,23 @@ pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), 
 // ═══════════════════════════════════════════════════════════════════
 // apply_params 单测 — 按名/类型匹配与错误语义
 // ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod default_config_tests {
+    /// DEFAULT_CONFIG 必须能被自家解析器全量消化（fallback 文件 = 用户
+    /// 第一份配置，解析失败即首启报错 — 回归网）
+    #[test]
+    fn default_config_parses_with_params_table() {
+        let raw: toml::Value = toml::from_str(crate::config::DEFAULT_CONFIG)
+            .expect("DEFAULT_CONFIG must be valid TOML");
+        // 顶层 per-function 参数表存在且归属正确
+        assert!(raw.get("params").is_some());
+        assert!(raw["params"]["连点器"]["interval_ms"].as_float() == Some(10.0));
+        // 行内旧格式不得再出现（skip_serializing 只管写出 — 此处保证模板源头干净）
+        let text = crate::config::DEFAULT_CONFIG;
+        assert!(!text.contains("[bindings.params]"), "行内 params 已废弃");
+    }
+}
 
 #[cfg(test)]
 mod param_tests {
