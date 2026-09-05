@@ -341,9 +341,9 @@ impl eframe::App for GuiApp {
                 ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = if self.log_visible {
-                        "▸ Log"
+                        "▶ Log"
                     } else {
-                        "▹ Log"
+                        "◀ Log"
                     };
                     if ui.button(label).clicked() {
                         self.log_visible = !self.log_visible;
