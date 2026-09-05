@@ -1156,10 +1156,8 @@ impl GuiApp {
 impl Drop for GuiApp {
     fn drop(&mut self) {
         // 只做无害清理。完整关机序列（托盘收尾/停引擎/stop_all/亲和性恢复）
-        // 已移至 main 的 shutdown_all — Drop 在渲染 panic 回卷时也会执行：
-        // 若此处执行关机序列，catch_unwind 捕获之前引擎已被杀死、stop_flag
-        // 被锁死为 true，自愈重试拿到的是死引擎（review 发现）。因此这里
-        // 绝不能包含任何破坏性动作。
+        // 在 main 的 shutdown_all 显式执行 — 这里绝不能包含任何破坏性
+        // 动作（关机次序语义自 glow 时代保留，详见 shutdown_all 注释）。
         self.key_bindings.disable_capture();
     }
 }
@@ -1292,38 +1290,33 @@ fn show_message_box(title: &str, msg: &str) {
 /// panic=abort 时 Drop 不执行（`restore_all_affinity` 在 Drop 路径中），
 /// 若 panic 前已隔离游戏核心，其它进程会停留在受限核心 — hook 兜底恢复。
 /// 必须在任何可能 panic 的代码之前安装。
-/// GUI 渲染重试上下文的 panic 标记 — 仅当 panic 发生在 **GUI 主线程** 且处于
-/// run_native 期间（catch_unwind 会恢复）时 hook 静默；引擎/功能/托盘线程的
-/// panic 仍走完整兜底（弹窗 + 恢复亲和性）。
-static IN_GUI_RETRY: AtomicBool = AtomicBool::new(false);
-
-/// GUI 主线程 id — 与 IN_GUI_RETRY 组合判断 panic 是否属于可恢复的渲染 panic。
-static GUI_MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
-
+/// 安装 panic hook：崩溃现场落盘 + 恢复亲和性 + MessageBox + 退出。
+///
+/// panic=abort 时 Drop 不执行（`restore_all_affinity` 在 Drop 路径中），
+/// 若 panic 前已隔离游戏核心，其它进程会停留在受限核心 — hook 兜底恢复。
+/// 必须在任何可能 panic 的代码之前安装。
+///
+/// dev-wgpu：原"GUI 渲染 panic 可恢复"分支（IN_GUI_RETRY/GUI_MAIN_THREAD/
+/// catch_unwind 重试）已随 glow 后端一起移除 — wgpu surface Lost 逐帧
+/// 自愈，渲染层不再 panic（睡眠唤醒实测通过）。hook 现为纯兜底：
+/// 任何线程 panic = 落盘 + 还原 + 弹窗 + fail-fast（防 Loop 功能僵尸注入）。
 fn install_panic_hook(log: gi_utils::utils::log_collector::LogCollector) {
     std::panic::set_hook(Box::new(move |info| {
-        let on_gui_thread = GUI_MAIN_THREAD
-            .get()
-            .map(|id| std::thread::current().id() == *id)
-            .unwrap_or(false);
-        if IN_GUI_RETRY.load(Ordering::Relaxed) && on_gui_thread {
-            // 渲染 panic 由 catch_unwind 恢复 — 不弹窗、不恢复亲和性
-            // （引擎仍在运行，恢复会破坏游戏优化）。也不落盘 —
-            // 该路径的消息已进日志面板，重试耗尽后的最终出口统一落盘。
-            return;
-        }
-        // 真崩溃：日志缓冲快照落盘到 exe 旁 crash.log（best-effort —
-        // panic 路径绝不 panic 或弹二次错误）
+        // 崩溃现场落盘（best-effort — panic 路径绝不 panic 或弹二次错误）
         write_crash_log(&format!("{info}"), &log);
         let _ = utils::thread_pin::restore();
         let _ = utils::affinity::restore_all_affinity();
         show_message_box(
             "GI-Utils 错误",
-            &format!("GI-Utils 发生致命错误，即将退出：\n\n{}", info),
+            &format!(
+                "GI-Utils 发生致命错误，即将退出：
+
+{}",
+                info
+            ),
         );
-        // 非渲染 panic（引擎/功能/托盘线程）→ 弹框后立即终止进程。
-        // unwind 语义下线程静默死亡会让 Loop 功能继续注入、F12 失效
-        // （僵尸进程）— 恢复 panic=abort 时代的 fail-fast 语义。
+        // fail-fast：unwind 语义下线程静默死亡会让 Loop 功能继续注入、
+        // F12 失效（僵尸进程）
         std::process::exit(1);
     }));
 }
@@ -1338,7 +1331,11 @@ fn write_crash_log(summary: &str, log: &gi_utils::utils::log_collector::LogColle
         return;
     };
     let mut content = format!(
-        "GI-Utils crash log — {}\npanic: {}\n\n---- log buffer ----\n",
+        "GI-Utils crash log — {}
+panic: {}
+
+---- log buffer ----
+",
         chrono_now(),
         summary
     );
@@ -1349,26 +1346,13 @@ fn write_crash_log(summary: &str, log: &gi_utils::utils::log_collector::LogColle
     let _ = std::fs::write(dir.join("crash.log"), content);
 }
 
-/// 崩溃时间戳（无 chrono 依赖 — SystemTime 换算本地时刻，失败回退空串）。
+/// 崩溃时间戳（无 chrono 依赖 — SystemTime 换算，失败回退空串）。
 fn chrono_now() -> String {
     use std::time::UNIX_EPOCH;
     let Ok(dur) = std::time::SystemTime::now().duration_since(UNIX_EPOCH) else {
         return String::new();
     };
-    // Windows 本地时区换算：秒数偏移（东八区 +8h 示例 — 实际时区无关紧要，
-    // 只需人类可读的近似本地时间；UTC 亦可接受，此处直接输出 UTC）
     format!("UTC {}", dur.as_secs())
-}
-
-/// 从 panic payload 提取可读消息（&str / String / 未知）。
-fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "unknown panic payload".to_string()
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1440,7 +1424,7 @@ fn main() {
     if config::migrate_legacy_config() {
         startup_log.push("Migrated legacy config → profiles/默认.toml".into());
     }
-    let (config_bindings, mut startup_func_params, mut config_ok) = match config::load_full() {
+    let (config_bindings, startup_func_params, config_ok) = match config::load_full() {
         Ok((b, fp)) => {
             startup_log.push(format!("Loaded {} bindings from profile", b.len()));
             (b, fp, true)
@@ -1510,234 +1494,145 @@ fn main() {
     );
     startup_log.push("Engine running.".into());
 
-    // 记录 GUI 主线程 id — panic hook 据此区分"渲染 panic（可恢复）"
-    // 与"其他线程 panic（弹窗 + 恢复亲和性）"。
-    let _ = GUI_MAIN_THREAD.set(std::thread::current().id());
-
-    // ── 7. GUI 事件循环（崩溃自愈重试，最多 MAX_GUI_RETRIES 次）──
-    // 睡眠唤醒/显示变更会使 wgl 上下文失效，eframe 在 glow_integration 的
-    // make_current 处 unwrap panic。catch_unwind 捕获后：收尾旧托盘线程 →
-    // 重建注册表与 app → 重试 — 引擎全程存活（关机序列已移出 Drop）。
-    const MAX_GUI_RETRIES: u32 = 3;
-    let function_names = config::list_function_names();
-    let mut tray_handle: Option<JoinHandle<()>> = None;
-    let mut last_error: Option<String> = None;
-
-    // 托盘可用性 / 窗口隐藏态 — 进程级共享：崩溃恢复重建 app 时继承
-    // 崩溃前的值（否则恢复后关窗直接退出、隐藏态弹回桌面）
+    // 托盘可用性 / 窗口隐藏态 — 进程级共享（GuiApp 持 Arc；tray 线程失败
+    // 时重置以引导关窗走退出路径）
     let tray_ok_shared = Arc::new(AtomicBool::new(false));
     let hidden_shared = Arc::new(AtomicBool::new(false));
-    // 托盘线程退出请求标志 — 每轮尝试独立（stop_tray_thread 置位后，旧线程
-    // ⑨ 搜索循环/泵感知并立即收尾；新线程必须用新标志，否则会被旧 quit 误伤）。
-    // 此初值仅满足定义，循环首行立即覆盖（review 记录的潜在误读点）。
-    let mut tray_quit = Arc::new(AtomicBool::new(false));
 
-    for attempt in 0..MAX_GUI_RETRIES {
-        // 本轮独立 quit 标志（见上）
-        tray_quit = Arc::new(AtomicBool::new(false));
-
-        // 绑定来源：首次尝试用启动快照；重试从磁盘重载 — 快照可能落后于
-        // 用户已保存的修改（review #2），恢复必须以磁盘为准
-        let attempt_bindings: Vec<Binding> = if attempt == 0 {
-            config_bindings.clone()
-        } else {
-            match config::load_full() {
-                Ok((b, fp)) => {
-                    startup_log.push("配置已从 config.toml 重新加载（崩溃恢复）".into());
-                    // 磁盘可解析 → 恢复 Save 可用性（与重载结果一致，review 发现）
-                    config_ok = true;
-                    startup_func_params = fp;
-                    b
-                }
-                Err(e) => {
-                    startup_log.push(format!("config.toml 重载失败（沿用启动快照）: {}", e));
-                    config_bindings.clone()
-                }
-            }
-        };
-
-        // 注册表对齐：重试轮先停旧功能线程再全量替换（review #8）—
-        // stop_all 在恢复轮的价值是同步 join（旧 app 帧循环已死、
-        // clear_all 的 pending 队列无人回收）
-        if attempt > 0 {
-            startup_log.extend(register_all_bindings(
-                &key_bindings,
-                &stop_func,
-                &attempt_bindings,
-                &send_ctx,
-                true,
-            ));
+    // ── 7. GUI 事件循环（直接运行 — 无重试）──
+    // dev-wgpu：睡眠唤醒的 glow/wgl make_current panic 已随后端切换消失
+    // （wgpu surface Lost 由 egui-wgpu 逐帧 RecreateSurface 自愈，实测通过），
+    // catch_unwind 重试循环退役。启动失败（非 panic）仍走弹窗 + 落盘出口。
+    let function_names = config::list_function_names();
+    let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
+    let tray_quit = Arc::new(AtomicBool::new(false));
+    let tray_handle = match std::thread::Builder::new().name("tray".into()).spawn({
+        let icon = preloaded_icon.clone();
+        let pixels = tray_pixels.clone();
+        let quit = tray_quit.clone();
+        move || tray::run_tray_thread(tray_tx, quit, icon, pixels, tray_w, tray_h)
+    }) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            startup_log.push(format!("Tray thread spawn failed: {}", e));
+            // 无托盘：隐藏态不可恢复 — 重置共享标志（关窗走退出路径）
+            tray_ok_shared.store(false, Ordering::Release);
+            hidden_shared.store(false, Ordering::Release);
+            None
         }
+    };
 
-        // 托盘：每轮尝试独立 channel + quit 标志 + 线程（上一轮的旧线程在
-        // panic 路径已收尾）
-        let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
-        tray_handle = match std::thread::Builder::new().name("tray".into()).spawn({
-            let icon = preloaded_icon.clone();
-            let pixels = tray_pixels.clone();
-            let quit = tray_quit.clone();
-            move || tray::run_tray_thread(tray_tx, quit, icon, pixels, tray_w, tray_h)
-        }) {
-            Ok(h) => Some(h),
-            Err(e) => {
-                startup_log.push(format!("Tray thread spawn failed: {}", e));
-                // 显式重置 tray_ok — 崩溃恢复轮这里继承的是崩溃前的 true，
-                // 若不重置，用户关窗走隐藏路径却没有任何托盘图标可唤回
-                // （review 发现）；GUI 仍可用
-                tray_ok_shared.store(false, Ordering::Release);
-                // 同步重置 hidden — 崩溃前用户已把窗口藏进托盘、恢复轮
-                // 又无图标可唤回时，隐藏态不可恢复。本分支在首帧前执行，
-                // 新窗口不会执行启动隐藏（review 3.6）。
-                hidden_shared.store(false, Ordering::Release);
-                None
-            }
-        };
+    let gui_bindings: Vec<GuiBinding> = config_bindings
+        .iter()
+        .enumerate()
+        .map(|(i, b)| GuiBinding {
+            id: i,
+            key: Some(b.key),
+            key_name: config::key_display_name(b.key),
+            func: b.func.clone(),
+            mode: b.mode,
+        })
+        .collect();
+    let next_id = gui_bindings.len();
 
-        // GUI 状态重建：绑定表从 attempt_bindings 重建，共享句柄全部 Clone
-        let gui_bindings: Vec<GuiBinding> = attempt_bindings
-            .iter()
-            .enumerate()
-            .map(|(i, b)| GuiBinding {
-                id: i,
-                key: Some(b.key),
-                key_name: config::key_display_name(b.key),
-                func: b.func.clone(),
-                mode: b.mode,
-            })
-            .collect();
-        let next_id = gui_bindings.len();
+    let app = GuiApp {
+        bindings_list: gui_bindings,
+        next_id,
+        dirty: false,
+        error_msg: None,
+        key_bindings: key_bindings.clone(),
+        send_ctx: send_ctx.clone(),
+        stop_flag: stop_flag.clone(),
+        capture: CaptureState {
+            active: false,
+            target: None,
+            rx: None,
+        },
+        param_popup: None,
+        function_names: function_names.clone(),
+        font_loaded: false,
+        log_messages: startup_log.clone(),
+        log_visible: true,
+        log_collector: log_collector.clone(),
+        tray_rx,
+        should_exit: false,
+        tray_ok: tray_ok_shared.clone(),
+        tray_ready: false,
+        config_ok,
+        hidden: hidden_shared.clone(),
+        hidden_applied: false,
+        hidden_apply_deadline: None,
+        window_icon: preloaded_icon.clone(),
+        icon_applied: false,
+        icon_apply_deadline: None,
+        show_until: None,
+        gui_config: gui_cfg.clone(),
+        func_params: startup_func_params.clone(),
+        active_profile: "默认".into(),
+        pending_profile_name: String::new(),
+        pending_new_profile: false,
+    };
 
-        let app = GuiApp {
-            bindings_list: gui_bindings,
-            next_id,
-            dirty: false,
-            error_msg: None,
-            key_bindings: key_bindings.clone(),
-            send_ctx: send_ctx.clone(),
-            stop_flag: stop_flag.clone(),
-            capture: CaptureState {
-                active: false,
-                target: None,
-                rx: None,
-            },
-            param_popup: None,
-            function_names: function_names.clone(),
-            font_loaded: false,
-            // 每轮尝试都携带完整启动历史（panic 消息可见于日志面板）
-            log_messages: startup_log.clone(),
-            log_visible: true,
-            log_collector: log_collector.clone(),
-            tray_rx,
-            should_exit: false,
-            // tray_ok / hidden 为进程级共享标志 — 继承崩溃前的值；
-            // hidden_applied 每轮尝试各自执行（把新窗口藏起来）
-            tray_ok: tray_ok_shared.clone(),
-            // 本轮 Ready 尚未收到 — 关窗隐藏判定需 tray_ok && tray_ready
-            tray_ready: false,
-            config_ok,
-            hidden: hidden_shared.clone(),
-            hidden_applied: false,
-            hidden_apply_deadline: None,
-            window_icon: preloaded_icon.clone(),
-            icon_applied: false,
-            icon_apply_deadline: None,
-            show_until: None,
-            gui_config: gui_cfg.clone(),
-            func_params: startup_func_params.clone(),
-            active_profile: "默认".into(),
-            pending_profile_name: String::new(),
-            pending_new_profile: false,
-        };
-
-        // dev-wgpu 分支：wgpu + Vulkan 后端（睡眠唤醒修复 — WGL 上下文
-        // 跨电源转换失效是 glow/glutin 的结构问题；wgpu surface Lost 可
-        // 逐帧重建，见 egui-wgpu SurfaceErrorAction::RecreateSurface）。
-        // Renderer 显式锁定 wgpu（默认优先级已选 wgpu，显式防未来变化）；
-        // WgpuConfiguration 锁 Vulkan（D3D12 亦可，但 Vulkan 在 AMD 上
-        // 与游戏同后端共存性更好 — 实测调整点）。
-        let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([800.0, 500.0])
-                .with_min_inner_size([600.0, 300.0]),
-            renderer: eframe::Renderer::Wgpu,
-            wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-                wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew({
-                    // 官方 without_display_handle() 提供其余字段默认值
-                    // （power_preference=HighPerformance、8K 纹理上限等），
-                    // 仅覆写 backends 锁 Vulkan
-                    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
-                    setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::VULKAN;
-                    setup
-                }),
-                ..Default::default()
-            },
+    // dev-wgpu：wgpu + Vulkan 后端（睡眠唤醒修复 — WGL 上下文跨电源转换
+    // 失效是 glow/glutin 的结构问题；wgpu surface Lost 可逐帧重建，见
+    // egui-wgpu SurfaceErrorAction::RecreateSurface）。Renderer 显式锁定
+    // wgpu（默认优先级已选 wgpu，显式防未来变化）。
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([800.0, 500.0])
+            .with_min_inner_size([600.0, 300.0]),
+        renderer: eframe::Renderer::Wgpu,
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew({
+                // 官方 without_display_handle() 提供其余字段默认值
+                // （power_preference=HighPerformance、8K 纹理上限等），
+                // 仅覆写 backends 锁 Vulkan
+                let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+                setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::VULKAN;
+                setup
+            }),
             ..Default::default()
-        };
+        },
+        ..Default::default()
+    };
 
-        // 标志窗口与 catch_unwind 范围精确对齐：store(true) 在闭包内、
-        // store(false) 紧随 catch_unwind 返回 — 闭包外的 GUI 主线程 panic
-        // 不被 hook 静默（走完整兜底：弹窗 + 恢复亲和性），review 发现。
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            IN_GUI_RETRY.store(true, Ordering::Relaxed);
-            eframe::run_native(
-                "GI-Utils Configuration",
-                options,
-                Box::new(|_cc| Ok(Box::new(app))),
-            )
-        }));
-        IN_GUI_RETRY.store(false, Ordering::Relaxed);
+    match eframe::run_native(
+        "GI-Utils Configuration",
+        options,
+        Box::new(|_cc| Ok(Box::new(app))),
+    ) {
+        // 正常退出（窗口关闭 / 托盘退出）— 完整关机序列
+        Ok(()) => {
+            shutdown_all(
+                engine_handle.take(),
+                tray_handle,
+                &tray_quit,
+                preloaded_icon.take(),
+                &stop_flag,
+                &key_bindings,
+            );
+        }
+        // 启动错误（非 panic）— 完整关机后提示退出
+        Err(e) => {
+            shutdown_all(
+                engine_handle.take(),
+                tray_handle,
+                &tray_quit,
+                preloaded_icon.take(),
+                &stop_flag,
+                &key_bindings,
+            );
+            let msg = e.to_string();
+            show_message_box(
+                "GI-Utils 启动失败",
+                &format!(
+                    "GUI 初始化失败：
 
-        match result {
-            // 正常退出（窗口关闭 / 托盘退出）— 完整关机序列
-            Ok(Ok(())) => {
-                shutdown_all(
-                    engine_handle.take(),
-                    tray_handle.take(),
-                    &tray_quit,
-                    preloaded_icon.take(),
-                    &stop_flag,
-                    &key_bindings,
-                );
-                return;
-            }
-            // 启动错误（非 panic）— 不可恢复
-            Ok(Err(e)) => {
-                last_error = Some(e.to_string());
-                break;
-            }
-            // 渲染线程 panic — 收尾旧托盘线程后重试（注册表对齐在
-            // 下一轮尝试顶部执行）
-            Err(payload) => {
-                let msg = panic_message(&payload);
-                startup_log.push(format!("GUI 渲染线程 panic：{}", msg));
-                // 主线程已恢复 — 旧托盘线程安全收尾（quit 置位 + WM_CLOSE +
-                // 有界等待，防止误找到新窗口造成双托盘图标）
-                stop_tray_thread(tray_handle.take(), &tray_quit);
-                if attempt + 1 >= MAX_GUI_RETRIES {
-                    last_error = Some(msg);
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-            }
+{msg}"
+                ),
+            );
+            write_crash_log(&msg, &log_collector);
+            std::process::exit(1);
         }
     }
-
-    // 重试耗尽 / 启动失败 — 完整关机后提示退出
-    shutdown_all(
-        engine_handle.take(),
-        tray_handle.take(),
-        &tray_quit,
-        preloaded_icon.take(),
-        &stop_flag,
-        &key_bindings,
-    );
-    let last_error = last_error.unwrap_or_default();
-    show_message_box(
-        "GI-Utils 启动失败",
-        &format!("GUI 初始化失败：\n\n{last_error}"),
-    );
-    // 渲染 panic 被 catch_unwind 捕获走的是 hook 静默路径（不落盘）—
-    // 重试耗尽后的最终出口在此统一落盘（启动错误同样记录现场）
-    write_crash_log(&last_error, &log_collector);
-    std::process::exit(1);
 }
