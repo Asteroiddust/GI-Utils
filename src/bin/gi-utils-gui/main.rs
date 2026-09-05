@@ -1,6 +1,6 @@
 //! GI-Utils GUI 配置面板 — GUI Configuration Panel (egui).
 //!
-//! 可视化绑定管理：增删改按键绑定，修改即时生效，保存写入 config.toml。
+//! 可视化绑定管理：增删改按键绑定，修改即时生效，保存写入配置文件（默认 exe 旁 gi-utils-config.toml，可另存/加载任意路径）。
 //! Visual binding management: add/edit/delete key bindings,
 //! live-apply changes, save to config.toml.
 
@@ -130,6 +130,10 @@ struct GuiApp {
     /// 功能级参数表（per-function）— 参数面板编辑与 Save 持久化的真值；
     /// 运行时值在功能实例的原子槽（live 直写），此表为配置侧快照。
     func_params: gi_utils::config::FuncParams,
+
+    /// 当前配置文件路径（Save 目标 / Load 来源）— 默认 exe 旁
+    /// `gi-utils-config.toml`，Save As / Load from File 成功后切换。
+    config_path: std::path::PathBuf,
 }
 
 /// 按键捕获状态。
@@ -588,20 +592,72 @@ impl GuiApp {
                 self.start_capture(CaptureTarget::Binding(id));
             }
 
-            // 配置加载失败时禁用保存 — 防止用空列表覆盖损坏的 config.toml
-            // egui 0.31：on_hover_text 是 Response 的方法（Button 上没有）
-            let save_resp = ui.add_enabled(self.config_ok, egui::Button::new("Save to Config"));
-            let save_clicked = save_resp.clicked();
-            if !self.config_ok {
-                save_resp.on_hover_text("config.toml 加载失败，保存会覆盖现有配置");
-            }
-            if save_clicked {
+            // 配置加载失败时禁用保存 — 防止用空列表覆盖损坏的配置文件
+            let save_resp = ui.add_enabled(self.config_ok, egui::Button::new("Save"));
+            if save_resp.clicked() {
                 match self.save_config() {
                     Ok(()) => self.dirty = false,
                     Err(e) => self.error_msg = Some(e),
                 }
             }
+            if !self.config_ok {
+                save_resp.on_hover_text("配置加载失败，保存会覆盖现有文件");
+            }
+
+            // Save As — 对话框选目标路径，成功后切换当前配置路径
+            if ui
+                .add_enabled(self.config_ok, egui::Button::new("Save As"))
+                .clicked()
+                && let Some(path) = file_dialog(true, &self.config_path)
+            {
+                match self.save_config_to(&path) {
+                    Ok(()) => {
+                        self.dirty = false;
+                        self.log(format!("Saved to {}", path.display()));
+                        self.config_path = path; // move 最后（display 之后）
+                    }
+                    Err(e) => self.error_msg = Some(e),
+                }
+            }
+
+            // Load from File — 对话框选来源，成功后全量替换绑定/参数 + live_apply
+            if ui
+                .add_enabled(!self.capture.active, egui::Button::new("Load from File"))
+                .clicked()
+                && let Some(path) = file_dialog(false, &self.config_path)
+            {
+                match config::load_full_from(&path) {
+                    Ok((bindings, func_params)) => {
+                        self.config_path = path;
+                        self.func_params = func_params.clone();
+                        self.rebuild_from_bindings(bindings);
+                        self.log(format!("Loaded from {}", self.config_path.display()));
+                    }
+                    Err(e) => self.error_msg = Some(format!("Load failed: {e}")),
+                }
+            }
         });
+        // 当前配置路径指示（压缩到一行尾部 — 路径透明性）
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.small(self.config_path.display().to_string());
+        });
+    }
+
+    /// 从 Binding 列表全量重建 GUI 行 + 重注册（Load from File 后）。
+    fn rebuild_from_bindings(&mut self, bindings: Vec<config::Binding>) {
+        self.bindings_list = bindings
+            .iter()
+            .enumerate()
+            .map(|(i, b)| GuiBinding {
+                id: i,
+                key: Some(b.key),
+                key_name: config::key_display_name(b.key),
+                func: b.func.clone(),
+                mode: b.mode,
+            })
+            .collect();
+        self.next_id = bindings.len();
+        self.live_apply();
     }
 
     /// 按键捕获弹窗。
@@ -645,6 +701,64 @@ impl GuiApp {
         if close {
             self.error_msg = None;
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 文件对话框 — comdlg32 GetOpen/SaveFileNameW（2026-08-22 配置系统改造）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 通用文件对话框（true=保存 GetSaveFileNameW / false=打开
+/// GetOpenFileNameW）。TOML 过滤器 + 初始目录取自当前配置路径。
+/// 用户取消返回 None；API 失败返回 None（CommDlgExtendedError 细节
+/// 不值当展示 — 用户的取消与失败同表现）。
+fn file_dialog(save: bool, current: &std::path::Path) -> Option<std::path::PathBuf> {
+    use windows::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    const FILTER: &[u16] = &[
+        'T' as u16, 'O' as u16, 'M' as u16, 'L' as u16, 0, '*' as u16, '.' as u16, 't' as u16,
+        'o' as u16, 'm' as u16, 'l' as u16, 0, 'A' as u16, 'l' as u16, 'l' as u16, 0, '*' as u16,
+        '.' as u16, '*' as u16, 0, 0,
+    ];
+    let mut file_buf = [0u16; 260];
+    // 初始文件名 = 当前配置路径的文件名（另存为时起点合理）
+    if let Some(name) = current.file_name()
+        && let Some(os) = name.to_str()
+    {
+        for (i, c) in os.encode_utf16().take(259).enumerate() {
+            file_buf[i] = c;
+        }
+    }
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: windows::Win32::Foundation::HWND::default(),
+        lpstrFilter: windows::core::PCWSTR(FILTER.as_ptr()),
+        lpstrFile: windows::core::PWSTR(file_buf.as_mut_ptr()),
+        nMaxFile: file_buf.len() as u32,
+        Flags: OFN_PATHMUSTEXIST
+            | if save {
+                OFN_OVERWRITEPROMPT
+            } else {
+                OFN_PATHMUSTEXIST
+            },
+        ..Default::default()
+    };
+    let ok = unsafe {
+        if save {
+            GetSaveFileNameW(&mut ofn)
+        } else {
+            GetOpenFileNameW(&mut ofn)
+        }
+    };
+    if ok.as_bool() {
+        let end = file_buf.iter().position(|&c| c == 0).unwrap_or(0);
+        Some(std::path::PathBuf::from(String::from_utf16_lossy(
+            &file_buf[..end],
+        )))
+    } else {
+        None
     }
 }
 
@@ -1017,6 +1131,24 @@ impl GuiApp {
             .collect();
 
         config::save(&bindings, &self.func_params, &self.gui_config)
+    }
+
+    /// 另存为指定路径（Save As）— 同 save 校验，目标路径来自对话框。
+    fn save_config_to(&self, path: &std::path::Path) -> Result<(), String> {
+        self.validate_bindings()?;
+        let bindings: Vec<Binding> = self
+            .bindings_list
+            .iter()
+            .filter_map(|g| {
+                g.key.map(|key| Binding {
+                    key,
+                    func: g.func.clone(),
+                    mode: g.mode,
+                    params: self.func_params.get(&g.func).cloned().unwrap_or_default(),
+                })
+            })
+            .collect();
+        config::save_to(path, &bindings, &self.func_params, &self.gui_config)
     }
 }
 
@@ -1520,6 +1652,7 @@ fn main() {
             show_until: None,
             gui_config: gui_cfg.clone(),
             func_params: startup_func_params.clone(),
+            config_path: config::default_config_path(),
         };
 
         let options = eframe::NativeOptions {

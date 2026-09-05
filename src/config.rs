@@ -1,7 +1,7 @@
 //! 热键绑定配置 — TOML-based key binding configuration.
 //!
-//! 启动时从 exe 目录读取 `config.toml`。如果文件不存在，自动生成默认配置。
-//! Reads `config.toml` from the exe directory at startup.
+//! 启动时从 exe 目录读取 `gi-utils-config.toml`。如果文件不存在，自动生成默认配置。
+//! Reads `gi-utils-config.toml` from the exe directory at startup.
 //! If the file is missing, a default config is generated.
 
 use crate::engine::TriggerMode;
@@ -262,9 +262,11 @@ fn parse_mode(name: &str) -> Result<TriggerMode, String> {
 // ═══════════════════════════════════════════════════════════════════
 
 /// 配置文件路径（与 exe 同目录）— Path to the config file (next to the exe).
-fn config_path() -> PathBuf {
+/// 默认配置路径 — exe 旁 `gi-utils-config.toml`（2026-08-22 由
+/// config.toml 改名：突出工具专属、避免与常见 config.toml 混淆）。
+pub fn default_config_path() -> PathBuf {
     let mut path = std::env::current_exe().expect("failed to get executable path");
-    path.set_file_name("config.toml");
+    path.set_file_name("gi-utils-config.toml");
     path
 }
 
@@ -345,7 +347,12 @@ font_path = ""
 /// 校验仅键唯一（功能可绑多键，2026-08-22）。
 /// 返回 (绑定列表, 功能参数表)；`load()` 为仅取绑定的便捷包装。
 pub fn load_full() -> Result<(Vec<Binding>, FuncParams), String> {
-    let path = config_path();
+    load_full_from(&default_config_path())
+}
+
+/// 从指定路径加载配置（含功能级参数表）— Load from File 的实现。
+pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParams), String> {
+    let path = path.to_path_buf();
 
     if !path.exists() {
         tracing::info!("  No config file detected.");
@@ -410,7 +417,12 @@ pub fn load() -> Result<Vec<Binding>, String> {
 /// Load the `[gui]` section. Failures fall back to defaults — a broken
 /// GUI section must not block startup.
 pub fn load_gui_config() -> GuiConfig {
-    let content = match std::fs::read_to_string(config_path()) {
+    load_gui_config_from(&default_config_path())
+}
+
+/// 从指定路径读取 `[gui]` 段（Load from File 时同步托盘/字体设置）。
+pub fn load_gui_config_from(path: &std::path::Path) -> GuiConfig {
+    let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return GuiConfig::default(),
     };
@@ -423,12 +435,22 @@ pub fn load_gui_config() -> GuiConfig {
     }
 }
 
-/// 保存绑定列表到 config.toml — Serialize bindings back to config.toml.
+/// 保存绑定列表到默认配置文件 — Serialize bindings back to config file.
 ///
 /// [gui] 段由调用方传入的 `gui` 原样写回 — **fail-closed**：绝不读磁盘
 /// 回填（读回失败静默回退默认值会清空用户 icon_path — review #3）。
 /// 无法序列化的键返回错误（不写 "?" — "?" 下次启动解析失败会拖垮全部绑定）。
 pub fn save(bindings: &[Binding], func_params: &FuncParams, gui: &GuiConfig) -> Result<(), String> {
+    save_to(&default_config_path(), bindings, func_params, gui)
+}
+
+/// 另存为指定路径 — Save As 的实现（原子写同默认路径）。
+pub fn save_to(
+    path: &std::path::Path,
+    bindings: &[Binding],
+    func_params: &FuncParams,
+    gui: &GuiConfig,
+) -> Result<(), String> {
     let raw_bindings: Vec<RawBinding> = bindings
         .iter()
         .map(|b| {
@@ -463,10 +485,9 @@ pub fn save(bindings: &[Binding], func_params: &FuncParams, gui: &GuiConfig) -> 
     .map_err(|e| format!("failed to serialize config: {}", e))?;
     let content = format!("# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}", toml_str);
     // 原子写：先写同目录临时文件再 rename 覆盖 — 直接 write 中途崩溃/
-    // 断电会留下截断的 config.toml，下次启动解析失败拖垮全部绑定
+    // 断电会留下截断的配置文件，下次启动解析失败拖垮全部绑定
     // （review 4.4）。同目录保证 rename 同卷（Windows rename 即
     // MoveFileExW REPLACE_EXISTING，可覆盖已存在的目标）。
-    let path = config_path();
     let tmp_path = path.with_extension("toml.tmp");
     std::fs::write(&tmp_path, &content).map_err(|e| format!("failed to write config: {}", e))?;
     std::fs::rename(&tmp_path, &path).map_err(|e| format!("failed to replace config: {}", e))

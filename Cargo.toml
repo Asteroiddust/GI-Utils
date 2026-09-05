@@ -22,6 +22,8 @@ windows = { version = "0.62", features = [
     "Wdk_System_Threading",
     "Win32_System_WindowsProgramming",
     "Win32_System_Kernel",
+    # 配置 Save As / Load from File：GetOpen/SaveFileNameW（comdlg32）
+    "Win32_UI_Controls_Dialogs",
 ]}
 serde = { version = "1", features = ["derive"] }
 toml = "1"

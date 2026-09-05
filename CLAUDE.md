@@ -207,7 +207,7 @@ gi-utils-gui.exe  → E:\Projects\Rust\GI-Utils\target\release\gi-utils-gui.exe 
 gi-utils-dev.exe  → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe     (dev 日常验证，dev profile 秒级构建)
 ```
 
-**必须以管理员身份运行**。首次运行自动生成 `config.toml`。
+**必须以管理员身份运行**。首次运行自动生成 exe 旁的 `gi-utils-config.toml`（v1.5.2 起 — GUI 可 Save As / Load from File 任意路径）。
 
 ```toml
 [[bindings]]
