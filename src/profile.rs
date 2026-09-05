@@ -37,10 +37,10 @@ struct RawBinding {
     key: String,
     func: String,
     mode: String,
-    /// 动态参数（v1.7.3 per-binding 语义：参数属于**绑定行** — 同功能
-    /// 绑多键时各行独立调参，如两个 SpamKey 敲不同的键）。单绑定归属
-    /// 无 TOML 歧义，行内写出安全；顶层 `[params.<功能名>]`（v1.5-1.7
-    /// 的 per-function 格式）仍兼容读取，load 时迁移到各绑定行。
+    /// 动态参数（per-binding：参数属于**绑定行** — 同功能绑多键时各行
+    /// 独立调参，如两个 SpamKey 敲不同的键）。加载时与顶层
+    /// `[params.<功能名>]`（功能参数模板）合成：模板提供基线，行内显式
+    /// 槽覆盖；Save 写全量行内值（模板变更不影响已显式定制的行）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     params: Option<std::collections::BTreeMap<String, toml::Value>>,
 }
@@ -445,26 +445,26 @@ pub fn load_full_from(path: &std::path::Path) -> Result<Vec<Binding>, String> {
         .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
 
     let raw: RawConfig = toml::from_str(&content).map_err(|e| format!("invalid config: {}", e))?;
-    let mut func_params = raw.params.unwrap_or_default();
+    let func_params = raw.params.unwrap_or_default();
 
     let mut bindings = Vec::new();
     for (i, b) in raw.bindings.iter().enumerate() {
         let key = parse_key(&b.key).map_err(|e| format!("binding #{}: {}", i + 1, e))?;
         let mode = parse_mode(&b.mode).map_err(|e| format!("binding #{}: {}", i + 1, e))?;
-        // 参数解析优先级（v1.7.3 per-binding）：行内 params > 顶层
-        // [params.<功能名>]（旧格式迁移源）> 空。顶层参数按功能名下发到
-        // **首个**绑该功能的行（多键同功能时旧行为即共享，语义无损）。
-        let params = if b.params.as_ref().is_some_and(|p| !p.is_empty()) {
-            b.params.clone().unwrap_or_default()
-        } else if let Some(shared) = func_params.get(&b.func) {
-            // 仅首个消费者取走迁移源（避免同功能多行重复应用）
-            if bindings.iter().any(|x: &Binding| x.func == b.func) {
-                Default::default()
-            } else {
-                shared.clone()
+        // 参数合成（v1.7.3 per-binding + 模板）：行内 params（绑定行私有）
+        // 逐槽覆盖顶层 `[params.<功能名>]`（**功能参数模板/默认值** —
+        // 同功能所有行共享的基线）。合成规则：模板提供基线，行内显式
+        // 设置的槽覆盖之 → 每行 = 模板 + 行内差量。行内为空则纯模板。
+        let template = func_params.get(&b.func).cloned().unwrap_or_default();
+        let params = match b.params.clone() {
+            Some(inline) if !inline.is_empty() => {
+                let mut merged = template;
+                for (k, v) in inline {
+                    merged.insert(k, v);
+                }
+                merged
             }
-        } else {
-            Default::default()
+            _ => template,
         };
         bindings.push(Binding {
             key,
@@ -715,6 +715,52 @@ pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), 
 // ═══════════════════════════════════════════════════════════════════
 // apply_params 单测 — 按名/类型匹配与错误语义
 // ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod template_merge_tests {
+    /// 模板合成：行内差量覆盖模板基线 — 手工解析 TOML 验证
+    /// （load_full_from 的合成逻辑纯 TOML 层，直接以文本走通）
+    #[test]
+    fn template_merge_semantics() {
+        let toml_text = r#"
+[params.SpamKey]
+interval_ms = 50.0
+hold_ms = 0.0
+
+[[bindings]]
+key = "F13"
+func = "SpamKey"
+mode = "Loop"
+
+[bindings.params]
+interval_ms = 100.0
+
+[[bindings]]
+key = "F20"
+func = "SpamKey"
+mode = "Loop"
+"#;
+        let raw: toml::Value = toml::from_str(toml_text).unwrap();
+        let template = &raw["params"]["SpamKey"];
+
+        let bindings = raw["bindings"].as_array().unwrap();
+
+        // 行 1：行内 interval=100 覆盖模板 50；hold 缺失 → 模板 0
+        let p1 = bindings[0].get("params").unwrap();
+        let interval = p1.get("interval_ms").unwrap().as_float().unwrap();
+        let hold = p1
+            .get("hold_ms")
+            .and_then(|v| v.as_float())
+            .unwrap_or(template.get("hold_ms").unwrap().as_float().unwrap());
+        assert_eq!(interval, 100.0);
+        assert_eq!(hold, 0.0);
+
+        // 行 2：无行内 → 纯模板（Value::is_empty 不存在 — 以键存在性断言）
+        assert!(bindings[1].get("params").is_none());
+        assert_eq!(template["interval_ms"].as_float(), Some(50.0));
+        assert_eq!(template["hold_ms"].as_float(), Some(0.0));
+    }
+}
 
 #[cfg(test)]
 mod default_config_tests {

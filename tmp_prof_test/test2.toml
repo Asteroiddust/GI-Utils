@@ -1,0 +1,11 @@
+[[bindings]]
+key = "F13"
+func = "SpamKey"
+mode = "Loop"
+params = { key = "F", interval_ms = 50.0 }
+
+[[bindings]]
+key = "F20"
+func = "SpamKey"
+mode = "Loop"
+params = { key = "Space", interval_ms = 100.0 }
