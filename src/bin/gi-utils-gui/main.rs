@@ -131,9 +131,15 @@ struct GuiApp {
     /// 运行时值在功能实例的原子槽（live 直写），此表为配置侧快照。
     func_params: gi_utils::config::FuncParams,
 
-    /// 当前配置文件路径（Save 目标 / Load 来源）— 默认 exe 旁
-    /// `gi-utils-config.toml`，Save As / Load from File 成功后切换。
-    config_path: std::path::PathBuf,
+    /// 活动 profile 名（profiles/ 目录内 .toml 的去扩展名）— Save 目标、
+    /// 下拉实时切换的选中项。路径由 `profile::profile_path(&active_profile)`
+    /// 派生（v1.5.2 自由路径已收敛为 profile 体系）。
+    active_profile: String,
+    /// New Profile 的名字输入缓冲。
+    pending_profile_name: String,
+    /// New 按钮已提交（延迟到 show_action_buttons 的延迟处理区执行 —
+    /// 避免按钮闭包内可变借用冲突）。
+    pending_new_profile: bool,
 }
 
 /// 按键捕获状态。
@@ -391,6 +397,8 @@ impl eframe::App for GuiApp {
             egui::ScrollArea::vertical()
                 .auto_shrink(false)
                 .show(ui, |ui| {
+                    self.show_profile_bar(ui);
+                    ui.add_space(4.0);
                     self.show_binding_table(&ctx, ui);
                     ui.add_space(8.0);
                     self.show_action_buttons(ui);
@@ -555,6 +563,25 @@ impl GuiApp {
         {
             self.show_param_window(ctx, popup_id, &key);
         }
+        // New Profile：以当前状态在 profiles/ 创建新副本并切换
+        if self.pending_new_profile {
+            self.pending_new_profile = false;
+            let name = self.pending_profile_name.trim().to_string();
+            if name.is_empty() {
+                self.error_msg = Some("Profile name is empty".into());
+            } else if let Some(path) = config::profile_path(&name) {
+                match self.save_config_to(&path) {
+                    Ok(()) => {
+                        self.active_profile = name.clone();
+                        self.dirty = false;
+                        self.log(format!("Profile '{name}' created"));
+                    }
+                    Err(e) => self.error_msg = Some(e),
+                }
+            } else {
+                self.error_msg = Some(format!("Invalid profile name: '{name}'"));
+            }
+        }
         if need_apply {
             self.live_apply();
         }
@@ -603,43 +630,58 @@ impl GuiApp {
             if !self.config_ok {
                 save_resp.on_hover_text("配置加载失败，保存会覆盖现有文件");
             }
-
-            // Save As — 对话框选目标路径，成功后切换当前配置路径
-            if ui
-                .add_enabled(self.config_ok, egui::Button::new("Save As"))
-                .clicked()
-                && let Some(path) = file_dialog(true, &self.config_path)
-            {
-                match self.save_config_to(&path) {
-                    Ok(()) => {
-                        self.dirty = false;
-                        self.log(format!("Saved to {}", path.display()));
-                        self.config_path = path; // move 最后（display 之后）
-                    }
-                    Err(e) => self.error_msg = Some(e),
-                }
-            }
-
-            // Load from File — 对话框选来源，成功后全量替换绑定/参数 + live_apply
-            if ui
-                .add_enabled(!self.capture.active, egui::Button::new("Load from File"))
-                .clicked()
-                && let Some(path) = file_dialog(false, &self.config_path)
-            {
-                match config::load_full_from(&path) {
-                    Ok((bindings, func_params)) => {
-                        self.config_path = path;
-                        self.func_params = func_params.clone();
-                        self.rebuild_from_bindings(bindings);
-                        self.log(format!("Loaded from {}", self.config_path.display()));
-                    }
-                    Err(e) => self.error_msg = Some(format!("Load failed: {e}")),
-                }
-            }
         });
-        // 当前配置路径指示（压缩到一行尾部 — 路径透明性）
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.small(self.config_path.display().to_string());
+    }
+
+    /// Profile 选择行（绑定表上方）— 下拉实时切换 + New（以文本框命名建副本）。
+    fn show_profile_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.strong("Profile");
+            let profiles = config::list_profiles();
+            // 活动名不在列表（被外部删除）→ 显示为占位
+            let selected = if profiles.iter().any(|p| *p == self.active_profile) {
+                self.active_profile.clone()
+            } else {
+                "(missing)".into()
+            };
+            egui::ComboBox::from_id_salt("profile_selector")
+                .selected_text(selected)
+                .width(140.0)
+                .show_ui(ui, |ui| {
+                    for name in &profiles {
+                        let is_active = *name == self.active_profile;
+                        if ui.selectable_label(is_active, name).clicked()
+                            && !is_active
+                            && !self.capture.active
+                        {
+                            // 实时切换：加载目标 profile 并全量重注册
+                            match config::load_full_from(
+                                &config::profile_path(name).expect("listed name"),
+                            ) {
+                                Ok((bindings, func_params)) => {
+                                    self.active_profile = name.clone();
+                                    self.func_params = func_params;
+                                    self.rebuild_from_bindings(bindings);
+                                    self.dirty = false;
+                                    self.log(format!("Profile → '{name}'"));
+                                }
+                                Err(e) => {
+                                    self.error_msg = Some(format!("切换失败: {e}"));
+                                }
+                            }
+                        }
+                    }
+                });
+            // 新建名输入（Enter 或 New 按钮提交）
+            let name_edit = ui.add_sized(
+                [120.0, 20.0],
+                egui::TextEdit::singleline(&mut self.pending_profile_name)
+                    .hint_text("new profile name"),
+            );
+            let committed = name_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("New").clicked() || committed {
+                self.pending_new_profile = true;
+            }
         });
     }
 
@@ -701,64 +743,6 @@ impl GuiApp {
         if close {
             self.error_msg = None;
         }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// 文件对话框 — comdlg32 GetOpen/SaveFileNameW（2026-08-22 配置系统改造）
-// ═══════════════════════════════════════════════════════════════════
-
-/// 通用文件对话框（true=保存 GetSaveFileNameW / false=打开
-/// GetOpenFileNameW）。TOML 过滤器 + 初始目录取自当前配置路径。
-/// 用户取消返回 None；API 失败返回 None（CommDlgExtendedError 细节
-/// 不值当展示 — 用户的取消与失败同表现）。
-fn file_dialog(save: bool, current: &std::path::Path) -> Option<std::path::PathBuf> {
-    use windows::Win32::UI::Controls::Dialogs::{
-        GetOpenFileNameW, GetSaveFileNameW, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
-    };
-
-    const FILTER: &[u16] = &[
-        'T' as u16, 'O' as u16, 'M' as u16, 'L' as u16, 0, '*' as u16, '.' as u16, 't' as u16,
-        'o' as u16, 'm' as u16, 'l' as u16, 0, 'A' as u16, 'l' as u16, 'l' as u16, 0, '*' as u16,
-        '.' as u16, '*' as u16, 0, 0,
-    ];
-    let mut file_buf = [0u16; 260];
-    // 初始文件名 = 当前配置路径的文件名（另存为时起点合理）
-    if let Some(name) = current.file_name()
-        && let Some(os) = name.to_str()
-    {
-        for (i, c) in os.encode_utf16().take(259).enumerate() {
-            file_buf[i] = c;
-        }
-    }
-    let mut ofn = OPENFILENAMEW {
-        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: windows::Win32::Foundation::HWND::default(),
-        lpstrFilter: windows::core::PCWSTR(FILTER.as_ptr()),
-        lpstrFile: windows::core::PWSTR(file_buf.as_mut_ptr()),
-        nMaxFile: file_buf.len() as u32,
-        Flags: OFN_PATHMUSTEXIST
-            | if save {
-                OFN_OVERWRITEPROMPT
-            } else {
-                OFN_PATHMUSTEXIST
-            },
-        ..Default::default()
-    };
-    let ok = unsafe {
-        if save {
-            GetSaveFileNameW(&mut ofn)
-        } else {
-            GetOpenFileNameW(&mut ofn)
-        }
-    };
-    if ok.as_bool() {
-        let end = file_buf.iter().position(|&c| c == 0).unwrap_or(0);
-        Some(std::path::PathBuf::from(String::from_utf16_lossy(
-            &file_buf[..end],
-        )))
-    } else {
-        None
     }
 }
 
@@ -1130,10 +1114,15 @@ impl GuiApp {
             })
             .collect();
 
-        config::save(&bindings, &self.func_params, &self.gui_config)
+        config::save_to(
+            &config::profile_path(&self.active_profile).expect("validated name"),
+            &bindings,
+            &self.func_params,
+            &self.gui_config,
+        )
     }
 
-    /// 另存为指定路径（Save As）— 同 save 校验，目标路径来自对话框。
+    /// 另存为指定路径 — New Profile 的实现（同 save 校验）。
     fn save_config_to(&self, path: &std::path::Path) -> Result<(), String> {
         self.validate_bindings()?;
         let bindings: Vec<Binding> = self
@@ -1439,6 +1428,10 @@ fn main() {
     // ── 2. 加载配置 ─────────────────────────────────────────
     // config_ok 可变 — 崩溃恢复轮重载成功后同步更新（Save 可用性与磁盘
     // 可解析性保持一致，review 发现）。
+    // Profile 迁移：旧单文件（gi-utils-config.toml / config.toml）→ profiles/默认.toml
+    if config::migrate_legacy_config() {
+        startup_log.push("Migrated legacy config → profiles/默认.toml".into());
+    }
     let (config_bindings, mut startup_func_params, mut config_ok) = match config::load_full() {
         Ok((b, fp)) => {
             startup_log.push(format!("Loaded {} bindings from config.toml", b.len()));
@@ -1652,7 +1645,9 @@ fn main() {
             show_until: None,
             gui_config: gui_cfg.clone(),
             func_params: startup_func_params.clone(),
-            config_path: config::default_config_path(),
+            active_profile: "默认".into(),
+            pending_profile_name: String::new(),
+            pending_new_profile: false,
         };
 
         let options = eframe::NativeOptions {

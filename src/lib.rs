@@ -8,7 +8,10 @@
 
 #![allow(dead_code)] // 基础设施常量在子模块中被引用，顶层不可见时静默警告
 
-pub mod config;
+pub mod profile;
+
+/// 兼容别名 — v1.5.2 配置系统并入 profile.rs（原 config.rs 全量迁入）。
+pub use profile as config;
 pub mod engine;
 pub mod functions;
 pub mod interception;

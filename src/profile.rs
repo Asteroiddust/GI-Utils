@@ -1,7 +1,11 @@
 //! 热键绑定配置 — TOML-based key binding configuration.
 //!
-//! 启动时从 exe 目录读取 `gi-utils-config.toml`。如果文件不存在，自动生成默认配置。
-//! Reads `gi-utils-config.toml` from the exe directory at startup.
+//! 配置与 Profile 系统 — exe 旁 `profiles/` 目录，每个 `*.toml` 一个
+//! profile（文件名即 profile 名）。启动加载活动 profile，不存在则生成
+//! `profiles/默认.toml`；GUI 可实时切换/新建/另存。
+//!
+//! 兼容：旧单文件 `gi-utils-config.toml` / `config.toml` 首启自动迁移
+//! 为 `profiles/默认.toml`（旧文件保留 — 用户数据绝不自动销毁）。
 //! If the file is missing, a default config is generated.
 
 use crate::engine::TriggerMode;
@@ -262,12 +266,74 @@ fn parse_mode(name: &str) -> Result<TriggerMode, String> {
 // ═══════════════════════════════════════════════════════════════════
 
 /// 配置文件路径（与 exe 同目录）— Path to the config file (next to the exe).
-/// 默认配置路径 — exe 旁 `gi-utils-config.toml`（2026-08-22 由
-/// config.toml 改名：突出工具专属、避免与常见 config.toml 混淆）。
-pub fn default_config_path() -> PathBuf {
+/// profiles 目录 — exe 旁 `profiles/`，每个 `*.toml` 即一个 profile
+/// （文件名去扩展名 = profile 名）。2026-08-22 v1.5.2 配置系统改造。
+pub fn profiles_dir() -> PathBuf {
     let mut path = std::env::current_exe().expect("failed to get executable path");
-    path.set_file_name("gi-utils-config.toml");
+    path.set_file_name("profiles");
     path
+}
+
+/// 枚举 profiles（按文件名排序，去扩展名）。目录不存在返回空。
+pub fn list_profiles() -> Vec<String> {
+    let dir = profiles_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .map(|n| n.trim_end_matches(".toml").to_string())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// profile 文件路径（名 → profiles/<名>.toml；名含路径分隔符返回 None —
+/// 防目录穿越，profile 名只允许文件名级）。
+pub fn profile_path(name: &str) -> Option<PathBuf> {
+    if name.is_empty()
+        || name
+            .chars()
+            .any(|c| matches!(c, '/' | ':' | '\u{5C}') || c.is_control())
+    {
+        return None;
+    }
+    Some(profiles_dir().join(format!("{name}.toml")))
+}
+
+/// 迁移：旧单文件配置（gi-utils-config.toml / config.toml）存在且
+/// profiles 目录无任何 profile → 复制为 profiles/默认.toml（旧文件
+/// 保留不删 — 向后兼容，用户数据绝不自动销毁）。返回是否发生迁移。
+pub fn migrate_legacy_config() -> bool {
+    if list_profiles().is_empty() {
+        for legacy in ["gi-utils-config.toml", "config.toml"] {
+            let mut path = std::env::current_exe().expect("failed to get executable path");
+            path.set_file_name(legacy);
+            if path.exists() {
+                let _ = std::fs::create_dir_all(profiles_dir());
+                let target = profile_path("默认").expect("static name");
+                if std::fs::copy(&path, &target).is_ok() {
+                    tracing::info!("Migrated legacy config {} → profiles/默认.toml", legacy);
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 默认配置路径 — profiles/默认.toml（无 profile 时由此生成首个）。
+pub fn default_config_path() -> PathBuf {
+    profile_path("默认").unwrap_or_else(|| {
+        let mut path = std::env::current_exe().expect("failed to get executable path");
+        path.set_file_name("gi-utils-config.toml");
+        path
+    })
 }
 
 /// 默认配置内容（首次运行时写入）— Default config content, written on first run.

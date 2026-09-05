@@ -125,6 +125,8 @@ Engine (主循环, blocking)
 | **热线程 pinning 金银核** | 按进程名注册策略（`thread_pin.rs` STRATEGIES，现 YuanShen/StarRail/ZenlessZoneZero 三游戏：Top-2 → 金核 A/B LP 对）；**候选域 = 模块白名单**（`"模块名+0x"` 前缀 — 原神 `["YuanShen.exe"]`（引擎静态链入 exe）；崩铁/绝区零 `["本exe","UnityPlayer.dll","GameAssembly.dll"]`（薄壳 exe，工作马在引擎/IL2CPP 模块）——白名单而非优先级带：崩铁压测实证 NVIDIA 热线程 base_pri 仅 9，PriorityBand 会漏放行；绝区零实证 base-15 的 ucrtbase 跳板神秘线程（战斗全场 #2、持续 35-44%）同样不可归属、必须排除），双采样 Δcycles 降序取前 N；新鲜度：同 pid 且 pin 存活 → 沿用，否则（首次/换游戏/线程死亡）还原旧 pin 后重映射；SET 权限被拒逐条降级。数据依据：2026-08-22 原神三采样 + 崩铁双采样 + 绝区零双采样（逛图/大招战斗），Top-2 集合跨场景恒定、排名互换属设计内；菜单场景"CPU 0% 但 Δcyc 巨大"（时钟中断记账粗粒度 vs 硬件 cycle 计数）实证排序主键选 Δcycles 正确。**SET 权限双例实证放行**（原神私服 + 崩铁官服 mhyprot）。退出/恢复/panic 三路径兜底还原（线程级掩码不随本进程退出消失）。**未注册游戏 = 保底策略**：只优先级 HIGH + OTHER 隔离，无 pin。**Endfield（终末地）有意不注册**（2026-08-22）：反作弊封锁模块枚举（ACCESS_DENIED，管理员 procexp 亦然）→ 白名单规则不可用，PriorityBand 因缺乏地址实证 + 崩铁反例而弃，保底运行；句柄查询侧全绿，待有实证可重启评估 |
 | **优化游戏三档模式** | ①**优化游戏**（Advanced）= 现状全量：游戏亲和性(GAME_CORES_MASK) + OTHER 隔离 + HIGH + 前台 + 热线程 pinning；②**优化游戏标准**（Standard）= minimal + OTHER 隔离（不动游戏自身、不 pin）；③**优化游戏简易**（Minimal）= 仅 HIGH + 前台（不碰任何亲和性）。三模式共享找窗/换游戏检测/前台重试；**奇偶 toggle 按模式独立**（`static [AtomicBool; 3]` — 多键绑定不同档位互不串扰，2026-08-22）；minimal 恢复为 no-op（HIGH 留存无害 3.4） |
 
+| **Profile 配置体系** | `profile.rs`（v1.5.2 由 config.rs 更名并入）：`profiles/` 目录约定 + `list_profiles`/`profile_path`（防目录穿越：名禁分隔符/控制字符）/`migrate_legacy_config`（旧单文件自动迁移为 profiles/默认.toml，旧文件保留）；GUI `Profile` 下拉实时切换（load_full_from + rebuild_from_bindings 全量重注册，dirty 清零）、New 以当前状态建副本；Save 始终写活动 profile |
+
 | **优化游戏找窗三级序** | ①已登记名单（`functions::GAME_PROCESS_NAMES` 7 游戏：进程名→pid→枚举可见主窗口，有标题优先）→ ②窗口类兜底（UnityWndClass/UnrealWindow，未登记游戏）→ ③失败。名单优先覆盖窗口类不明的游戏（Endfield 等，2026-08-22）；同开多游戏时按名单顺序取胜。名单为找窗与线程采样共享（新游戏加一行两处生效） |
 | **TSC 校准 20×100ms 阻塞启动 ~2s** | 有意保持（2026-08-22 拍板）— 启动一次性成本换最大样本稳健性。实测样本散布 ±1.45ppm（端点读偏斜 ~150ns 等效），最差样本对 10ms 时序误差 15ns 级，精度冗余远超需求；QPC 交叉测量缩窗方案（~100ms 达 <0.01%）评估过，不采用 |
 
@@ -207,7 +209,7 @@ gi-utils-gui.exe  → E:\Projects\Rust\GI-Utils\target\release\gi-utils-gui.exe 
 gi-utils-dev.exe  → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe     (dev 日常验证，dev profile 秒级构建)
 ```
 
-**必须以管理员身份运行**。首次运行自动生成 exe 旁的 `gi-utils-config.toml`（v1.5.2 起 — GUI 可 Save As / Load from File 任意路径）。
+**必须以管理员身份运行**。配置为 **Profile 体系**（v1.5.2）：exe 旁 `profiles/` 目录，每个 `*.toml` 一个 profile（文件名即名）；首次运行生成 `profiles/默认.toml`，旧 `gi-utils-config.toml`/`config.toml` 自动迁移；GUI 绑定表上方 Profile 下拉**实时切换**（加载+重注册），New 以当前状态创建副本，Save 写回活动 profile。
 
 ```toml
 [[bindings]]
