@@ -7,12 +7,12 @@
 #![windows_subsystem = "windows"]
 
 use eframe::egui;
-use gi_utils::config::{self, Binding};
 use gi_utils::engine::Engine;
 use gi_utils::engine::TriggerMode;
 use gi_utils::engine::bindings::{KeyFunction, ParamKind};
 use gi_utils::interception::SendContext;
 use gi_utils::key::Key;
+use gi_utils::profile::{self, Binding};
 use gi_utils::utils;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -126,10 +126,10 @@ struct GuiApp {
 
     /// 启动时加载的 [gui] 配置 — save() 需原样写回（fail-closed：不读磁盘，
     /// 读回失败静默回退默认会清空用户 icon_path — review #3）。
-    gui_config: gi_utils::config::GuiConfig,
+    gui_config: gi_utils::profile::GuiConfig,
     /// 功能级参数表（per-function）— 参数面板编辑与 Save 持久化的真值；
     /// 运行时值在功能实例的原子槽（live 直写），此表为配置侧快照。
-    func_params: gi_utils::config::FuncParams,
+    func_params: gi_utils::profile::FuncParams,
 
     /// 活动 profile 名（profiles/ 目录内 .toml 的去扩展名）— Save 目标、
     /// 下拉实时切换的选中项。路径由 `profile::profile_path(&active_profile)`
@@ -577,7 +577,7 @@ impl GuiApp {
             let name = self.pending_profile_name.trim().to_string();
             if name.is_empty() {
                 self.error_msg = Some("Profile name is empty".into());
-            } else if let Some(path) = config::profile_path(&name) {
+            } else if let Some(path) = profile::profile_path(&name) {
                 match self.save_config_to(&path) {
                     Ok(()) => {
                         self.active_profile = name.clone();
@@ -610,7 +610,7 @@ impl GuiApp {
                 // 绑定；"停止退出"永不作默认（直接按键会导致程序退出）
                 // （review 4.6）
                 let used: Vec<&str> = self.bindings_list.iter().map(|g| g.func.as_str()).collect();
-                let default_func = config::list_function_names()
+                let default_func = profile::list_function_names()
                     .into_iter()
                     .find(|name| *name != "停止退出" && !used.contains(name))
                     .unwrap_or("连点器")
@@ -645,7 +645,7 @@ impl GuiApp {
     fn show_profile_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.strong("Profile");
-            let profiles = config::list_profiles();
+            let profiles = profile::list_profiles();
             // 活动名不在列表（被外部删除）→ 显示为占位
             let selected = if profiles.iter().any(|p| *p == self.active_profile) {
                 self.active_profile.clone()
@@ -663,8 +663,8 @@ impl GuiApp {
                             && !self.capture.active
                         {
                             // 实时切换：加载目标 profile 并全量重注册
-                            match config::load_full_from(
-                                &config::profile_path(name).expect("listed name"),
+                            match profile::load_full_from(
+                                &profile::profile_path(name).expect("listed name"),
                             ) {
                                 Ok((bindings, func_params)) => {
                                     self.active_profile = name.clone();
@@ -694,14 +694,14 @@ impl GuiApp {
     }
 
     /// 从 Binding 列表全量重建 GUI 行 + 重注册（Load from File 后）。
-    fn rebuild_from_bindings(&mut self, bindings: Vec<config::Binding>) {
+    fn rebuild_from_bindings(&mut self, bindings: Vec<profile::Binding>) {
         self.bindings_list = bindings
             .iter()
             .enumerate()
             .map(|(i, b)| GuiBinding {
                 id: i,
                 key: Some(b.key),
-                key_name: config::key_display_name(b.key),
+                key_name: profile::key_display_name(b.key),
                 func: b.func.clone(),
                 mode: b.mode,
             })
@@ -962,7 +962,7 @@ impl GuiApp {
                     return;
                 }
 
-                let name = config::key_display_name(key);
+                let name = profile::key_display_name(key);
 
                 match self.capture.target {
                     Some(CaptureTarget::Binding(id)) => {
@@ -1024,7 +1024,7 @@ impl GuiApp {
     }
 
     /// 校验键唯一性（一键一功能；功能可绑多键 — 2026-08-22 用户决策）。
-    /// 未设键的行跳过。与 config::load 的校验规则一致；live_apply 与
+    /// 未设键的行跳过。与 profile::load 的校验规则一致；live_apply 与
     /// save_config 共用。
     fn validate_bindings(&self) -> Result<(), String> {
         let mut keys = std::collections::HashSet::new();
@@ -1066,7 +1066,7 @@ impl GuiApp {
                     self.stop_flag.clone(),
                 ))
             } else {
-                match config::create_function(&g.func, self.send_ctx.clone()) {
+                match profile::create_function(&g.func, self.send_ctx.clone()) {
                     Ok(f) => f,
                     Err(e) => {
                         // L8: 聚合所有错误 — 不覆盖只显示最后一个
@@ -1079,7 +1079,7 @@ impl GuiApp {
             // 失败语义与启动路径一致：WARN + 按默认参数注册 — 不因单个参数
             // 坏值使整行热键失效（参数错误应可见但不破坏绑定）
             let params = self.func_params.get(&g.func).cloned().unwrap_or_default();
-            if let Err(e) = config::apply_params(&func, &params) {
+            if let Err(e) = profile::apply_params(&func, &params) {
                 errors.push(format!("'{}' params: {}（按默认参数注册）", g.func, e));
             }
 
@@ -1100,7 +1100,7 @@ impl GuiApp {
         // 且无法自愈，review 发现）。
         for g in &self.bindings_list {
             if let Some(key) = g.key {
-                if config::key_to_config_name(key).is_none() {
+                if profile::key_to_config_name(key).is_none() {
                     return Err(format!(
                         "key '{}' cannot be serialized to config — rebind it to a supported key",
                         key.name()
@@ -1122,8 +1122,8 @@ impl GuiApp {
             })
             .collect();
 
-        config::save_to(
-            &config::profile_path(&self.active_profile).expect("validated name"),
+        profile::save_to(
+            &profile::profile_path(&self.active_profile).expect("validated name"),
             &bindings,
             &self.func_params,
             &self.gui_config,
@@ -1145,7 +1145,7 @@ impl GuiApp {
                 })
             })
             .collect();
-        config::save_to(path, &bindings, &self.func_params, &self.gui_config)
+        profile::save_to(path, &bindings, &self.func_params, &self.gui_config)
     }
 }
 
@@ -1246,7 +1246,7 @@ fn register_all_bindings(
         let func: Arc<dyn KeyFunction> = if b.func == "停止退出" {
             stop_func.clone()
         } else {
-            match config::create_function(&b.func, send_ctx.clone()) {
+            match profile::create_function(&b.func, send_ctx.clone()) {
                 Ok(f) => f,
                 Err(e) => {
                     log.push(format!(
@@ -1260,7 +1260,7 @@ fn register_all_bindings(
             }
         };
         // 动态参数覆写（配置侧初值 — 未知名/类型错仅记日志不阻断启动）
-        if let Err(e) = config::apply_params(&func, &b.params) {
+        if let Err(e) = profile::apply_params(&func, &b.params) {
             log.push(format!("  WARN: '{}' params: {}", b.func, e));
         }
         key_bindings.register(b.key, b.mode, func);
@@ -1421,17 +1421,17 @@ fn main() {
     // config_ok 可变 — 崩溃恢复轮重载成功后同步更新（Save 可用性与磁盘
     // 可解析性保持一致，review 发现）。
     // Profile 迁移：旧单文件（gi-utils-config.toml / config.toml）→ profiles/默认.toml
-    if config::migrate_legacy_config() {
+    if profile::migrate_legacy_config() {
         startup_log.push("Migrated legacy config → profiles/默认.toml".into());
     }
-    let (config_bindings, startup_func_params, config_ok) = match config::load_full() {
+    let (config_bindings, startup_func_params, config_ok) = match profile::load_full() {
         Ok((b, fp)) => {
             startup_log.push(format!("Loaded {} bindings from profile", b.len()));
             (b, fp, true)
         }
         Err(e) => {
             startup_log.push(format!("Config error: {}", e));
-            (Vec::new(), config::FuncParams::new(), false)
+            (Vec::new(), profile::FuncParams::new(), false)
         }
     };
 
@@ -1457,7 +1457,7 @@ fn main() {
     // 轮共享 — 睡眠唤醒的 GL 崩溃会连带污染进程内 WIC 图标加载（恢复轮
     // LoadImageW 永久失败），必须在启动时完成加载。预加载失败回退程序
     // 生成图标（纯 GDI 路径，恢复轮仍可用）。
-    let gui_cfg = config::load_gui_config();
+    let gui_cfg = profile::load_gui_config();
     let (tray_pixels, tray_w, tray_h) = tray_icon::create_tray_icon_pixels();
     let mut preloaded_icon =
         tray_icon::preload_tray_icon(&gui_cfg.icon_path, &tray_pixels, tray_w, tray_h);
@@ -1503,7 +1503,7 @@ fn main() {
     // dev-wgpu：睡眠唤醒的 glow/wgl make_current panic 已随后端切换消失
     // （wgpu surface Lost 由 egui-wgpu 逐帧 RecreateSurface 自愈，实测通过），
     // catch_unwind 重试循环退役。启动失败（非 panic）仍走弹窗 + 落盘出口。
-    let function_names = config::list_function_names();
+    let function_names = profile::list_function_names();
     let (tray_tx, tray_rx) = mpsc::channel::<TrayAction>();
     let tray_quit = Arc::new(AtomicBool::new(false));
     let tray_handle = match std::thread::Builder::new().name("tray".into()).spawn({
@@ -1528,7 +1528,7 @@ fn main() {
         .map(|(i, b)| GuiBinding {
             id: i,
             key: Some(b.key),
-            key_name: config::key_display_name(b.key),
+            key_name: profile::key_display_name(b.key),
             func: b.func.clone(),
             mode: b.mode,
         })
