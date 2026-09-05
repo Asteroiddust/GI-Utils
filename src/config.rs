@@ -34,8 +34,11 @@ struct RawBinding {
     key: String,
     func: String,
     mode: String,
-    /// 动态参数初值（按名应用；无参数功能忽略 — 未知名/类型不符报错）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 旧格式（0.4 首版动态参数）兼容读取 — per-function 语义下新 Save
+    /// **永不输出**（skip_serializing）：行内 params 有 TOML 归属歧义
+    /// （`[bindings.params]` 落在下一个 `[[bindings]]` 元素内），持久化
+    /// 一律走顶层 `[params.<功能名>]`。load 时行内参数提升迁移到全局表。
+    #[serde(default, skip_serializing)]
     params: Option<std::collections::BTreeMap<String, toml::Value>>,
 }
 
