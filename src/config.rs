@@ -377,23 +377,17 @@ pub fn load_full() -> Result<(Vec<Binding>, FuncParams), String> {
         }
     }
 
-    // ── Validate bidirectional uniqueness ────────────────────
+    // ── Validate key uniqueness ──────────────────────────────
+    // 仅键唯一（一键一功能）；功能可绑多键（2026-08-22 用户决策 —
+    // 同功能多键各自独立实例/toggle，参数 per-function 共享）
 
     let mut keys = HashSet::new();
-    let mut funcs = HashSet::new();
     for (i, b) in bindings.iter().enumerate() {
         if !keys.insert(b.key) {
             return Err(format!(
                 "binding #{}: key '{}' is already bound to another function",
                 i + 1,
                 b.key.name()
-            ));
-        }
-        if !funcs.insert(b.func.clone()) {
-            return Err(format!(
-                "binding #{}: function '{}' is already bound to another key",
-                i + 1,
-                b.func
             ));
         }
     }

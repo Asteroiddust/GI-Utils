@@ -895,24 +895,18 @@ impl GuiApp {
         }
     }
 
-    /// 校验绑定列表的双向唯一性（key 唯一、func 唯一）。未设键的行跳过。
-    /// 与 config::load 的校验规则一致；live_apply 与 save_config 共用。
+    /// 校验键唯一性（一键一功能；功能可绑多键 — 2026-08-22 用户决策）。
+    /// 未设键的行跳过。与 config::load 的校验规则一致；live_apply 与
+    /// save_config 共用。
     fn validate_bindings(&self) -> Result<(), String> {
         let mut keys = std::collections::HashSet::new();
-        let mut funcs = std::collections::HashSet::new();
         for g in &self.bindings_list {
-            if let Some(key) = g.key {
-                if !keys.insert(key) {
-                    return Err(format!(
-                        "duplicate key: '{}' is bound to multiple functions",
-                        key.name()
-                    ));
-                }
-            }
-            if !funcs.insert(g.func.clone()) {
+            if let Some(key) = g.key
+                && !keys.insert(key)
+            {
                 return Err(format!(
-                    "duplicate function: '{}' is bound to multiple keys",
-                    g.func
+                    "duplicate key: '{}' is bound to multiple functions",
+                    key.name()
                 ));
             }
         }
