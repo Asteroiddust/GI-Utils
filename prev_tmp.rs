@@ -530,24 +530,6 @@ impl GuiApp {
                 };
             }
         }
-        if let Some(idx) = remove_idx {
-            // 删除捕获目标行时同步取消捕获，避免 id 悬空
-            let row_id = self.bindings_list.get(idx).map(|g| g.id);
-            match self.capture.target {
-                Some(CaptureTarget::Binding(id)) if row_id == Some(id) => self.cancel_capture(),
-                Some(CaptureTarget::KeySlot { binding_id, .. }) if row_id == Some(binding_id) => {
-                    self.cancel_capture()
-                }
-                _ => {}
-            }
-            self.bindings_list.remove(idx);
-            need_apply = true;
-        }
-        if let Some(idx) = capture_idx {
-            if let Some(id) = self.bindings_list.get(idx).map(|g| g.id) {
-                self.start_capture(CaptureTarget::Binding(id));
-            }
-        }
         if let Some(popup_id) = self.param_popup
             && let Some(g) = self.bindings_list.iter().find(|x| x.id == popup_id)
             && let Some(key) = g.key
