@@ -1,4 +1,4 @@
-# GI-Utils — Rust 游戏输入自动化工具 v1.7.2
+# GI-Utils — Rust 游戏输入自动化工具 v1.7.3
 
 > **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 56+ 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16 · 原生移植审查 14 项全处置，2026-08-19
 > **Build**: O3 + LTO fat + panic=unwind + rust-lld + target-cpu=native
@@ -124,6 +124,8 @@ Engine (主循环, blocking)
 | **WM_SETICON 窗口图标同步** | eframe 默认用 egui logo 覆盖窗口图标；托盘线程找到主窗口后用同一 HICON 覆盖任务栏/标题栏/Alt-Tab |
 | **热线程 pinning 金银核** | 按进程名注册策略（`thread_pin.rs` STRATEGIES，现 YuanShen/StarRail/ZenlessZoneZero 三游戏：Top-2 → 金核 A/B LP 对）；**候选域 = 模块白名单**（`"模块名+0x"` 前缀 — 原神 `["YuanShen.exe"]`（引擎静态链入 exe）；崩铁/绝区零 `["本exe","UnityPlayer.dll","GameAssembly.dll"]`（薄壳 exe，工作马在引擎/IL2CPP 模块）——白名单而非优先级带：崩铁压测实证 NVIDIA 热线程 base_pri 仅 9，PriorityBand 会漏放行；绝区零实证 base-15 的 ucrtbase 跳板神秘线程（战斗全场 #2、持续 35-44%）同样不可归属、必须排除），双采样 Δcycles 降序取前 N；新鲜度：同 pid 且 pin 存活 → 沿用，否则（首次/换游戏/线程死亡）还原旧 pin 后重映射；SET 权限被拒逐条降级。数据依据：2026-08-22 原神三采样 + 崩铁双采样 + 绝区零双采样（逛图/大招战斗），Top-2 集合跨场景恒定、排名互换属设计内；菜单场景"CPU 0% 但 Δcyc 巨大"（时钟中断记账粗粒度 vs 硬件 cycle 计数）实证排序主键选 Δcycles 正确。**SET 权限双例实证放行**（原神私服 + 崩铁官服 mhyprot）。退出/恢复/panic 三路径兜底还原（线程级掩码不随本进程退出消失）。**未注册游戏 = 保底策略**：只优先级 HIGH + OTHER 隔离，无 pin。**Endfield（终末地）有意不注册**（2026-08-22）：反作弊封锁模块枚举（ACCESS_DENIED，管理员 procexp 亦然）→ 白名单规则不可用，PriorityBand 因缺乏地址实证 + 崩铁反例而弃，保底运行；句柄查询侧全绿，待有实证可重启评估 |
 | **优化游戏三档模式** | ①**优化游戏**（Advanced）= 现状全量：游戏亲和性(GAME_CORES_MASK) + OTHER 隔离 + HIGH + 前台 + 热线程 pinning；②**优化游戏标准**（Standard）= minimal + OTHER 隔离（不动游戏自身、不 pin）；③**优化游戏简易**（Minimal）= 仅 HIGH + 前台（不碰任何亲和性）。三模式共享找窗/换游戏检测/前台重试；**奇偶 toggle 按模式独立**（`static [AtomicBool; 3]` — 多键绑定不同档位互不串扰，2026-08-22）；minimal 恢复为 no-op（HIGH 留存无害 3.4） |
+
+| **动态参数模板+差量模型** | 参数三级合成：顶层 `[params.<功能名>]` = **功能参数模板**（基线，同功能所有行共享）→ 绑定行内 `[bindings.params]` = **差量**（只写覆盖槽）→ 每行生效值 = 模板 + 行内差量。GUI ⚙ 弹窗编辑写行内差量（Save 全量落盘该行）。同功能绑多键各行独立调参（如两个 SpamKey 敲不同键），未定制的行自动继承模板。模板语义含回归测试（template_merge_tests） |
 
 | **Profile 配置体系** | `profile.rs`（v1.5.2 由 config.rs 更名并入）：`profiles/` 目录约定 + `list_profiles`/`profile_path`（防目录穿越：名禁分隔符/控制字符）/`migrate_legacy_config`（旧单文件自动迁移为 profiles/默认.toml，旧文件保留）；GUI `Profile` 下拉实时切换（load_full_from + rebuild_from_bindings 全量重注册，dirty 清零）、New 以当前状态建副本；Save 始终写活动 profile |
 
