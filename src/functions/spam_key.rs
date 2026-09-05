@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// ScanCode(u16) + is_e0 打包成一个 i64：低 16 位 scan code，位 16 = E0。
 /// 键参数经 Int 槽存取（原子），面板显示/写入经 `key_name`↔打包值转换。
 #[inline]
-fn pack_key(k: Key) -> i64 {
+pub fn pack_key(k: Key) -> i64 {
     (k.code.raw() as i64) | ((k.is_e0 as i64) << 16)
 }
 

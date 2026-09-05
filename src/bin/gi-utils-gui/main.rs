@@ -130,10 +130,20 @@ struct GuiApp {
 }
 
 /// 按键捕获状态。
+/// 按键捕获目标 — 绑定键（Key 列 Set Key）或功能参数键槽（SpamKey 等）。
+#[derive(Clone, Copy, PartialEq)]
+enum CaptureTarget {
+    /// 绑定某功能的按键（写 GuiBinding.key）。
+    Binding(usize),
+    /// 功能参数键槽（写参数 Int 槽 + func_params；绑定的 `GuiBinding.id`
+    /// 定位行 — 行内 func 名用于 per-function 参数表寻址）。
+    KeySlot { binding_id: usize, slot: usize },
+}
+
 struct CaptureState {
     active: bool,
-    /// 目标绑定的 `GuiBinding.id`（非行索引 — 捕获期间行可能被增删，索引会漂移）。
-    binding_id: Option<usize>,
+    /// 捕获目标（Binding 或 KeySlot — 按 id 定位行，索引漂移安全）。
+    target: Option<CaptureTarget>,
     rx: Option<Receiver<Key>>,
 }
 
@@ -414,7 +424,9 @@ impl GuiApp {
 
                         for (i, binding) in self.bindings_list.iter_mut().enumerate() {
                             // ---- Key 列 ----
-                            if self.capture.active && self.capture.binding_id == Some(binding.id) {
+                            if self.capture.active
+                                && self.capture.target == Some(CaptureTarget::Binding(binding.id))
+                            {
                                 ui.label("(capturing...)");
                             } else if let Some(ref name) =
                                 binding.key.map(|_| binding.key_name.clone())
@@ -494,6 +506,7 @@ impl GuiApp {
                 param_faces.push((g.id, g.key_name.clone(), g.func.clone(), specs, store));
             }
         }
+        let mut keyslot_capture: Option<CaptureTarget> = None;
         if !param_faces.is_empty() {
             egui::CollapsingHeader::new("⚙ 参数（修改即刻生效 · Save 持久化）")
                 .default_open(true)
@@ -534,35 +547,28 @@ impl GuiApp {
                                                 self.dirty = true;
                                             }
                                         }
-                                        ParamKind::Int { min: 0, max: 0x1FFFF, .. }
-                                            if spec.name == "key" =>
-                                        {
-                                            // 键槽特例（SpamKey）：打包 ScanCode+E0，
-                                            // 渲染为键名下拉（Int 槽语义不变）
-                                            let mut v = store.get_i64(si);
-                                            let current = gi_utils::functions::spam_key::key_slot_name(v);
-                                            egui::ComboBox::from_id_salt(format!(
-                                                "param_key_{}",
-                                                spec.name
-                                            ))
-                                            .selected_text(current)
-                                            .show_ui(ui, |ui| {
-                                                for name in &function_names {
-                                                    if let Some(val) =
-                                                        gi_utils::functions::spam_key::key_slot_value(name)
-                                                        && ui
-                                                            .selectable_label(v == val, *name)
-                                                            .clicked()
-                                                    {
-                                                        store.set_i64(si, val);
-                                                        entry.insert(
-                                                            spec.name.into(),
-                                                            toml::Value::String((*name).into()),
-                                                        );
-                                                        self.dirty = true;
-                                                    }
-                                                }
-                                            });
+                                        ParamKind::Int {
+                                            min: 0,
+                                            max: 0x1FFFF,
+                                            ..
+                                        } if spec.name == "key" => {
+                                            // 键槽特例（SpamKey）：打包 ScanCode+E0。
+                                            // 复用 Set Key 捕获通道（2026-08-22 用户方案）—
+                                            // 能抓任意键（含 KEY_PAIRS 之外的异形键），
+                                            // 比键名下拉强；capture_tx 键槽捕获与绑定键
+                                            // 捕获同通道，按 binding_id 区分目标。
+                                            let v = store.get_i64(si);
+                                            let current =
+                                                gi_utils::functions::spam_key::key_slot_name(v);
+                                            if ui.button(current.as_str()).clicked()
+                                                && !self.capture.active
+                                            {
+                                                // 延迟到面板闭包外执行（entry 借用仍活着）
+                                                keyslot_capture = Some(CaptureTarget::KeySlot {
+                                                    binding_id: *_id,
+                                                    slot: si,
+                                                });
+                                            }
                                         }
                                         ParamKind::Int { min, max, .. } => {
                                             let mut v = store.get_i64(si);
@@ -600,18 +606,24 @@ impl GuiApp {
         // 延迟处理（避免在 grid 闭包中 borrow self）
         if let Some(idx) = remove_idx {
             // 删除捕获目标行时同步取消捕获，避免 id 悬空
-            if let Some(id) = self.capture.binding_id {
-                if self.bindings_list.get(idx).map(|g| g.id) == Some(id) {
-                    self.cancel_capture();
+            let row_id = self.bindings_list.get(idx).map(|g| g.id);
+            match self.capture.target {
+                Some(CaptureTarget::Binding(id)) if row_id == Some(id) => self.cancel_capture(),
+                Some(CaptureTarget::KeySlot { binding_id, .. }) if row_id == Some(binding_id) => {
+                    self.cancel_capture()
                 }
+                _ => {}
             }
             self.bindings_list.remove(idx);
             need_apply = true;
         }
         if let Some(idx) = capture_idx {
             if let Some(id) = self.bindings_list.get(idx).map(|g| g.id) {
-                self.start_capture(id);
+                self.start_capture(CaptureTarget::Binding(id));
             }
+        }
+        if let Some(target) = keyslot_capture {
+            self.start_capture(target);
         }
         if need_apply {
             self.live_apply();
@@ -646,7 +658,7 @@ impl GuiApp {
                     mode: TriggerMode::Loop,
                 });
                 // 新增行自动进入按键捕获
-                self.start_capture(id);
+                self.start_capture(CaptureTarget::Binding(id));
             }
 
             // 配置加载失败时禁用保存 — 防止用空列表覆盖损坏的 config.toml
@@ -789,9 +801,9 @@ impl GuiApp {
         }
     }
     /// 开始按键捕获。`binding_id` 是目标行的 `GuiBinding.id`（与行号无关）。
-    fn start_capture(&mut self, binding_id: usize) {
+    fn start_capture(&mut self, target: CaptureTarget) {
         self.capture.active = true;
-        self.capture.binding_id = Some(binding_id);
+        self.capture.target = Some(target);
         self.capture.rx = Some(self.key_bindings.enable_capture());
     }
 
@@ -799,7 +811,7 @@ impl GuiApp {
     fn cancel_capture(&mut self) {
         self.key_bindings.disable_capture();
         self.capture.active = false;
-        self.capture.binding_id = None;
+        self.capture.target = None;
         self.capture.rx = None;
     }
 
@@ -819,23 +831,58 @@ impl GuiApp {
 
                 let name = config::key_display_name(key);
 
-                // 按 id 定位行 — 捕获期间增删行不导致写错行
-                if let Some(id) = self.capture.binding_id {
-                    if let Some(binding) = self.bindings_list.iter_mut().find(|g| g.id == id) {
-                        // L7: 键未变化 → 不应用、不置 dirty（重复按同一键不产生变更）
-                        if binding.key == Some(key) {
-                            self.log(format!("Key '{}' unchanged — no apply", key.name()));
-                            self.cancel_capture();
-                            return;
+                match self.capture.target {
+                    Some(CaptureTarget::Binding(id)) => {
+                        // 按 id 定位行 — 捕获期间增删行不导致写错行
+                        if let Some(binding) = self.bindings_list.iter_mut().find(|g| g.id == id) {
+                            // L7: 键未变化 → 不应用、不置 dirty（重复按同一键不产生变更）
+                            if binding.key == Some(key) {
+                                self.log(format!("Key '{}' unchanged — no apply", key.name()));
+                                self.cancel_capture();
+                                return;
+                            }
+                            binding.key = Some(key);
+                            binding.key_name = name;
                         }
-                        binding.key = Some(key);
-                        binding.key_name = name;
-                    }
-                    // 目标行已被删除 → 按键静默丢弃，仅结束捕获
-                }
+                        // 目标行已被删除 → 按键静默丢弃，仅结束捕获
 
-                self.cancel_capture();
-                self.live_apply();
+                        self.cancel_capture();
+                        self.live_apply();
+                    }
+                    Some(CaptureTarget::KeySlot { binding_id, slot }) => {
+                        // 参数键槽：打包值写 Int 槽（live 直写）+ func_params
+                        // （Save 持久化）。行内 func 名定位 per-function 表；
+                        // L7 同语义：键值未变不置 dirty。
+                        let packed = gi_utils::functions::spam_key::pack_key(key);
+                        let row = self.bindings_list.iter().find(|g| g.id == binding_id);
+                        let store = row
+                            .and_then(|g| g.key)
+                            .and_then(|k| self.key_bindings.params_of(&k))
+                            .and_then(|(specs, store)| specs.get(slot).map(|_| store));
+                        if let (Some(store), Some(row)) = (store, row) {
+                            if store.get_i64(slot) == packed {
+                                self.log(format!("Key '{}' unchanged — no apply", key.name()));
+                                self.cancel_capture();
+                                return;
+                            }
+                            store.set_i64(slot, packed);
+                            self.func_params
+                                .entry(row.func.clone())
+                                .or_default()
+                                .insert("key".into(), toml::Value::String(name.clone()));
+                            self.dirty = true;
+                            self.log(format!(
+                                "Parameter key → '{}' ({} / slot {slot})",
+                                name, row.func
+                            ));
+                        }
+                        // 目标行已删除 → 静默丢弃（同 Binding 分支语义）
+                        self.cancel_capture();
+                        // 键槽写入不改绑定结构 — 无需 live_apply；
+                        // persist 随下次 Save
+                    }
+                    None => {}
+                }
             }
         }
     }
@@ -1420,7 +1467,7 @@ fn main() {
             stop_flag: stop_flag.clone(),
             capture: CaptureState {
                 active: false,
-                binding_id: None,
+                target: None,
                 rx: None,
             },
             function_names: function_names.clone(),
