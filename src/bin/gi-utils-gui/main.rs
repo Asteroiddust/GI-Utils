@@ -1649,10 +1649,28 @@ fn main() {
             pending_new_profile: false,
         };
 
+        // dev-wgpu 分支：wgpu + Vulkan 后端（睡眠唤醒修复 — WGL 上下文
+        // 跨电源转换失效是 glow/glutin 的结构问题；wgpu surface Lost 可
+        // 逐帧重建，见 egui-wgpu SurfaceErrorAction::RecreateSurface）。
+        // Renderer 显式锁定 wgpu（默认优先级已选 wgpu，显式防未来变化）；
+        // WgpuConfiguration 锁 Vulkan（D3D12 亦可，但 Vulkan 在 AMD 上
+        // 与游戏同后端共存性更好 — 实测调整点）。
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([800.0, 500.0])
                 .with_min_inner_size([600.0, 300.0]),
+            renderer: eframe::Renderer::Wgpu,
+            wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+                wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew({
+                    // 官方 without_display_handle() 提供其余字段默认值
+                    // （power_preference=HighPerformance、8K 纹理上限等），
+                    // 仅覆写 backends 锁 Vulkan
+                    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+                    setup.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::VULKAN;
+                    setup
+                }),
+                ..Default::default()
+            },
             ..Default::default()
         };
 
