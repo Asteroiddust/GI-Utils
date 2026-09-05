@@ -534,6 +534,36 @@ impl GuiApp {
                                                 self.dirty = true;
                                             }
                                         }
+                                        ParamKind::Int { min: 0, max: 0x1FFFF, .. }
+                                            if spec.name == "key" =>
+                                        {
+                                            // 键槽特例（SpamKey）：打包 ScanCode+E0，
+                                            // 渲染为键名下拉（Int 槽语义不变）
+                                            let mut v = store.get_i64(si);
+                                            let current = gi_utils::functions::spam_key::key_slot_name(v);
+                                            egui::ComboBox::from_id_salt(format!(
+                                                "param_key_{}",
+                                                spec.name
+                                            ))
+                                            .selected_text(current)
+                                            .show_ui(ui, |ui| {
+                                                for name in &function_names {
+                                                    if let Some(val) =
+                                                        gi_utils::functions::spam_key::key_slot_value(name)
+                                                        && ui
+                                                            .selectable_label(v == val, *name)
+                                                            .clicked()
+                                                    {
+                                                        store.set_i64(si, val);
+                                                        entry.insert(
+                                                            spec.name.into(),
+                                                            toml::Value::String((*name).into()),
+                                                        );
+                                                        self.dirty = true;
+                                                    }
+                                                }
+                                            });
+                                        }
                                         ParamKind::Int { min, max, .. } => {
                                             let mut v = store.get_i64(si);
                                             let resp = ui.add(
