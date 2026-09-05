@@ -212,10 +212,7 @@ fn calibrate(sample_count: usize, duration_ms: f64) -> (f64, Vec<String>) {
     };
 
     init_tsc_freq(median);
-    lines.push(format!(
-        "  -> calibrated: {:.0} Hz (median of {} x {}ms samples)",
-        median, sample_count, duration_ms
-    ));
+    lines.push(format!("calibrated: {median:.0} Hz"));
     (median, lines)
 }
 
