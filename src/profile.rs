@@ -26,9 +26,9 @@ struct RawConfig {
     bindings: Vec<RawBinding>,
     #[serde(default)]
     gui: RawGuiConfig,
-    /// 顶层 `[params.<功能名>]` — per-function 持久化（旧格式
-    /// `[bindings.params]` 仍在 RawBinding 读取兼容）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 顶层 `[params.<功能名>]` — 旧 per-function 格式，仅兼容读取
+    /// （v1.7.3 起持久化走行内 params；Save 永不输出本段）。
+    #[serde(default, skip_serializing)]
     params: Option<FuncParams>,
 }
 
@@ -37,11 +37,11 @@ struct RawBinding {
     key: String,
     func: String,
     mode: String,
-    /// 旧格式（0.4 首版动态参数）兼容读取 — per-function 语义下新 Save
-    /// **永不输出**（skip_serializing）：行内 params 有 TOML 归属歧义
-    /// （`[bindings.params]` 落在下一个 `[[bindings]]` 元素内），持久化
-    /// 一律走顶层 `[params.<功能名>]`。load 时行内参数提升迁移到全局表。
-    #[serde(default, skip_serializing)]
+    /// 动态参数（v1.7.3 per-binding 语义：参数属于**绑定行** — 同功能
+    /// 绑多键时各行独立调参，如两个 SpamKey 敲不同的键）。单绑定归属
+    /// 无 TOML 歧义，行内写出安全；顶层 `[params.<功能名>]`（v1.5-1.7
+    /// 的 per-function 格式）仍兼容读取，load 时迁移到各绑定行。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     params: Option<std::collections::BTreeMap<String, toml::Value>>,
 }
 
@@ -421,12 +421,12 @@ font_path = ""
 /// 加载配置（含功能级参数表）— load() 的完整形态。
 /// 校验仅键唯一（功能可绑多键，2026-08-22）。
 /// 返回 (绑定列表, 功能参数表)；`load()` 为仅取绑定的便捷包装。
-pub fn load_full() -> Result<(Vec<Binding>, FuncParams), String> {
+pub fn load_full() -> Result<Vec<Binding>, String> {
     load_full_from(&default_config_path())
 }
 
 /// 从指定路径加载配置（含功能级参数表）— Load from File 的实现。
-pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParams), String> {
+pub fn load_full_from(path: &std::path::Path) -> Result<Vec<Binding>, String> {
     let path = path.to_path_buf();
 
     if !path.exists() {
@@ -451,22 +451,27 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
     for (i, b) in raw.bindings.iter().enumerate() {
         let key = parse_key(&b.key).map_err(|e| format!("binding #{}: {}", i + 1, e))?;
         let mode = parse_mode(&b.mode).map_err(|e| format!("binding #{}: {}", i + 1, e))?;
-        // fill 语义：Binding.params = 该功能在全局表里的参数（快照），
-        // 供注册初值应用；顶层无此功能时回退旧格式 [bindings.params]（兼容）
-        let params = func_params
-            .get(&b.func)
-            .cloned()
-            .unwrap_or_else(|| b.params.clone().unwrap_or_default());
+        // 参数解析优先级（v1.7.3 per-binding）：行内 params > 顶层
+        // [params.<功能名>]（旧格式迁移源）> 空。顶层参数按功能名下发到
+        // **首个**绑该功能的行（多键同功能时旧行为即共享，语义无损）。
+        let params = if b.params.as_ref().is_some_and(|p| !p.is_empty()) {
+            b.params.clone().unwrap_or_default()
+        } else if let Some(shared) = func_params.get(&b.func) {
+            // 仅首个消费者取走迁移源（避免同功能多行重复应用）
+            if bindings.iter().any(|x: &Binding| x.func == b.func) {
+                Default::default()
+            } else {
+                shared.clone()
+            }
+        } else {
+            Default::default()
+        };
         bindings.push(Binding {
             key,
             func: b.func.clone(),
             mode,
             params,
         });
-        // 旧格式迁移：顶层未登记但行内带参 → 提升进全局表（save 时持久）
-        if !func_params.contains_key(&b.func) && b.params.as_ref().is_some_and(|p| !p.is_empty()) {
-            func_params.insert(b.func.clone(), b.params.clone().unwrap_or_default());
-        }
     }
 
     // ── Validate key uniqueness ──────────────────────────────
@@ -484,12 +489,12 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
         }
     }
 
-    Ok((bindings, func_params))
+    Ok(bindings)
 }
 
 /// 加载配置 — 仅取绑定列表（便捷包装，注册用）。
 pub fn load() -> Result<Vec<Binding>, String> {
-    load_full().map(|(bindings, _)| bindings)
+    load_full()
 }
 
 /// 加载 `[gui]` 段配置（图标路径等）。解析失败/缺段时返回默认值 —
@@ -520,15 +525,14 @@ pub fn load_gui_config_from(path: &std::path::Path) -> GuiConfig {
 /// [gui] 段由调用方传入的 `gui` 原样写回 — **fail-closed**：绝不读磁盘
 /// 回填（读回失败静默回退默认值会清空用户 icon_path — review #3）。
 /// 无法序列化的键返回错误（不写 "?" — "?" 下次启动解析失败会拖垮全部绑定）。
-pub fn save(bindings: &[Binding], func_params: &FuncParams, gui: &GuiConfig) -> Result<(), String> {
-    save_to(&default_config_path(), bindings, func_params, gui)
+pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
+    save_to(&default_config_path(), bindings, gui)
 }
 
 /// 另存为指定路径 — Save As 的实现（原子写同默认路径）。
 pub fn save_to(
     path: &std::path::Path,
     bindings: &[Binding],
-    func_params: &FuncParams,
     gui: &GuiConfig,
 ) -> Result<(), String> {
     let raw_bindings: Vec<RawBinding> = bindings
@@ -542,6 +546,7 @@ pub fn save_to(
                     .to_string(),
                 func: b.func.clone(),
                 mode: format!("{:?}", b.mode),
+                // per-binding：行内 params 随绑定写出（单归属无歧义）
                 params: if b.params.is_empty() {
                     None
                 } else {
@@ -556,11 +561,7 @@ pub fn save_to(
             icon_path: gui.icon_path.clone(),
             font_path: gui.font_path.clone(),
         },
-        params: if func_params.is_empty() {
-            None
-        } else {
-            Some(func_params.clone())
-        },
+        params: None, // per-function 顶层段已废弃 — Save 永不输出
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;
     let content = format!("# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}", toml_str);

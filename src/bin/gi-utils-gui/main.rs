@@ -42,6 +42,9 @@ struct GuiBinding {
     key_name: String,
     func: String,
     mode: TriggerMode,
+    /// 动态参数镜像（per-binding — ⚙ 弹窗编辑与 Save 持久化的配置侧
+    /// 真值；运行时值在功能实例的原子槽，live 直写）。
+    params: profile::Params,
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -127,10 +130,6 @@ struct GuiApp {
     /// 启动时加载的 [gui] 配置 — save() 需原样写回（fail-closed：不读磁盘，
     /// 读回失败静默回退默认会清空用户 icon_path — review #3）。
     gui_config: gi_utils::profile::GuiConfig,
-    /// 功能级参数表（per-function）— 参数面板编辑与 Save 持久化的真值；
-    /// 运行时值在功能实例的原子槽（live 直写），此表为配置侧快照。
-    func_params: gi_utils::profile::FuncParams,
-
     /// 活动 profile 名（profiles/ 目录内 .toml 的去扩展名）— Save 目标、
     /// 下拉实时切换的选中项。路径由 `profile::profile_path(&active_profile)`
     /// 派生（v1.5.2 自由路径已收敛为 profile 体系）。
@@ -627,6 +626,7 @@ impl GuiApp {
                     key_name: "...".into(),
                     func: default_func,
                     mode: TriggerMode::Loop,
+                    params: Default::default(),
                 });
                 self.dirty = true; // 空行已可见 — Esc 放弃也应提示未保存
                 // 新增行自动进入按键捕获
@@ -672,9 +672,8 @@ impl GuiApp {
                             match profile::load_full_from(
                                 &profile::profile_path(name).expect("listed name"),
                             ) {
-                                Ok((bindings, func_params)) => {
+                                Ok(bindings) => {
                                     self.active_profile = name.clone();
-                                    self.func_params = func_params;
                                     self.rebuild_from_bindings(bindings);
                                     self.dirty = false;
                                     self.log(format!("Profile → '{name}'"));
@@ -710,6 +709,7 @@ impl GuiApp {
                 key_name: profile::key_display_name(b.key),
                 func: b.func.clone(),
                 mode: b.mode,
+                params: b.params.clone(),
             })
             .collect();
         self.next_id = bindings.len();
@@ -878,8 +878,12 @@ impl GuiApp {
                     .num_columns(2)
                     .min_col_width(90.0)
                     .show(ui, |ui| {
-                        // per-function：写功能级参数表（同功能多键共享）
-                        let entry = self.func_params.entry(func.clone()).or_default();
+                        // per-binding：写行镜像（同功能绑多键时各行独立）
+                        let mut binding_params = self
+                            .bindings_list
+                            .iter_mut()
+                            .find(|g| g.id == id)
+                            .map(|g| &mut g.params);
                         for (si, spec) in specs.iter().enumerate() {
                             ui.label(spec.name);
                             match &spec.kind {
@@ -893,7 +897,9 @@ impl GuiApp {
                                     );
                                     if resp.changed() {
                                         store.set_f64(si, v); // live 直写
-                                        entry.insert(spec.name.into(), toml::Value::Float(v));
+                                        if let Some(entry) = binding_params.as_mut() {
+                                            entry.insert(spec.name.into(), toml::Value::Float(v));
+                                        }
                                         self.dirty = true;
                                     }
                                 }
@@ -920,7 +926,9 @@ impl GuiApp {
                                         ui.add(egui::DragValue::new(&mut v).range(*min..=*max));
                                     if resp.changed() {
                                         store.set_i64(si, v);
-                                        entry.insert(spec.name.into(), toml::Value::Integer(v));
+                                        if let Some(entry) = binding_params.as_mut() {
+                                            entry.insert(spec.name.into(), toml::Value::Integer(v));
+                                        }
                                         self.dirty = true;
                                     }
                                 }
@@ -928,7 +936,9 @@ impl GuiApp {
                                     let mut v = store.get_bool(si);
                                     if ui.checkbox(&mut v, "").changed() {
                                         store.set_bool(si, v);
-                                        entry.insert(spec.name.into(), toml::Value::Boolean(v));
+                                        if let Some(entry) = binding_params.as_mut() {
+                                            entry.insert(spec.name.into(), toml::Value::Boolean(v));
+                                        }
                                         self.dirty = true;
                                     }
                                 }
@@ -993,29 +1003,42 @@ impl GuiApp {
                         // （Save 持久化）。行内 func 名定位 per-function 表；
                         // L7 同语义：键值未变不置 dirty。
                         let packed = gi_utils::functions::spam_key::pack_key(key);
-                        let row = self.bindings_list.iter().find(|g| g.id == binding_id);
-                        let store = row
-                            .and_then(|g| g.key)
+                        // 不可变阶段：取 store + 旧值判断（借用于注册表）
+                        let row_key = self
+                            .bindings_list
+                            .iter()
+                            .find(|g| g.id == binding_id)
+                            .and_then(|g| g.key);
+                        let unchanged = row_key
                             .and_then(|k| self.key_bindings.params_of(&k))
-                            .and_then(|(specs, store)| specs.get(slot).map(|_| store));
-                        if let (Some(store), Some(row)) = (store, row) {
-                            if store.get_i64(slot) == packed {
-                                self.log(format!("Key '{}' unchanged — no apply", key.name()));
-                                self.cancel_capture();
-                                return;
-                            }
+                            .and_then(|(specs, store)| specs.get(slot).map(|_| store.get_i64(slot)))
+                            .map(|cur| cur == packed);
+                        if unchanged == Some(true) {
+                            self.log(format!("Key '{}' unchanged — no apply", key.name()));
+                            self.cancel_capture();
+                            return;
+                        }
+                        if let Some(store) = row_key
+                            .and_then(|k| self.key_bindings.params_of(&k))
+                            .and_then(|(specs, store)| specs.get(slot).map(|_| store))
+                        {
+                            // 可变阶段：live 直写 + 行镜像（per-binding）
                             store.set_i64(slot, packed);
-                            // 持久化 packed 整数（apply_params 的 Int 臂直收；
-                            // String 臂仅兼容手写键名 — 存 String 会让重启
-                            // 恢复/GUI 重注册走解析路径，无谓增加失败面）
-                            self.func_params
-                                .entry(row.func.clone())
-                                .or_default()
-                                .insert("key".into(), toml::Value::Integer(packed));
+                            if let Some(b) =
+                                self.bindings_list.iter_mut().find(|g| g.id == binding_id)
+                            {
+                                b.params.insert("key".into(), toml::Value::Integer(packed));
+                            }
                             self.dirty = true;
+                            let func_name = self
+                                .bindings_list
+                                .iter()
+                                .find(|g| g.id == binding_id)
+                                .map(|g| g.func.clone())
+                                .unwrap_or_default();
                             self.log(format!(
                                 "Parameter key → '{}' ({} / slot {slot})",
-                                name, row.func
+                                name, func_name
                             ));
                         }
                         // 目标行已删除 → 静默丢弃（同 Binding 分支语义）
@@ -1081,11 +1104,9 @@ impl GuiApp {
                     }
                 }
             };
-            // 动态参数覆写（per-function：从功能级参数表取，换功能不残留）。
-            // 失败语义与启动路径一致：WARN + 按默认参数注册 — 不因单个参数
-            // 坏值使整行热键失效（参数错误应可见但不破坏绑定）
-            let params = self.func_params.get(&g.func).cloned().unwrap_or_default();
-            if let Err(e) = profile::apply_params(&func, &params) {
+            // 动态参数覆写（per-binding：参数属于绑定行 — 同功能绑多键时
+            // 各行独立调参）。失败语义与启动路径一致：WARN + 按默认参数注册
+            if let Err(e) = profile::apply_params(&func, &g.params) {
                 errors.push(format!("'{}' params: {}（按默认参数注册）", g.func, e));
             }
 
@@ -1123,7 +1144,7 @@ impl GuiApp {
                     key,
                     func: g.func.clone(),
                     mode: g.mode,
-                    params: self.func_params.get(&g.func).cloned().unwrap_or_default(),
+                    params: g.params.clone(),
                 })
             })
             .collect();
@@ -1131,7 +1152,6 @@ impl GuiApp {
         profile::save_to(
             &profile::profile_path(&self.active_profile).expect("validated name"),
             &bindings,
-            &self.func_params,
             &self.gui_config,
         )
     }
@@ -1147,11 +1167,11 @@ impl GuiApp {
                     key,
                     func: g.func.clone(),
                     mode: g.mode,
-                    params: self.func_params.get(&g.func).cloned().unwrap_or_default(),
+                    params: g.params.clone(),
                 })
             })
             .collect();
-        profile::save_to(path, &bindings, &self.func_params, &self.gui_config)
+        profile::save_to(path, &bindings, &self.gui_config)
     }
 }
 
@@ -1429,14 +1449,14 @@ fn main() {
     if profile::migrate_legacy_config() {
         startup_log.push("Migrated legacy config → profiles/默认.toml".into());
     }
-    let (config_bindings, startup_func_params, config_ok) = match profile::load_full() {
-        Ok((b, fp)) => {
+    let (config_bindings, config_ok) = match profile::load_full() {
+        Ok(b) => {
             startup_log.push(format!("Loaded {} bindings from profile", b.len()));
-            (b, fp, true)
+            (b, true)
         }
         Err(e) => {
             startup_log.push(format!("Config error: {}", e));
-            (Vec::new(), profile::FuncParams::new(), false)
+            (Vec::new(), false)
         }
     };
 
@@ -1539,6 +1559,7 @@ fn main() {
             key_name: profile::key_display_name(b.key),
             func: b.func.clone(),
             mode: b.mode,
+            params: b.params.clone(),
         })
         .collect();
     let next_id = gui_bindings.len();
@@ -1575,7 +1596,6 @@ fn main() {
         icon_apply_deadline: None,
         show_until: None,
         gui_config: gui_cfg.clone(),
-        func_params: startup_func_params.clone(),
         active_profile: "默认".into(),
         pending_profile_name: String::new(),
         pending_new_profile: false,
