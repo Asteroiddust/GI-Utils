@@ -722,8 +722,17 @@ impl GuiApp {
         let mut keyslot_capture: Option<CaptureTarget> = None;
         let mut changed = false;
 
+        // 捕获进行中用 IgnoreClicks — 捕获弹窗（egui modal）的点击属"弹窗
+        // 外"，CloseOnClickOutside 会把参数 popup 关掉，键槽捕获失去可见的
+        // 取消入口、回来时状态丢失（实测 bug）；忽略点击 = 捕获期间弹窗
+        // 稳定驻留，结束后恢复点外自动关。
+        let close_behavior = if self.capture.active {
+            egui::PopupCloseBehavior::IgnoreClicks
+        } else {
+            egui::PopupCloseBehavior::CloseOnClickOutside
+        };
         egui::Popup::from_toggle_button_response(button)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .close_behavior(close_behavior)
             .show(|ui| {
                 ui.set_min_width(240.0);
                 ui.strong(format!("{key_name} — {}", func));
