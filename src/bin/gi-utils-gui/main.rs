@@ -1434,7 +1434,7 @@ fn main() {
     }
     let (config_bindings, mut startup_func_params, mut config_ok) = match config::load_full() {
         Ok((b, fp)) => {
-            startup_log.push(format!("Loaded {} bindings from config.toml", b.len()));
+            startup_log.push(format!("Loaded {} bindings from profile", b.len()));
             (b, fp, true)
         }
         Err(e) => {
@@ -1453,7 +1453,6 @@ fn main() {
     let stop_func: Arc<dyn KeyFunction> = Arc::new(gi_utils::functions::stop::停止退出::new(
         stop_flag.clone(),
     ));
-    startup_log.push("Registered functions:".into());
     startup_log.extend(register_all_bindings(
         &key_bindings,
         &stop_func,
@@ -1461,14 +1460,6 @@ fn main() {
         &send_ctx,
         false,
     ));
-    for b in &config_bindings {
-        startup_log.push(format!(
-            "  {:>12}  {:<12}  {:?}",
-            b.key.name(),
-            b.func,
-            b.mode
-        ));
-    }
 
     // ── 5. 托盘图标：主线程预加载一次（健康 GDI/WIC 状态），跨崩溃恢复
     // 轮共享 — 睡眠唤醒的 GL 崩溃会连带污染进程内 WIC 图标加载（恢复轮

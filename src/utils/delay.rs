@@ -149,10 +149,12 @@ pub fn wait_until_interruptible(target_ticks: u64, stop_requested: &AtomicBool) 
 
 /// 校准 TSC 频率 — Calibrate TSC frequency with default parameters.
 ///
-/// 20 samples x 100ms，总计约 2 秒。返回校准后的频率（Hz）与进度日志行。
-/// 启动时自动执行。日志行供调用方输出（GUI 注入日志面板）。
+/// 20 samples x 100ms，总计约 2 秒。返回校准后的频率（Hz）与**单行**
+/// 结果日志（GUI 启动日志要求精简 — 逐样本过程行 2026-08-22 移除）。
 pub fn calibrate_tsc_frequency() -> (f64, Vec<String>) {
-    calibrate(20, 100.0)
+    let (freq, mut lines) = calibrate(20, 100.0);
+    let result = lines.pop().unwrap_or_else(|| "calibrated".into());
+    (freq, vec![result])
 }
 
 /// 测量 TSC 频率 — Measure TSC frequency using `sample_count` samples of `duration_ms` each.
