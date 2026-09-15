@@ -134,6 +134,11 @@ struct GuiApp {
     /// 下拉实时切换的选中项。路径由 `profile::profile_path(&active_profile)`
     /// 派生（v1.5.2 自由路径已收敛为 profile 体系）。
     active_profile: String,
+
+    /// 功能参数模板表（`[params.<功能名>]`）— A+ 语义：GUI 切换功能或
+    /// 新建行时以模板为参数初值，与加载路径合成规则一致（否则切一次
+    /// 就用 spec 默认值偏离模板）。随 profile 加载刷新。
+    func_templates: gi_utils::profile::FuncParams,
     /// New Profile 的名字输入缓冲。
     pending_profile_name: String,
     /// New 按钮已提交（延迟到 show_action_buttons 的延迟处理区执行 —
@@ -436,6 +441,8 @@ impl GuiApp {
         let mut capture_idx: Option<usize> = None;
         let mut gear_idx: Option<usize> = None;
         let function_names = self.function_names.clone(); // 循环外克隆一次
+        // 模板快照（函数列切换时使用 — 闭包内不可借用 self）
+        let templates_snapshot = self.func_templates.clone();
 
         // L3: 捕获期间禁用表格交互 — 防止捕获中改/删行导致 binding_id 悬空
         // 或状态混乱（按键捕获窗口仍可用 Cancel 按钮取消）
@@ -475,8 +482,15 @@ impl GuiApp {
                                         if ui
                                             .selectable_label(binding.func == *name, *name)
                                             .clicked()
+                                            && binding.func != *name
                                         {
+                                            // A+：换功能 = 参数按新功能重置 —
+                                            // 有模板用模板基线，否则 spec 默认值
                                             binding.func = name.to_string();
+                                            binding.params = templates_snapshot
+                                                .get(*name)
+                                                .cloned()
+                                                .unwrap_or_default();
                                         }
                                     }
                                 });
@@ -620,13 +634,19 @@ impl GuiApp {
                     .find(|name| *name != "停止退出" && !used.contains(name))
                     .unwrap_or("连点器")
                     .to_string();
+                // A+：新行参数以该功能模板为基线（无模板则空 = spec 默认）
+                let new_params = self
+                    .func_templates
+                    .get(&default_func)
+                    .cloned()
+                    .unwrap_or_default();
                 self.bindings_list.push(GuiBinding {
                     id,
                     key: None,
                     key_name: "...".into(),
                     func: default_func,
                     mode: TriggerMode::Loop,
-                    params: Default::default(),
+                    params: new_params,
                 });
                 self.dirty = true; // 空行已可见 — Esc 放弃也应提示未保存
                 // 新增行自动进入按键捕获
@@ -672,8 +692,9 @@ impl GuiApp {
                             match profile::load_full_from(
                                 &profile::profile_path(name).expect("listed name"),
                             ) {
-                                Ok(bindings) => {
+                                Ok((bindings, templates)) => {
                                     self.active_profile = name.clone();
+                                    self.func_templates = templates;
                                     self.rebuild_from_bindings(bindings);
                                     self.dirty = false;
                                     self.log(format!("Profile → '{name}'"));
@@ -1449,14 +1470,14 @@ fn main() {
     if profile::migrate_legacy_config() {
         startup_log.push("Migrated legacy config → profiles/默认.toml".into());
     }
-    let (config_bindings, config_ok) = match profile::load_full() {
-        Ok(b) => {
+    let (config_bindings, startup_templates, config_ok) = match profile::load_full() {
+        Ok((b, templates)) => {
             startup_log.push(format!("Loaded {} bindings from profile", b.len()));
-            (b, true)
+            (b, templates, true)
         }
         Err(e) => {
             startup_log.push(format!("Config error: {}", e));
-            (Vec::new(), false)
+            (Vec::new(), gi_utils::profile::FuncParams::new(), false)
         }
     };
 
@@ -1597,6 +1618,7 @@ fn main() {
         show_until: None,
         gui_config: gui_cfg.clone(),
         active_profile: "默认".into(),
+        func_templates: startup_templates.clone(),
         pending_profile_name: String::new(),
         pending_new_profile: false,
     };

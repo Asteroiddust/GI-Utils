@@ -418,15 +418,16 @@ font_path = ""
 /// 每个功能只能绑定一个按键。
 /// If the file is missing, a default config is generated. Validates bidirectional
 /// uniqueness: each key maps to one function and each function maps to one key.
-/// 加载配置（含功能级参数表）— load() 的完整形态。
+/// 加载配置（含功能参数模板表）— load() 的完整形态。
 /// 校验仅键唯一（功能可绑多键，2026-08-22）。
-/// 返回 (绑定列表, 功能参数表)；`load()` 为仅取绑定的便捷包装。
-pub fn load_full() -> Result<Vec<Binding>, String> {
+/// 返回 (绑定列表, 模板表) — 模板表供 GUI 在切换功能/新建行时套基线
+/// （A+：与加载路径合成规则一致，避免"GUI 切一次就偏离模板"）。
+pub fn load_full() -> Result<(Vec<Binding>, FuncParams), String> {
     load_full_from(&default_config_path())
 }
 
-/// 从指定路径加载配置（含功能级参数表）— Load from File 的实现。
-pub fn load_full_from(path: &std::path::Path) -> Result<Vec<Binding>, String> {
+/// 从指定路径加载配置（含功能参数模板表）— Load from File 的实现。
+pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParams), String> {
     let path = path.to_path_buf();
 
     if !path.exists() {
@@ -489,12 +490,12 @@ pub fn load_full_from(path: &std::path::Path) -> Result<Vec<Binding>, String> {
         }
     }
 
-    Ok(bindings)
+    Ok((bindings, func_params))
 }
 
 /// 加载配置 — 仅取绑定列表（便捷包装，注册用）。
 pub fn load() -> Result<Vec<Binding>, String> {
-    load_full()
+    load_full().map(|(bindings, _)| bindings)
 }
 
 /// 加载 `[gui]` 段配置（图标路径等）。解析失败/缺段时返回默认值 —
@@ -652,13 +653,17 @@ pub fn create_function(
 /// `interval = 10`（整数）配 float 槽属常见笔误，宽容转换）。
 pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), String> {
     let Some(store) = func.param_store() else {
-        if params.is_empty() {
-            return Ok(());
+        // 无参数功能上的残留参数：静默忽略（A+ 防御）— 来源是"行内参数
+        // 跨功能残留"的历史数据（v1.7.3 前切换不清空）或手写文件。
+        // 不报错：这不是配置错误，且新 GUI 已保证不再产生。
+        // （"功能**有**参数但键名写错"仍走下方 Err — typo 检测保留）
+        if !params.is_empty() {
+            tracing::debug!(
+                "忽略无参数功能上的残留参数: {:?}",
+                params.keys().collect::<Vec<_>>()
+            );
         }
-        return Err(format!(
-            "功能无参数，却配置了 params: {:?}",
-            params.keys().collect::<Vec<_>>()
-        ));
+        return Ok(());
     };
     let specs = func.parameters();
     for (name, value) in params {
@@ -857,11 +862,20 @@ mod param_tests {
     }
 
     #[test]
-    fn no_param_function_rejects_params_and_accepts_empty() {
+    fn no_param_function_ignores_leftover_params() {
+        // A+：无参数功能上的残留参数静默忽略（历史数据/换功能残留），
+        // 不再报错 — 换功能时 GUI 已按模板重置，此分支为防御
         let f: Arc<dyn KeyFunction> = Arc::new(NoParamFunc);
         assert!(apply_params(&f, &Params::new()).is_ok());
         let mut p = Params::new();
         p.insert("x".into(), toml::Value::Boolean(true));
-        assert!(apply_params(&f, &p).is_err());
+        assert!(apply_params(&f, &p).is_ok());
+    }
+
+    #[test]
+    fn known_function_with_unknown_param_still_rejected() {
+        // typo 检测保留：功能**有**参数但键名不在 specs → 仍报错
+        let (f, params) = mk(&[("intervl_ms", toml::Value::Float(1.0))]);
+        assert!(apply_params(&(f as Arc<dyn KeyFunction>), &params).is_err());
     }
 }
