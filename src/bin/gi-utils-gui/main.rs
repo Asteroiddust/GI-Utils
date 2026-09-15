@@ -601,6 +601,7 @@ impl GuiApp {
                     Ok(()) => {
                         self.active_profile = name.clone();
                         self.dirty = false;
+                        profile::write_last_profile(&name); // 记忆
                         self.log(format!("Profile '{name}' created"));
                     }
                     Err(e) => self.error_msg = Some(e),
@@ -697,6 +698,7 @@ impl GuiApp {
                                     self.func_templates = templates;
                                     self.rebuild_from_bindings(bindings);
                                     self.dirty = false;
+                                    profile::write_last_profile(name); // 记忆
                                     self.log(format!("Profile → '{name}'"));
                                 }
                                 Err(e) => {
@@ -1165,7 +1167,8 @@ impl GuiApp {
                     key,
                     func: g.func.clone(),
                     mode: g.mode,
-                    params: g.params.clone(),
+                    // 差量：只写偏离模板的槽（模板保持活基线）
+                    params: profile::params_diff(&g.func, &g.params, &self.func_templates),
                 })
             })
             .collect();
@@ -1188,7 +1191,8 @@ impl GuiApp {
                     key,
                     func: g.func.clone(),
                     mode: g.mode,
-                    params: g.params.clone(),
+                    // 差量：只写偏离模板的槽（与 save_config 同规则）
+                    params: profile::params_diff(&g.func, &g.params, &self.func_templates),
                 })
             })
             .collect();
@@ -1470,16 +1474,26 @@ fn main() {
     if profile::migrate_legacy_config() {
         startup_log.push("Migrated legacy config → profiles/默认.toml".into());
     }
-    let (config_bindings, startup_templates, config_ok) = match profile::load_full() {
-        Ok((b, templates)) => {
-            startup_log.push(format!("Loaded {} bindings from profile", b.len()));
-            (b, templates, true)
-        }
-        Err(e) => {
-            startup_log.push(format!("Config error: {}", e));
-            (Vec::new(), gi_utils::profile::FuncParams::new(), false)
-        }
-    };
+    // Profile 记忆：优先上次激活（文件仍存在），否则回退 默认
+    let startup_profile = profile::resolve_active_profile();
+    let startup_profile_path =
+        profile::profile_path(&startup_profile).expect("resolved name is valid");
+    let (config_bindings, startup_templates, config_ok) =
+        match profile::load_full_from(&startup_profile_path) {
+            Ok((b, templates)) => {
+                startup_log.push(format!(
+                    "Loaded {} bindings from profile '{startup_profile}'",
+                    b.len()
+                ));
+                (b, templates, true)
+            }
+            Err(e) => {
+                startup_log.push(format!("Config error: {}", e));
+                (Vec::new(), gi_utils::profile::FuncParams::new(), false)
+            }
+        };
+    // 记录回写（记录失效时归一化为回退值 — 指针恒指向真实 profile）
+    profile::write_last_profile(&startup_profile);
 
     // ── 3. 创建 Engine ──────────────────────────────────────
     let engine = Engine::new();
@@ -1617,7 +1631,7 @@ fn main() {
         icon_apply_deadline: None,
         show_until: None,
         gui_config: gui_cfg.clone(),
-        active_profile: "默认".into(),
+        active_profile: startup_profile.clone(),
         func_templates: startup_templates.clone(),
         pending_profile_name: String::new(),
         pending_new_profile: false,

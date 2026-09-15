@@ -345,6 +345,56 @@ pub fn default_config_path() -> PathBuf {
     })
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Profile 记忆 — 上次激活的 profile 跨会话保留（v1.7.4）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 上次激活 profile 的记录文件 — `profiles/.last`（非 .toml，不参与枚举）。
+fn last_profile_path() -> PathBuf {
+    profiles_dir().join(".last")
+}
+
+/// 读取上次激活的 profile 名（best-effort — 缺失/空/读取失败返回 None）。
+pub fn read_last_profile() -> Option<String> {
+    let name = std::fs::read_to_string(last_profile_path()).ok()?;
+    let name = name.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// 记录当前激活的 profile（best-effort — 失败静默；记忆非关键路径）。
+pub fn write_last_profile(name: &str) {
+    let _ = std::fs::create_dir_all(profiles_dir());
+    let _ = std::fs::write(last_profile_path(), name);
+}
+
+/// 解析本次启动应使用的 profile：上次记录（且文件仍存在）→ 回退 "默认"。
+/// 记录失效（文件被删/改名）时自动回退，无需用户干预。
+pub fn resolve_active_profile() -> String {
+    read_last_profile()
+        .filter(|n| list_profiles().iter().any(|p| p == n))
+        .unwrap_or_else(|| "默认".to_string())
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 参数差量 — Save 写"相对模板的偏离"，模板保持活基线（v1.7.4）
+// ═══════════════════════════════════════════════════════════════════
+
+/// 行内参数相对功能模板的**差量**：仅保留与模板不同的槽。
+///
+/// - 无模板 → 原样全量（该行参数自成配置，无基线可比）
+/// - 与模板相同的槽不落盘 → 改模板即影响这些行（模板是**活基线**）
+/// - 用户把某槽改回模板值 → 差量消失 → 该槽回归跟随模板
+pub fn params_diff(func: &str, params: &Params, templates: &FuncParams) -> Params {
+    let Some(template) = templates.get(func) else {
+        return params.clone();
+    };
+    params
+        .iter()
+        .filter(|(k, v)| template.get(*k) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 /// 默认配置内容（首次运行时写入）— Default config content, written on first run.
 pub(crate) const DEFAULT_CONFIG: &str = r#"# GI-Utils 热键配置
 # 格式: [[bindings]]  key = "按键名"  func = "功能名"  mode = "Once/Loop/Toggle"
@@ -764,6 +814,56 @@ mode = "Loop"
         assert!(bindings[1].get("params").is_none());
         assert_eq!(template["interval_ms"].as_float(), Some(50.0));
         assert_eq!(template["hold_ms"].as_float(), Some(0.0));
+    }
+}
+
+#[cfg(test)]
+mod params_diff_tests {
+    use super::*;
+
+    fn tmpl(pairs: &[(&str, f64)]) -> FuncParams {
+        let mut t = Params::new();
+        for (k, v) in pairs {
+            t.insert((*k).into(), toml::Value::Float(*v));
+        }
+        let mut m = FuncParams::new();
+        m.insert("连点器".into(), t);
+        m
+    }
+
+    #[test]
+    fn no_template_keeps_full_params() {
+        let mut p = Params::new();
+        p.insert("interval_ms".into(), toml::Value::Float(100.0));
+        let d = params_diff("SpamKey", &p, &FuncParams::new());
+        assert_eq!(d.len(), 1, "无模板 → 原样全量（自成配置）");
+    }
+
+    #[test]
+    fn equal_to_template_yields_empty_diff() {
+        let p: Params = tmpl(&[("interval_ms", 10.0), ("hold_ms", 0.0)])
+            .remove("连点器")
+            .unwrap();
+        let d = params_diff(
+            "连点器",
+            &p,
+            &tmpl(&[("interval_ms", 10.0), ("hold_ms", 0.0)]),
+        );
+        assert!(d.is_empty(), "与模板一致 → 不落盘（跟随模板）");
+    }
+
+    #[test]
+    fn only_deviating_slots_persist() {
+        let mut p = Params::new();
+        p.insert("interval_ms".into(), toml::Value::Float(100.0)); // 偏离
+        p.insert("hold_ms".into(), toml::Value::Float(0.0)); // 同模板
+        let d = params_diff(
+            "连点器",
+            &p,
+            &tmpl(&[("interval_ms", 10.0), ("hold_ms", 0.0)]),
+        );
+        assert_eq!(d.len(), 1);
+        assert_eq!(d.get("interval_ms").and_then(|v| v.as_float()), Some(100.0));
     }
 }
 
