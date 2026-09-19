@@ -3,11 +3,13 @@
 //! 动态参数版（2026-08-22 起唯一版本，v1/v2 已归并删除）：
 //! `interval_ms` / `hold_ms` 可 GUI 实时调整（live 直写，下周期生效）—
 //! hold=0 即 v1 的驱动级原子点击对，hold>0 即 v2 的按下/松开节奏。
+//! 节奏实现由 [`crate::functions::click_rhythm`] 与 SpamKey 共用（2026-09
+//! 抽取 — 此前同一语义在两侧各有一份复制）。
 
 use crate::engine::bindings::{KeyFunction, ParamSpec, ParamValues};
 use crate::engine::event::InputEvent;
+use crate::functions::click_rhythm;
 use crate::interception::SendContext;
-use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -44,23 +46,19 @@ impl 连点器 {
 impl KeyFunction for 连点器 {
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
         while !stop_requested.load(Ordering::Acquire) {
+            // 参数快照（索引即槽位：interval=0，hold=1）— 节奏语义（含
+            // hold 钳制与 down/up 原子批）在 functions::click_rhythm，
+            // 与 SpamKey 共用同一实现
             let interval = self.params.get_f64(0);
-            let hold = self.params.get_f64(1).clamp(0.0, interval);
-            if hold <= 0.0 {
-                // v1 语义：点击对一次 IOCTL（栈数组，零分配）
-                self.send_ctx
-                    .send_events(&[InputEvent::left_down(), InputEvent::left_up()]);
-                delay::delay_ms_interruptible(interval, &stop_requested);
-            } else {
-                // v2 语义：独立按下/松开节奏
-                self.send_ctx.send_event(&InputEvent::left_down());
-                delay::delay_ms_interruptible(hold, &stop_requested);
-                self.send_ctx.send_event(&InputEvent::left_up());
-                let rest = interval - hold;
-                if rest > 0.0 {
-                    delay::delay_ms_interruptible(rest, &stop_requested);
-                }
-            }
+            let hold = self.params.get_f64(1);
+            click_rhythm(
+                &self.send_ctx,
+                interval,
+                hold,
+                &stop_requested,
+                InputEvent::left_down(),
+                InputEvent::left_up(),
+            );
         }
     }
 

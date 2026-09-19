@@ -26,9 +26,12 @@ struct RawConfig {
     bindings: Vec<RawBinding>,
     #[serde(default)]
     gui: RawGuiConfig,
-    /// 顶层 `[params.<功能名>]` — 旧 per-function 格式，仅兼容读取
-    /// （v1.7.3 起持久化走行内 params；Save 永不输出本段）。
-    #[serde(default, skip_serializing)]
+    /// 顶层 `[params.<功能名>]` — **功能参数模板**（同功能所有行共享的
+    /// 活基线，v1.7.4）：行内 `[bindings.params]` 存的是**相对本模板的
+    /// 差量**，Save 必须把模板段与差量一并写回 — 差量失去基线后，与模板
+    /// 相同的槽在下次加载时无任何来源（回落 spec 默认值 = 用户参数静默
+    /// 丢失）。仅当模板表为空时省略本段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     params: Option<FuncParams>,
 }
 
@@ -40,7 +43,10 @@ struct RawBinding {
     /// 动态参数（per-binding：参数属于**绑定行** — 同功能绑多键时各行
     /// 独立调参，如两个 SpamKey 敲不同的键）。加载时与顶层
     /// `[params.<功能名>]`（功能参数模板）合成：模板提供基线，行内显式
-    /// 槽覆盖；Save 写全量行内值（模板变更不影响已显式定制的行）。
+    /// 槽覆盖 → 每行 = 模板 ∪ 行内。**Save 写的是相对模板的差量**
+    /// （`params_diff`：与模板相同的槽不落盘 → 改模板即影响这些行，
+    /// 模板是活基线）；无模板的功能则该行参数写全量（自成配置）。
+    /// 差量的基线（模板段）由 `save_to` 一并写回 — 两者缺一即丢参数。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     params: Option<std::collections::BTreeMap<String, toml::Value>>,
 }
@@ -266,15 +272,28 @@ fn parse_mode(name: &str) -> Result<TriggerMode, String> {
 
 /// profiles 目录 — exe 旁 `profiles/`，每个 `*.toml` 即一个 profile
 /// （文件名去扩展名 = profile 名）。2026-08-22 v1.5.2 配置系统改造。
+/// current_exe 不可得时 panic — **仅限必然有 exe 路径的调用方**（启动/
+/// 保存/迁移路径）；托盘消息回调等不可 panic 的上下文用 `profiles_dir_opt`。
 pub fn profiles_dir() -> PathBuf {
-    let mut path = std::env::current_exe().expect("failed to get executable path");
-    path.set_file_name("profiles");
-    path
+    profiles_dir_opt().expect("failed to get executable path")
 }
 
-/// 枚举 profiles（按文件名排序，去扩展名）。目录不存在返回空。
+/// `profiles_dir` 的非 panic 变体 — `tray_wnd_proc`（`extern "system"`
+/// 消息回调）等**不可 panic** 的上下文专用：回调内 panic 即进程 abort
+/// （无 crash.log、无亲和性还原、无弹窗）。current_exe 失败返回 None，
+/// 调用方走空列表 / 默认值语义（best-effort，托盘菜单列空即降级）。
+pub fn profiles_dir_opt() -> Option<PathBuf> {
+    let mut path = std::env::current_exe().ok()?;
+    path.set_file_name("profiles");
+    Some(path)
+}
+
+/// 枚举 profiles（按文件名排序，去扩展名）。目录不存在 / exe 路径不可得
+/// 均返回空（best-effort — 调用方为托盘菜单与 GUI 下拉，均容许空列表）。
 pub fn list_profiles() -> Vec<String> {
-    let dir = profiles_dir();
+    let Some(dir) = profiles_dir_opt() else {
+        return Vec::new();
+    };
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -350,21 +369,25 @@ pub fn default_config_path() -> PathBuf {
 // ═══════════════════════════════════════════════════════════════════
 
 /// 上次激活 profile 的记录文件 — `profiles/.last`（非 .toml，不参与枚举）。
-fn last_profile_path() -> PathBuf {
-    profiles_dir().join(".last")
+/// best-effort：exe 路径不可得返回 None（读侧 None = 无记录，走默认）。
+fn last_profile_path() -> Option<PathBuf> {
+    Some(profiles_dir_opt()?.join(".last"))
 }
 
 /// 读取上次激活的 profile 名（best-effort — 缺失/空/读取失败返回 None）。
 pub fn read_last_profile() -> Option<String> {
-    let name = std::fs::read_to_string(last_profile_path()).ok()?;
+    let name = std::fs::read_to_string(last_profile_path()?).ok()?;
     let name = name.trim().to_string();
     (!name.is_empty()).then_some(name)
 }
 
 /// 记录当前激活的 profile（best-effort — 失败静默；记忆非关键路径）。
 pub fn write_last_profile(name: &str) {
-    let _ = std::fs::create_dir_all(profiles_dir());
-    let _ = std::fs::write(last_profile_path(), name);
+    let Some(dir) = profiles_dir_opt() else {
+        return; // exe 路径不可得：记忆降级为无（下次启动回落默认 profile）
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(".last"), name);
 }
 
 /// 解析本次启动应使用的 profile：上次记录（且文件仍存在）→ 回退 "默认"。
@@ -576,14 +599,20 @@ pub fn load_gui_config_from(path: &std::path::Path) -> GuiConfig {
 /// [gui] 段由调用方传入的 `gui` 原样写回 — **fail-closed**：绝不读磁盘
 /// 回填（读回失败静默回退默认值会清空用户 icon_path — review #3）。
 /// 无法序列化的键返回错误（不写 "?" — "?" 下次启动解析失败会拖垮全部绑定）。
-pub fn save(bindings: &[Binding], gui: &GuiConfig) -> Result<(), String> {
-    save_to(&default_config_path(), bindings, gui)
+pub fn save(bindings: &[Binding], templates: &FuncParams, gui: &GuiConfig) -> Result<(), String> {
+    save_to(&default_config_path(), bindings, templates, gui)
 }
 
 /// 另存为指定路径 — Save As 的实现（原子写同默认路径）。
+///
+/// `bindings` 的行内参数是**相对 `templates` 的差量**（调用方经
+/// `params_diff` 计算），因此模板段必须同时写回：只写差量会让"与模板
+/// 相同的槽"在下次加载时无来源（回落 spec 默认值 — 用户调好的参数静默
+/// 丢失，v1.7.4 回归）。模板段为空时省略该段（无基线，行内即全量）。
 pub fn save_to(
     path: &std::path::Path,
     bindings: &[Binding],
+    templates: &FuncParams,
     gui: &GuiConfig,
 ) -> Result<(), String> {
     let raw_bindings: Vec<RawBinding> = bindings
@@ -597,7 +626,8 @@ pub fn save_to(
                     .to_string(),
                 func: b.func.clone(),
                 mode: format!("{:?}", b.mode),
-                // per-binding：行内 params 随绑定写出（单归属无歧义）
+                // per-binding：行内 params 随绑定写出（单归属无歧义）。
+                // 内容是调用方给的差量（与模板相同的槽不在其中）
                 params: if b.params.is_empty() {
                     None
                 } else {
@@ -612,7 +642,12 @@ pub fn save_to(
             icon_path: gui.icon_path.clone(),
             font_path: gui.font_path.clone(),
         },
-        params: None, // per-function 顶层段已废弃 — Save 永不输出
+        // 模板段（差量的基线）必须随文件持久化 — 见 RawConfig.params 文档
+        params: if templates.is_empty() {
+            None
+        } else {
+            Some(templates.clone())
+        },
     })
     .map_err(|e| format!("failed to serialize config: {}", e))?;
     let content = format!("# GI-Utils 热键配置\n# 由 GUI 面板生成\n\n{}", toml_str);
@@ -773,11 +808,24 @@ pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), 
 
 #[cfg(test)]
 mod template_merge_tests {
-    /// 模板合成：行内差量覆盖模板基线 — 手工解析 TOML 验证
-    /// （load_full_from 的合成逻辑纯 TOML 层，直接以文本走通）
+    use super::*;
+
+    /// 测试用临时目录（进程 id 隔离，并行用例不互扰）
+    pub(super) fn tmp_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("gi-utils-profile-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 模板合成（**走生产代码** load_full_from）：行内差量覆盖模板基线，
+    /// 行内缺失的槽由模板补齐 — 该合成是"模板+差量"格式的读侧唯一实现。
     #[test]
-    fn template_merge_semantics() {
-        let toml_text = r#"
+    fn load_merges_template_with_inline_diff() {
+        let path = tmp_dir("merge").join("merge.toml");
+        std::fs::write(
+            &path,
+            r#"
 [params.SpamKey]
 interval_ms = 50.0
 hold_ms = 0.0
@@ -794,26 +842,134 @@ interval_ms = 100.0
 key = "F20"
 func = "SpamKey"
 mode = "Loop"
-"#;
-        let raw: toml::Value = toml::from_str(toml_text).unwrap();
-        let template = &raw["params"]["SpamKey"];
+"#,
+        )
+        .unwrap();
 
-        let bindings = raw["bindings"].as_array().unwrap();
+        let (bindings, templates) = load_full_from(&path).unwrap();
+        assert_eq!(templates.get("SpamKey").map(|t| t.len()), Some(2));
 
-        // 行 1：行内 interval=100 覆盖模板 50；hold 缺失 → 模板 0
-        let p1 = bindings[0].get("params").unwrap();
-        let interval = p1.get("interval_ms").unwrap().as_float().unwrap();
-        let hold = p1
-            .get("hold_ms")
-            .and_then(|v| v.as_float())
-            .unwrap_or(template.get("hold_ms").unwrap().as_float().unwrap());
-        assert_eq!(interval, 100.0);
-        assert_eq!(hold, 0.0);
+        // 行 1：行内 interval=100 覆盖模板 50；hold 缺行内 → 模板 0
+        assert_eq!(
+            bindings[0]
+                .params
+                .get("interval_ms")
+                .and_then(|v| v.as_float()),
+            Some(100.0)
+        );
+        assert_eq!(
+            bindings[0].params.get("hold_ms").and_then(|v| v.as_float()),
+            Some(0.0)
+        );
 
-        // 行 2：无行内 → 纯模板（Value::is_empty 不存在 — 以键存在性断言）
-        assert!(bindings[1].get("params").is_none());
-        assert_eq!(template["interval_ms"].as_float(), Some(50.0));
-        assert_eq!(template["hold_ms"].as_float(), Some(0.0));
+        // 行 2：无行内 → 纯模板
+        assert_eq!(
+            bindings[1]
+                .params
+                .get("interval_ms")
+                .and_then(|v| v.as_float()),
+            Some(50.0)
+        );
+        assert_eq!(
+            bindings[1].params.get("hold_ms").and_then(|v| v.as_float()),
+            Some(0.0)
+        );
+    }
+}
+
+/// 差量落盘往返 — Save 写差量，**模板段必须一并写回**（v1.7.4 回归：
+/// 只写差量 → 与模板相同的槽重启后回落 spec 默认值，用户参数静默丢失）
+#[cfg(test)]
+mod save_roundtrip_tests {
+    use super::template_merge_tests::tmp_dir;
+    use super::*;
+
+    /// 模板值（= 用户调好的参数，偏离 spec 默认）——出厂默认恰好等于
+    /// spec 默认值，故回归必须用偏离值（连点器 spec: interval 10.0）
+    fn template_params() -> Params {
+        let mut t = Params::new();
+        t.insert("interval_ms".into(), toml::Value::Float(25.0));
+        t.insert("hold_ms".into(), toml::Value::Float(0.0));
+        t
+    }
+
+    /// save_to → load_full_from 往返：行内与模板完全相同的行（差量为空）
+    /// 也必须还原出模板值（旧实现该行为空字段 + 无模板段 = 丢参数）
+    #[test]
+    fn save_then_load_preserves_template_slots() {
+        let path = tmp_dir("roundtrip").join("rt.toml");
+        let mut templates = FuncParams::new();
+        templates.insert("连点器".into(), template_params());
+
+        // 行 1 = 与模板全同（差量空）；行 2 = interval 偏离模板
+        let mut deviating = template_params();
+        deviating.insert("interval_ms".into(), toml::Value::Float(100.0));
+        let full = vec![
+            Binding {
+                key: Key::F13,
+                func: "连点器".into(),
+                mode: TriggerMode::Loop,
+                params: template_params(),
+            },
+            Binding {
+                key: Key::F14,
+                func: "连点器".into(),
+                mode: TriggerMode::Loop,
+                params: deviating.clone(),
+            },
+        ];
+
+        // 与 main.rs 的 Save 路径一致：行内写差量，模板表原样交给 save_to
+        let diffed: Vec<Binding> = full
+            .iter()
+            .map(|b| Binding {
+                params: params_diff(&b.func, &b.params, &templates),
+                ..b.clone()
+            })
+            .collect();
+        save_to(&path, &diffed, &templates, &GuiConfig::default()).unwrap();
+
+        // 模板段确实落在磁盘上（差量的基线）
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[params.\"连点器\"]"),
+            "模板段未写回 — 差量失去基线: {text}"
+        );
+
+        let (loaded, loaded_templates) = load_full_from(&path).unwrap();
+        assert_eq!(loaded.len(), full.len());
+        assert_eq!(loaded_templates, templates, "模板表往返不一致");
+        for (got, want) in loaded.iter().zip(full.iter()) {
+            assert_eq!(got.params, want.params, "行参数往返不一致（槽被丢弃）");
+        }
+    }
+
+    /// 无模板的功能（模板表空）：行内写全量，往返不失真
+    #[test]
+    fn save_then_load_without_template_keeps_full_params() {
+        let path = tmp_dir("nofulltmpl").join("rt.toml");
+        let mut params = Params::new();
+        params.insert("key".into(), toml::Value::Integer(0x001E));
+        let bindings = vec![Binding {
+            key: Key::F13,
+            func: "SpamKey".into(),
+            mode: TriggerMode::Loop,
+            params: params.clone(),
+        }];
+
+        let templates = FuncParams::new();
+        let diffed: Vec<Binding> = bindings
+            .iter()
+            .map(|b| Binding {
+                params: params_diff(&b.func, &b.params, &templates),
+                ..b.clone()
+            })
+            .collect();
+        save_to(&path, &diffed, &templates, &GuiConfig::default()).unwrap();
+
+        let (loaded, loaded_templates) = load_full_from(&path).unwrap();
+        assert!(loaded_templates.is_empty());
+        assert_eq!(loaded[0].params, params);
     }
 }
 

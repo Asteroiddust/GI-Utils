@@ -1,6 +1,6 @@
 # GI-Utils — Rust 游戏输入自动化工具 v1.7.4
 
-> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 56+ 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16 · 原生移植审查 14 项全处置，2026-08-19
+> **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 66 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16 · 原生移植审查 14 项全处置，2026-08-19 · **工作流审查 2026-09-20**（基线 de9ec82=v1.7.1 → v1.7.4 增量，4 文件）：14 项保留（13 项经独立子代理复现）+ 终稿复核 12 项（未复现级建议）；**2 高危同一根因**（Save 未写回模板段 → 重启后参数静默回落 spec 默认值）已修；3 轮优化（节奏引擎共用 / 单次 TSC 读 / 托盘动作走 logic 通道）；cargo test + fmt --check + release 构建全绿
 > **Build**: O3 + LTO fat + panic=unwind + rust-lld + target-cpu=native
 
 ## 项目概述
@@ -114,7 +114,7 @@ Engine (主循环, blocking)
 | **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程，无静态表边界缝隙（对应 C++ next_press_time + scheduled_releases）；卡顿节拍重锚 — 错过即弃、不突发追拍（有意偏离 C++ 原版） |
 | **挂起键兜底清理** | 停止时补发 release（活动音符 note-off，含 At 键盘事件），防卡键；EventSequence::play 内置 HeldTracker（双玛头手工粘滞键追踪已退役） |
 | **KeyFunction 1 必需方法 + 2 参数默认方法** | `execute(stop_requested)`；`parameters()`/`param_store()` 默认空实现（动态参数，2026-08-22 — 既有功能零改动继承） |
-| **动态参数函数** | 参数槽数量/类型实现期固定（Float/Int/Bool 三档 ParamSpec），`ParamValues` 全原子槽（f64 位模式存 AtomicU64）— GUI ⚙ 弹窗**直写 store** 即刻生效（不停线程、不触发注册表替换）；持久化走**顶层 `[params.<功能名>]`** per-function 语义（同功能多键共享配置初值，换功能零残留；行内 `[bindings.params]` 已废弃 — TOML 归属歧义，读兼容迁移、写禁用）；`apply_params` NaN/Inf 显式拒绝（clamp 不滤 NaN，穿透致下游 assert panic → 全进程退出）；键槽（SpamKey）= 打包 ScanCode+E0 存 Int 槽，捕获通道复用 Set Key，持久化 Integer |
+| **动态参数函数** | 参数槽数量/类型实现期固定（Float/Int/Bool 三档 ParamSpec），`ParamValues` 全原子槽（f64 位模式存 AtomicU64）— GUI ⚙ 弹窗**直写 store** 即刻生效（不停线程、不触发注册表替换）；持久化 = **模板 + 差量**（v1.7.4，见下条：顶层 `[params.<功能名>]` 模板段 + 行内 `[bindings.params]` 差量，两者由 `save_to` 成对写回 — 只写差量会在重启后丢参数）；`apply_params` NaN/Inf 显式拒绝（clamp 不滤 NaN，穿透致下游 assert panic → 全进程退出）；键槽（SpamKey）= 打包 ScanCode+E0 存 Int 槽，捕获通道复用 Set Key，持久化 Integer |
 | **线程级核心分离** | 进程掩码 12-15，GUI 渲染→12,13 (LOWEST)，输入处理→14,15 (REALTIME) |
 | **pending_joins 惰性 join** | `is_finished()` 检查保留未结束句柄，GUI 帧永不阻塞 |
 | **GUI live-apply + 托盘隐藏** | 修改即时生效；关闭隐藏到托盘，F12/菜单退出 |
@@ -124,12 +124,13 @@ Engine (主循环, blocking)
 | **WM_SETICON 窗口图标同步** | eframe 默认用 egui logo 覆盖窗口图标；托盘线程找到主窗口后用同一 HICON 覆盖任务栏/标题栏/Alt-Tab |
 | **热线程 pinning 金银核** | 按进程名注册策略（`thread_pin.rs` STRATEGIES，现 YuanShen/StarRail/ZenlessZoneZero 三游戏：Top-2 → 金核 A/B LP 对）；**候选域 = 模块白名单**（`"模块名+0x"` 前缀 — 原神 `["YuanShen.exe"]`（引擎静态链入 exe）；崩铁/绝区零 `["本exe","UnityPlayer.dll","GameAssembly.dll"]`（薄壳 exe，工作马在引擎/IL2CPP 模块）——白名单而非优先级带：崩铁压测实证 NVIDIA 热线程 base_pri 仅 9，PriorityBand 会漏放行；绝区零实证 base-15 的 ucrtbase 跳板神秘线程（战斗全场 #2、持续 35-44%）同样不可归属、必须排除），双采样 Δcycles 降序取前 N；新鲜度：同 pid 且 pin 存活 → 沿用，否则（首次/换游戏/线程死亡）还原旧 pin 后重映射；SET 权限被拒逐条降级。数据依据：2026-08-22 原神三采样 + 崩铁双采样 + 绝区零双采样（逛图/大招战斗），Top-2 集合跨场景恒定、排名互换属设计内；菜单场景"CPU 0% 但 Δcyc 巨大"（时钟中断记账粗粒度 vs 硬件 cycle 计数）实证排序主键选 Δcycles 正确。**SET 权限双例实证放行**（原神私服 + 崩铁官服 mhyprot）。退出/恢复/panic 三路径兜底还原（线程级掩码不随本进程退出消失）。**未注册游戏 = 保底策略**：只优先级 HIGH + OTHER 隔离，无 pin。**Endfield（终末地）有意不注册**（2026-08-22）：反作弊封锁模块枚举（ACCESS_DENIED，管理员 procexp 亦然）→ 白名单规则不可用，PriorityBand 因缺乏地址实证 + 崩铁反例而弃，保底运行；句柄查询侧全绿，待有实证可重启评估 |
 | **优化游戏三档模式** | ①**优化游戏**（Advanced）= 现状全量：游戏亲和性(GAME_CORES_MASK) + OTHER 隔离 + HIGH + 前台 + 热线程 pinning；②**优化游戏标准**（Standard）= minimal + OTHER 隔离（不动游戏自身、不 pin）；③**优化游戏简易**（Minimal）= 仅 HIGH + 前台（不碰任何亲和性）。三模式共享找窗/换游戏检测/前台重试；**奇偶 toggle 按模式独立**（`static [AtomicBool; 3]` — 多键绑定不同档位互不串扰，2026-08-22）；minimal 恢复为 no-op（HIGH 留存无害 3.4） |
-
-| **动态参数模板+差量模型** | 参数三级合成：顶层 `[params.<功能名>]` = **功能参数模板**（活基线，同功能所有行共享）→ 绑定行内 `[bindings.params]` = **差量** → 每行生效值 = 模板 + 行内差量。**Save 只写偏离模板的槽**（`params_diff` — 槽改回模板值则差量消失、回归跟随模板；无模板则全量）。GUI 持模板表（`GuiApp.func_templates`）：**切换功能/新建行以模板为参数初值**（A+ — 与加载路径一致，换功能即清跨功能残留，无参功能上的历史残留由 `apply_params` 静默忽略、typo 仍报错）；同功能绑多键各行独立调参。回归测试：`template_merge_tests` + `params_diff_tests` |
+| **动态参数模板+差量模型** | 参数三级合成：顶层 `[params.<功能名>]` = **功能参数模板**（活基线，同功能所有行共享）→ 绑定行内 `[bindings.params]` = **差量** → 每行生效值 = 模板 + 行内差量。**Save 写差量 + 模板段**（`params_diff` — 槽改回模板值则差量消失、回归跟随模板；无模板则全量；模板段由 `save_to` 一并落盘，差量失去基线 = 丢参数）。GUI 持模板表（`GuiApp.func_templates`）：**切换功能/新建行以模板为参数初值**（A+ — 与加载路径一致，换功能即清跨功能残留，无参功能上的历史残留由 `apply_params` 静默忽略、typo 仍报错）；同功能绑多键各行独立调参。回归测试：`template_merge_tests`（走 load_full_from）+ `save_roundtrip_tests`（save→load 往返）+ `params_diff_tests` |
 | **Profile 记忆** | `profiles/.last` 记录上次激活 profile；启动 `resolve_active_profile()` 优先恢复（记录失效自动回退 `默认` 并归一化回写）；启动/下拉切换/New 三处同步写入 |
-
-| **Profile 配置体系** | `profile.rs`（v1.5.2 由 config.rs 更名并入）：`profiles/` 目录约定 + `list_profiles`/`profile_path`（防目录穿越：名禁分隔符/控制字符）/`migrate_legacy_config`（旧单文件自动迁移为 profiles/默认.toml，旧文件保留）；GUI `Profile` 下拉实时切换（load_full_from + rebuild_from_bindings 全量重注册，dirty 清零）、New 以当前状态建副本；Save 始终写活动 profile |
-
+| **托盘/下拉切 profile 共用 switch_profile** | 两条入口同一实现 + 同一组守卫：同名（已是活动 profile → 无操作，避免无谓 clear_all 打断运行中的 Loop/Toggle）、dirty（拒绝 + 日志/错误弹窗）、按键捕获中（拒绝 — rebuild 按行索引重排 id 会让捕获结果落到别的行）。托盘动作经 `App::logic` 通道消费（见下条的前提注记） |
+| **敲击节奏引擎共用** | `functions/mod.rs` 的 `click_plan`（纯决策：`AtomicBatch` / `Split{hold,rest}`）+ `click_rhythm`（唯一执行实现）— 连点器与 SpamKey 此前各有一份同语义复制（项目"两处复制 → 修复漂移"风险面），2026-09-20 抽取；`click_plan` 为纯函数可单测，`hold` 钳到 `[0, interval]`（负值/未配置 → 原子批；超 interval → 周期即按下时长） |
+| **wait_until_interruptible 单次 TSC 读** | 到期判定与检查点判定复用同一读数（原每轮两次 `read_tsc`）— 该循环是所有 Loop 功能与两个时间轴执行器的等待热路径（最短 0.5ms 一轮），实测每轮 65 → 61 周期（固定 TSC 窗口内自旋轮数 +7%，6/6 轮一致）；检查节奏不变，最坏晚一轮（~15ns）触发 stop 检查，相对 100μs 检查周期可忽略，2026-09-20 |
+| **托盘动作走 App::logic 通道** | `TrayAction` 消费与隐藏态周期唤醒（`request_repaint_after(500ms)`）移入 `eframe::App::logic`，`ui()` 只留可见帧节拍 — 意图是隐藏态下托盘动作不再滞留 channel（Exit 分支另有 `post_close` 兜底）。⚠️ **前提待实机确认**（终稿复核 2026-09-20）：本项目隐藏用 `ShowWindow(SW_HIDE)`，不改 winit 的 visible 标志，而 eframe 的 `show_ui` 只由 viewport visible/minimized 决定 → 隐藏态 `ui()` 可能仍在跑（该复核读 eframe/egui/winit 源码链的反证，未实机验证）。两种情况下本改动都不致错（前者必要、后者冗余），但"隐藏态是否跑 ui()"的描述需以实机为准 |
+| **Profile 配置体系** | `profile.rs`（v1.5.2 由 config.rs 更名并入）：`profiles/` 目录约定 + `list_profiles`/`profile_path`（防目录穿越：名禁分隔符/控制字符）/`migrate_legacy_config`（旧单文件自动迁移为 profiles/默认.toml，旧文件保留）；GUI `Profile` 下拉实时切换（`switch_profile` + rebuild_from_bindings 全量重注册，dirty 清零；与托盘同守卫）、New 以当前状态建副本（连同模板段 — 副本自洽）；Save 始终写活动 profile，模板段随行内差量一并写回 |
 | **优化游戏找窗三级序** | ①已登记名单（`functions::GAME_PROCESS_NAMES` 7 游戏：进程名→pid→枚举可见主窗口，有标题优先）→ ②窗口类兜底（UnityWndClass/UnrealWindow，未登记游戏）→ ③失败。名单优先覆盖窗口类不明的游戏（Endfield 等，2026-08-22）；同开多游戏时按名单顺序取胜。名单为找窗与线程采样共享（新游戏加一行两处生效） |
 | **TSC 校准 20×100ms 阻塞启动 ~2s** | 有意保持（2026-08-22 拍板）— 启动一次性成本换最大样本稳健性。实测样本散布 ±1.45ppm（端点读偏斜 ~150ns 等效），最差样本对 10ms 时序误差 15ns 级，精度冗余远超需求；QPC 交叉测量缩窗方案（~100ms 达 <0.01%）评估过，不采用 |
 

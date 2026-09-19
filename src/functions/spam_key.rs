@@ -2,19 +2,22 @@
 //! Loop 模式，按住循环。
 //!
 //! 动态参数三件套（GUI live 直写，下周期生效）：
-//! - `key`：目标键（配置/面板均为键名，如 "F"、"Space" — 字符串参数，
-//!   变更需重注册 — 面板下拉选择，dirty 后 Save/live-apply 走重注册路径）
+//! - `key`：目标键 — 打包值（低 16 位 ScanCode，位 16 = E0）存 Int 槽；
+//!   面板经 Set Key 捕获通道写入（任意键，含异形键），持久化 Integer
+//!   （手写文件里的键名字符串由 `profile::apply_params` 解析）；槽直写下
+//!   周期生效 — 不触发重注册
 //! - `interval_ms`：敲击周期（1.0–10000）
 //! - `hold_ms`：按下时长（0–interval；0 = down+up 一次驱动级原子批）
 //!
 //! 与连点器的区别：连点器固定敲鼠标左键；本功能敲任意可配置键。
-//! 两者共用同一节奏引擎语义（v1/v2 归并时代的双键位形态）。
+//! 两者共用同一节奏引擎（[`crate::functions::click_rhythm`]，v1/v2 归并
+//! 时代的双键位形态）— 2026-09 由此前的两份复制抽取为唯一实现。
 
 use crate::engine::bindings::{KeyFunction, ParamKind, ParamSpec, ParamValues};
 use crate::engine::event::InputEvent;
+use crate::functions::click_rhythm;
 use crate::interception::SendContext;
 use crate::key::{Key, ScanCode};
-use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -84,31 +87,23 @@ impl KeyFunction for SpamKey {
             // 键槽：AtomicI64 装打包值 — 直接读原子槽（经 Int 路径）
             let key = unpack_key(self.params.get_i64(0));
             let interval = self.params.get_f64(1);
-            let hold = self.params.get_f64(2).clamp(0.0, interval);
-
-            let down = InputEvent::Keyboard {
-                code: key.code,
-                state: key.down_state(),
-            };
-            let up = InputEvent::Keyboard {
-                code: key.code,
-                state: key.up_state(),
-            };
-
-            if hold <= 0.0 {
-                // 原子批：down+up 一次 IOCTL（v1 语义）
-                self.send_ctx.send_events(&[down, up]);
-                delay::delay_ms_interruptible(interval, &stop_requested);
-            } else {
-                // 独立按下/松开节奏（v2 语义）
-                self.send_ctx.send_event(&down);
-                delay::delay_ms_interruptible(hold, &stop_requested);
-                self.send_ctx.send_event(&up);
-                let rest = interval - hold;
-                if rest > 0.0 {
-                    delay::delay_ms_interruptible(rest, &stop_requested);
-                }
-            }
+            let hold = self.params.get_f64(2);
+            // 节奏语义（hold 钳制 + 原子批 down/up）与连点器共用同一实现，
+            // 仅目标键事件不同
+            click_rhythm(
+                &self.send_ctx,
+                interval,
+                hold,
+                &stop_requested,
+                InputEvent::Keyboard {
+                    code: key.code,
+                    state: key.down_state(),
+                },
+                InputEvent::Keyboard {
+                    code: key.code,
+                    state: key.up_state(),
+                },
+            );
         }
     }
 
@@ -122,23 +117,20 @@ impl KeyFunction for SpamKey {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 键槽辅助 — 打包值 ↔ 配置键名（GUI 下拉 / [bindings.params] 持久化）
+// 键槽显示 — 打包值 → 键名（GUI 参数面板的键槽按钮标题）
 // ═══════════════════════════════════════════════════════════════════
 
 /// 打包值 → 配置键名（KEY_PAIRS 反查；未知码返回 "0x%04X" 兜底）。
+///
+/// 反方向（键名 → 打包值）**不由本模块提供**：GUI 走 Set Key 捕获通道
+/// 直接写槽，手写配置的键名字符串由 `profile::apply_params` 解析。
+/// 曾为「面板键名下拉」实现、如今已无调用者的两个伙伴函数于 2026-09
+/// 删除：`key_slot_value` 随 d657320（键槽改用捕获通道）失去调用者；
+/// `set_key_slot` 自 b7829e6 引入起即无调用者，且硬编码槽 0 — 与泛化后的
+/// `CaptureTarget::KeySlot { slot }` 槽索引语义冲突，留着就是写错槽的陷阱。
 pub fn key_slot_name(v: i64) -> String {
     let k = unpack_key(v);
     crate::profile::key_to_config_name(k)
         .map(str::to_string)
         .unwrap_or_else(|| format!("0x{:04X}", k.code.raw()))
-}
-
-/// 配置键名 → 打包值（大小写不敏感；未知名返回 None）。
-pub fn key_slot_value(name: &str) -> Option<i64> {
-    crate::profile::parse_key(name).ok().map(pack_key)
-}
-
-/// 键槽直写打包值（面板切换键时用 — 走 Int 槽 i64 路径）。
-pub fn set_key_slot(store: &ParamValues, k: Key) {
-    store.set_i64(0, pack_key(k));
 }

@@ -169,6 +169,22 @@ struct CaptureState {
 // ═══════════════════════════════════════════════════════════════════
 
 impl eframe::App for GuiApp {
+    /// 逻辑通道 — eframe 对**不可见窗口不跑 UI pass**（eframe 0.36 源码：
+    /// wgpu 后端在 `!show_ui` 分支只走 `update_logic_only`，不调 `App::ui`）：
+    /// 托盘动作（profile 切换 / Show / Exit / Ready）若只在 ui() 里取 channel，
+    /// 窗口隐藏时会滞留到窗口被唤出才补做。可见帧中本方法先于 ui() 调用
+    /// （eframe `update` → `App::logic` + `App::ui`），故托盘处理统一放这里，
+    /// 隐藏/可见两条路径共用一份实现。
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_tray_actions(ctx);
+
+        // 隐藏态没有 ui() 帧 — 主动请求周期唤醒（~500ms），托盘动作不再
+        // 滞留 channel；可见帧的节拍由 ui() 的 request_repaint_after 维持。
+        if self.hidden.load(Ordering::Acquire) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
     fn ui(&mut self, central_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = central_ui.ctx().clone();
 
@@ -181,9 +197,8 @@ impl eframe::App for GuiApp {
             self.log(line);
         }
 
-        // 周期性唤醒：可见时 100ms。隐藏态下 winit 挂起 redraw、周期帧
-        // 实际不触发（review 实证 — 旧注释"500ms 确保隐藏时收托盘消息"
-        // 与 F12 隐藏退出 bug 的存在互相矛盾）：托盘动作（Show/Exit）与
+        // 周期性唤醒：可见时 100ms。隐藏态下 eframe 不跑 UI pass（只调
+        // App::logic — 见该处注释），隐藏节拍由 logic() 维持；托盘 Exit 与
         // 引擎退出的 WM_CLOSE 走原生窗口消息通道，不依赖周期帧。
         let interval = if self.hidden.load(Ordering::Acquire) {
             std::time::Duration::from_millis(500)
@@ -191,54 +206,6 @@ impl eframe::App for GuiApp {
             std::time::Duration::from_millis(100)
         };
         ctx.request_repaint_after(interval);
-
-        // -1. 处理托盘消息
-        match self.tray_rx.try_recv() {
-            Ok(TrayAction::Show) => {
-                self.hidden.store(false, Ordering::Release);
-                // 单次 show_and_activate 可能打在幽灵窗口上（L3）— 记录
-                // 截止时刻，由下方 deadline 块每帧重试直到 ~2s（review #5）
-                self.show_until =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
-                ctx.request_repaint();
-            }
-            Ok(TrayAction::SwitchProfile(name)) => {
-                // 托盘切换（与窗口下拉同路径）；失败原因记日志 + 错误弹窗
-                match self.switch_profile(&name) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        self.log(format!("Profile 切换被拒: {e}"));
-                        self.error_msg = Some(format!("切换 profile 失败: {e}"));
-                    }
-                }
-                ctx.request_repaint(); // 隐藏态下无周期帧 — 主动唤醒
-            }
-            Ok(TrayAction::Exit) => {
-                self.should_exit = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            Ok(TrayAction::Ready(ok)) => {
-                self.tray_ok.store(ok, Ordering::Release);
-                // 本轮已收到 Ready — 关窗隐藏判定从此刻起可用（见 tray_ready）
-                self.tray_ready = true;
-                if !ok {
-                    // NIM_ADD 失败：隐藏态不可恢复（无图标可唤回）—
-                    // 取消隐藏态并武装 Show 重试把窗口拉回。先置 hidden=false
-                    // 再武装 — deadline 块在 hidden=true 时立即取消重试
-                    // （review 3.6）。
-                    self.hidden.store(false, Ordering::Release);
-                    if self.hidden_applied {
-                        self.show_until =
-                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
-                    }
-                    ctx.request_repaint();
-                    self.log(
-                        "WARNING: tray icon creation failed — closing will exit instead of hiding.",
-                    );
-                }
-            }
-            _ => {}
-        }
 
         // -0.8. 监控 Engine stop_flag（F12 按下时 Engine 设置此标志）
         if self.stop_flag.load(Ordering::Acquire) {
@@ -696,25 +663,12 @@ impl GuiApp {
                 .show_ui(ui, |ui| {
                     for name in &profiles {
                         let is_active = *name == self.active_profile;
-                        if ui.selectable_label(is_active, name).clicked()
-                            && !is_active
-                            && !self.capture.active
-                        {
-                            // 实时切换：加载目标 profile 并全量重注册
-                            match profile::load_full_from(
-                                &profile::profile_path(name).expect("listed name"),
-                            ) {
-                                Ok((bindings, templates)) => {
-                                    self.active_profile = name.clone();
-                                    self.func_templates = templates;
-                                    self.rebuild_from_bindings(bindings);
-                                    self.dirty = false;
-                                    profile::write_last_profile(name); // 记忆
-                                    self.log(format!("Profile → '{name}'"));
-                                }
-                                Err(e) => {
-                                    self.error_msg = Some(format!("切换失败: {e}"));
-                                }
+                        if ui.selectable_label(is_active, name).clicked() && !is_active {
+                            // 与托盘菜单同路径：dirty（防静默丢弃未保存编辑）
+                            // 与捕获守卫都在 switch_profile 内 — 单一实现
+                            if let Err(e) = self.switch_profile(name) {
+                                self.log(format!("Profile 切换被拒: {e}"));
+                                self.error_msg = Some(format!("切换 profile 失败: {e}"));
                             }
                         }
                     }
@@ -733,11 +687,24 @@ impl GuiApp {
     }
 
     /// 切换活动 profile（下拉与托盘菜单共用）：加载 → 重建 → 记忆。
-    /// dirty 守卫：有未保存编辑时拒绝（防静默丢弃 — 托盘路径无确认弹窗，
-    /// 拒绝后日志面板给出原因）。
+    ///
+    /// 守卫（两条入口共用 — 语义必须一致）：
+    /// - 同名：已是活动 profile → 无操作（托盘打勾项同样可点，无谓的全量
+    ///   重注册会 clear_all + 停掉正在运行的 Loop/Toggle 功能实例）
+    /// - dirty：有未保存编辑时拒绝（防静默丢弃 — 托盘路径无确认弹窗，
+    ///   拒绝后日志面板/错误弹窗给出原因）
+    /// - 捕获中：rebuild_from_bindings 按行索引重排 id，捕获结果会按
+    ///   binding_id 写到另一行（见 show_binding_table 的捕获守卫）
     fn switch_profile(&mut self, name: &str) -> Result<(), String> {
+        if name == self.active_profile {
+            self.log(format!("Profile '{name}' 已是当前 profile — 忽略"));
+            return Ok(());
+        }
         if self.dirty {
             return Err("有未保存的修改 — 请先 Save 再切换".into());
+        }
+        if self.capture.active {
+            return Err("按键捕获进行中 — 请先完成或取消捕获再切换".into());
         }
         let path =
             profile::profile_path(name).ok_or_else(|| format!("非法 profile 名: '{name}'"))?;
@@ -818,6 +785,58 @@ impl GuiApp {
 // ═══════════════════════════════════════════════════════════════════
 
 impl GuiApp {
+    /// 处理托盘消息 — 全程序**唯一**的 `tray_rx` 消费点（两处 try_recv 会
+    /// 分食消息），由 `App::logic` 调用：可见帧与隐藏帧都经过 logic
+    /// （隐藏态由 logic() 的周期唤醒驱动 — 见 `App::logic` 文档）。
+    fn handle_tray_actions(&mut self, ctx: &egui::Context) {
+        match self.tray_rx.try_recv() {
+            Ok(TrayAction::Show) => {
+                self.hidden.store(false, Ordering::Release);
+                // 单次 show_and_activate 可能打在幽灵窗口上（L3）— 记录
+                // 截止时刻，由 deadline 块每帧重试直到 ~2s（review #5）
+                self.show_until =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                ctx.request_repaint();
+            }
+            Ok(TrayAction::SwitchProfile(name)) => {
+                // 托盘切换（与窗口下拉同路径）；失败原因记日志 + 错误弹窗
+                match self.switch_profile(&name) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        self.log(format!("Profile 切换被拒: {e}"));
+                        self.error_msg = Some(format!("切换 profile 失败: {e}"));
+                    }
+                }
+                ctx.request_repaint(); // 隐藏态下无周期帧 — 主动唤醒
+            }
+            Ok(TrayAction::Exit) => {
+                self.should_exit = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Ok(TrayAction::Ready(ok)) => {
+                self.tray_ok.store(ok, Ordering::Release);
+                // 本轮已收到 Ready — 关窗隐藏判定从此刻起可用（见 tray_ready）
+                self.tray_ready = true;
+                if !ok {
+                    // NIM_ADD 失败：隐藏态不可恢复（无图标可唤回）—
+                    // 取消隐藏态并武装 Show 重试把窗口拉回。先置 hidden=false
+                    // 再武装 — deadline 块在 hidden=true 时立即取消重试
+                    // （review 3.6）。
+                    self.hidden.store(false, Ordering::Release);
+                    if self.hidden_applied {
+                        self.show_until =
+                            Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                    }
+                    ctx.request_repaint();
+                    self.log(
+                        "WARNING: tray icon creation failed — closing will exit instead of hiding.",
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// 加载 CJK 补充字体（+ 符号字体），注入 egui 字体系统作为 fallback。
     ///
     /// 来源优先级：`[gui] font_path` 显式配置 → 自动探测系统字体
@@ -1206,11 +1225,14 @@ impl GuiApp {
         profile::save_to(
             &profile::profile_path(&self.active_profile).expect("validated name"),
             &bindings,
+            &self.func_templates,
             &self.gui_config,
         )
     }
 
     /// 另存为指定路径 — New Profile 的实现（同 save 校验）。
+    /// 模板表用**内存中的当前表**：差量（同上）与模板段成对写出，
+    /// 副本文件自洽（无模板段则差量无基线 — v1.7.4 回归）。
     fn save_config_to(&self, path: &std::path::Path) -> Result<(), String> {
         self.validate_bindings()?;
         let bindings: Vec<Binding> = self
@@ -1226,7 +1248,7 @@ impl GuiApp {
                 })
             })
             .collect();
-        profile::save_to(path, &bindings, &self.gui_config)
+        profile::save_to(path, &bindings, &self.func_templates, &self.gui_config)
     }
 }
 

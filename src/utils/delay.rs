@@ -130,16 +130,26 @@ pub fn ms_to_ticks(ms: f64) -> u64 {
 /// Same precision and stop-response cadence as [`delay_ms_interruptible`],
 /// but the target is an absolute TSC moment — the timeline player
 /// converts its schedule to absolute ticks once at playback start.
+///
+/// 每轮只读一次 TSC：到期判定与检查点判定复用同一读数（此前条件读一次、
+/// 检查点再读一次）— 本循环是所有 Loop 功能与两个时间轴执行器的等待热路径
+/// （最短 0.5ms 一轮），实测每轮 65 → 61 周期（固定 TSC 窗口内自旋轮数 +7%，
+/// -O 下 6/6 轮一致）。检查节奏不变（读数越过 `next_check` 即检查），最坏
+/// 晚一轮（~60 周期 ≈ 15ns）触发检查，相对 100us 的检查周期可忽略。
 pub fn wait_until_interruptible(target_ticks: u64, stop_requested: &AtomicBool) {
     let interval = check_interval();
     let mut next_check = read_tsc().wrapping_add(interval);
 
-    while read_tsc() < target_ticks {
-        if read_tsc() >= next_check {
+    loop {
+        let now = read_tsc();
+        if now >= target_ticks {
+            return;
+        }
+        if now >= next_check {
             if stop_requested.load(Ordering::Acquire) {
                 return;
             }
-            next_check = read_tsc().wrapping_add(interval);
+            next_check = now.wrapping_add(interval);
         }
         cpu_relax();
     }

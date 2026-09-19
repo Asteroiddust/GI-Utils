@@ -42,7 +42,9 @@ pub enum TrayAction {
     Show,
     /// 菜单 "Exit" → GUI 帧：should_exit=true + ViewportCommand::Close。
     Exit,
-    /// Profile 子菜单选中项 → GUI 帧：切换活动 profile（与窗口下拉同路径）。
+    /// Profile 子菜单选中项 → GUI：切换活动 profile（与窗口下拉同路径）。
+    /// 纯 channel 投递 — 隐藏态由 GUI 的 `eframe::App::logic` 周期通道消费
+    /// （eframe 对不可见窗口不跑 UI pass），不再滞留到窗口被唤出。
     SwitchProfile(String),
     /// NIM_ADD 结果 → GUI 帧：写 tray_ok；false 时记日志。
     Ready(bool),
@@ -147,6 +149,10 @@ unsafe extern "system" fn tray_wnd_proc(
                         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
                         // ── Profile 二级菜单：列出 profiles/*.toml，当前项打勾 ──
                         if let Ok(sub) = CreatePopupMenu() {
+                            // 仅 panic-free 变体（profiles_dir_opt 链路 —
+                            // current_exe 失败返回空/默认）：本回调是
+                            // `extern "system"`，panic 即进程 abort（无
+                            // crash.log/无亲和性还原）— 不变量 17
                             let names = gi_utils::profile::list_profiles();
                             let active = gi_utils::profile::resolve_active_profile();
                             if names.is_empty() {
@@ -224,6 +230,9 @@ unsafe extern "system" fn tray_wnd_proc(
                     let idx = (cmd - IDM_PROFILE_BASE) as usize;
                     let name = ctx.profile_names.borrow().get(idx).cloned();
                     if let Some(name) = name {
+                        // 当前项的"全量 reload 打断运行中功能"由 GUI 侧
+                        // switch_profile 的同名守卫拦下（托盘不判断 — 菜单
+                        // 打勾状态在构建时快照，与点击时刻可能已不同）
                         let _ = ctx.tx.send(TrayAction::SwitchProfile(name));
                     }
                 }
