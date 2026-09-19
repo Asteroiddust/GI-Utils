@@ -129,7 +129,7 @@ Engine (主循环, blocking)
 | **托盘/下拉切 profile 共用 switch_profile** | 两条入口同一实现 + 同一组守卫：同名（已是活动 profile → 无操作，避免无谓 clear_all 打断运行中的 Loop/Toggle）、dirty（拒绝 + 日志/错误弹窗）、按键捕获中（拒绝 — rebuild 按行索引重排 id 会让捕获结果落到别的行）。托盘动作经 `App::logic` 通道消费（见下条的前提注记） |
 | **敲击节奏引擎共用** | `functions/mod.rs` 的 `click_plan`（纯决策：`AtomicBatch` / `Split{hold,rest}`）+ `click_rhythm`（唯一执行实现）— 连点器与 SpamKey 此前各有一份同语义复制（项目"两处复制 → 修复漂移"风险面），2026-09-20 抽取；`click_plan` 为纯函数可单测，`hold` 钳到 `[0, interval]`（负值/未配置 → 原子批；超 interval → 周期即按下时长） |
 | **wait_until_interruptible 单次 TSC 读** | 到期判定与检查点判定复用同一读数（原每轮两次 `read_tsc`）— 该循环是所有 Loop 功能与两个时间轴执行器的等待热路径（最短 0.5ms 一轮），实测每轮 65 → 61 周期（固定 TSC 窗口内自旋轮数 +7%，6/6 轮一致）；检查节奏不变，最坏晚一轮（~15ns）触发 stop 检查，相对 100μs 检查周期可忽略，2026-09-20 |
-| **托盘动作走 App::logic 通道** | `TrayAction` 消费与隐藏态周期唤醒（`request_repaint_after(500ms)`）移入 `eframe::App::logic`，`ui()` 只留可见帧节拍 — 意图是隐藏态下托盘动作不再滞留 channel（Exit 分支另有 `post_close` 兜底）。⚠️ **前提待实机确认**（终稿复核 2026-09-20）：本项目隐藏用 `ShowWindow(SW_HIDE)`，不改 winit 的 visible 标志，而 eframe 的 `show_ui` 只由 viewport visible/minimized 决定 → 隐藏态 `ui()` 可能仍在跑（该复核读 eframe/egui/winit 源码链的反证，未实机验证）。两种情况下本改动都不致错（前者必要、后者冗余），但"隐藏态是否跑 ui()"的描述需以实机为准 |
+| **托盘动作走 App::logic 通道** | `TrayAction` 消费与隐藏态周期唤醒（`request_repaint_after(500ms)`）移入 `eframe::App::logic`，`ui()` 只留可见帧节拍 — 意图是隐藏态下托盘动作不再滞留 channel（Exit 分支另有 `post_close` 兜底）。**实机验证通过（2026-09-20）**：托盘切换 profile 工作正常。机制细节存疑但无害：本项目隐藏用 `ShowWindow(SW_HIDE)`，不改 winit 的 visible 标志，终稿复核读 eframe/egui/winit 源码链认为隐藏态 `ui()` 可能仍在跑（即 logic() 通道冗余而非必要）——两条路径都会消费托盘动作，行为已实证，细节未单独测量 |
 | **Profile 配置体系** | `profile.rs`（v1.5.2 由 config.rs 更名并入）：`profiles/` 目录约定 + `list_profiles`/`profile_path`（防目录穿越：名禁分隔符/控制字符）/`migrate_legacy_config`（旧单文件自动迁移为 profiles/默认.toml，旧文件保留）；GUI `Profile` 下拉实时切换（`switch_profile` + rebuild_from_bindings 全量重注册，dirty 清零；与托盘同守卫）、New 以当前状态建副本（连同模板段 — 副本自洽）；Save 始终写活动 profile，模板段随行内差量一并写回 |
 | **优化游戏找窗三级序** | ①已登记名单（`functions::GAME_PROCESS_NAMES` 7 游戏：进程名→pid→枚举可见主窗口，有标题优先）→ ②窗口类兜底（UnityWndClass/UnrealWindow，未登记游戏）→ ③失败。名单优先覆盖窗口类不明的游戏（Endfield 等，2026-08-22）；同开多游戏时按名单顺序取胜。名单为找窗与线程采样共享（新游戏加一行两处生效） |
 | **TSC 校准 20×100ms 阻塞启动 ~2s** | 有意保持（2026-08-22 拍板）— 启动一次性成本换最大样本稳健性。实测样本散布 ±1.45ppm（端点读偏斜 ~150ns 等效），最差样本对 10ms 时序误差 15ns 级，精度冗余远超需求；QPC 交叉测量缩窗方案（~100ms 达 <0.01%）评估过，不采用 |
@@ -294,6 +294,22 @@ icon_path = ""
 | 4.7 | ❌ 驳回 | AND mask 已是通用尺寸 |
 
 原生移植后续两轮审查（14 项发现全处置 + 空队列 WARN 修复）见 native-interception 分支提交记录。
+
+## 工作流审查处置 — 2026-09-20（基线 de9ec82=v1.7.1 → v1.7.4 增量）
+
+五阶段工作流（逐文件复核 → 共享分级 → 逐条独立复现 → 门控修复 → 三轮优化 → 终稿复核）产出 26 项，处置如下。
+提交 `b19de74`（修复 + 优化 + 台账），报告见该轮运行的 markdown 产物。
+
+| 项 | 处置 | 说明 |
+|---|---|---|
+| **2 高危（同一根因）** | ✅ 已修 | Save 未写回顶层模板段 → 差量失去基线：重启后「与模板相同的槽」静默回落 spec 默认值（用户参数丢失）。`save_to` 现接收 `templates` 并成对写回模板段与行内差量；新增 `save_roundtrip_tests` 往返覆盖 |
+| 下拉切换未共用 `switch_profile`（缺 dirty/捕获守卫） | ✅ 已修 | 与托盘统一为同一实现 + 三守卫（同名幂等 / dirty 拒绝 / 捕获中拒绝） |
+| 托盘回调 panic 点（`current_exe().expect`） | ✅ 已修 | 改走 panic-free 的 `profiles_dir_opt` 链路（`extern "system"` 中 panic 即 abort） |
+| 假测试（自行复算、删生产逻辑仍绿） | ✅ 已修 | `template_merge_tests` 改走生产 `load_full_from` |
+| 文档/注释不一致（RawBinding 语义、`func_params` 残留注释、CLAUDE.md 决策表矛盾行） | ✅ 已修 | — |
+| 托盘 `App::logic` 通道前提（终稿复核反证「隐藏态仍跑 ui()」） | ✅ 实机验证通过 | 2026-09-20：托盘切换 profile 正常工作（两条路径都会消费托盘动作，行为已实证；「隐藏态是否跑 ui()」的机制细节未单独测量） |
+| 仓库根 `nul` 残留文件 | ✅ 已清理 | Windows 重定向把命令输出写成真实文件；`rm ./nul` 清掉 |
+| 终稿复核其余低危项 | ⛔ 有意不修 | 2026-09-20 拍板：`main.rs:1531` `expect` 不变量弱于 `profile_path` 校验（需手写 `.last` 指向保留设备名才可达）· `profile.rs:745` 残留参数 `debug!` 被 INFO 级过滤（无声）· `profile.rs:410` `params_diff` 结构相等（手写 `Integer(10)` vs `Float(10.0)`）· `main.rs:1102` 键槽捕获硬编码参数名 `"key"` · `main.rs:801` 托盘被拒反馈仅在 UI pass 内可见 · `main.rs:636` `config_ok` 切换成功后不复位 · `tray.rs:53` `wide()` 第 3~4 份 NUL 结尾 UTF-16 实现 · `main.rs:155` 注释仍述已删的 `func_params` 表 · `profile.rs:498` `load_full()`/`save()` 已无调用者（易绕过 Profile 记忆）· `profile.rs:850+` 测试覆盖缺口（差量形状 / 记忆三函数 / 守卫无测试） |
 
 ## 路线图
 
