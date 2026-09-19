@@ -29,10 +29,11 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetCursorPos,
-    GetWindowLongPtrW, HWND_MESSAGE, MF_STRING, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage,
-    RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK,
-    WM_QUIT, WM_RBUTTONUP, WM_USER, WNDCLASSW,
+    GetWindowLongPtrW, HWND_MESSAGE, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
+    PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+    SetWindowLongPtrW, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TrackPopupMenu, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_QUIT, WM_RBUTTONUP, WM_USER,
+    WNDCLASSW,
 };
 
 /// 托盘 → GUI 的消息类型。
@@ -41,8 +42,15 @@ pub enum TrayAction {
     Show,
     /// 菜单 "Exit" → GUI 帧：should_exit=true + ViewportCommand::Close。
     Exit,
+    /// Profile 子菜单选中项 → GUI 帧：切换活动 profile（与窗口下拉同路径）。
+    SwitchProfile(String),
     /// NIM_ADD 结果 → GUI 帧：写 tray_ok；false 时记日志。
     Ready(bool),
+}
+
+/// &str → NUL 结尾 UTF-16（PCWSTR 构造；调用方持有缓冲直至 API 调用返回）。
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -52,6 +60,9 @@ pub enum TrayAction {
 const WM_TRAY_CALLBACK: u32 = WM_USER + 1;
 const IDM_SHOW: u32 = 1;
 const IDM_EXIT: u32 = 2;
+/// Profile 子菜单项命令 ID 基址（第 i 项 = IDM_PROFILE_BASE + i）—
+/// 索引经 `profile_names` 缓存还原为名字（构建菜单时同步写入缓存）。
+const IDM_PROFILE_BASE: u32 = 1000;
 
 struct TrayContext {
     tx: Sender<TrayAction>,
@@ -61,6 +72,9 @@ struct TrayContext {
     /// 每轮检查立即退出（WM_CLOSE 在搜索期间不泵消息、不可达，必须由标志
     /// 接管 — L5 的 Ready 守卫只覆盖 ⑦ 之前，review 发现）。
     quit: Arc<AtomicBool>,
+    /// Profile 子菜单构建时的名字快照（WM_COMMAND 按索引还原 —
+    /// 菜单构建与点击分属两次消息，不能重读磁盘）
+    profile_names: std::cell::RefCell<Vec<String>>,
 }
 
 /// 校验缓存的主窗口句柄，失效时重搜（崩溃恢复后旧窗口销毁 → 新窗口同标题）。
@@ -130,6 +144,47 @@ unsafe extern "system" fn tray_wnd_proc(
                             IDM_SHOW as usize,
                             windows::core::w!("Show Panel"),
                         );
+                        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+                        // ── Profile 二级菜单：列出 profiles/*.toml，当前项打勾 ──
+                        if let Ok(sub) = CreatePopupMenu() {
+                            let names = gi_utils::profile::list_profiles();
+                            let active = gi_utils::profile::resolve_active_profile();
+                            if names.is_empty() {
+                                let w = wide("(no profiles)");
+                                let _ = AppendMenuW(
+                                    sub,
+                                    MF_STRING | MF_GRAYED,
+                                    0,
+                                    windows::core::PCWSTR(w.as_ptr()),
+                                );
+                            } else {
+                                for (i, name) in names.iter().enumerate() {
+                                    let flags = if *name == active {
+                                        MF_STRING | MF_CHECKED
+                                    } else {
+                                        MF_STRING
+                                    };
+                                    let w = wide(name);
+                                    let _ = AppendMenuW(
+                                        sub,
+                                        flags,
+                                        IDM_PROFILE_BASE as usize + i,
+                                        windows::core::PCWSTR(w.as_ptr()),
+                                    );
+                                }
+                            }
+                            let label = wide("Profile");
+                            // MF_POPUP：uIDNewItem = 子菜单句柄；DestroyMenu(menu)
+                            // 一并销毁子菜单（拥有关系）
+                            let _ = AppendMenuW(
+                                menu,
+                                MF_POPUP | MF_STRING,
+                                sub.0 as usize,
+                                windows::core::PCWSTR(label.as_ptr()),
+                            );
+                            *ctx.profile_names.borrow_mut() = names;
+                        }
+                        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
                         let _ = AppendMenuW(
                             menu,
                             MF_STRING,
@@ -164,6 +219,13 @@ unsafe extern "system" fn tray_wnd_proc(
                     // 延迟到窗口唤出。
                     let main_hwnd = ensure_main_window(ctx);
                     crate::window_ops::post_close(main_hwnd);
+                }
+                cmd if cmd >= IDM_PROFILE_BASE => {
+                    let idx = (cmd - IDM_PROFILE_BASE) as usize;
+                    let name = ctx.profile_names.borrow().get(idx).cloned();
+                    if let Some(name) = name {
+                        let _ = ctx.tx.send(TrayAction::SwitchProfile(name));
+                    }
                 }
                 _ => {}
             }
@@ -276,6 +338,7 @@ pub fn run_tray_thread(
             tx: tx.clone(),
             main_hwnd: std::cell::Cell::new(HWND::default()),
             quit: quit.clone(),
+            profile_names: std::cell::RefCell::new(Vec::new()),
         });
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE::default(),

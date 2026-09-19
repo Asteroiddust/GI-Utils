@@ -202,6 +202,17 @@ impl eframe::App for GuiApp {
                     Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
                 ctx.request_repaint();
             }
+            Ok(TrayAction::SwitchProfile(name)) => {
+                // 托盘切换（与窗口下拉同路径）；失败原因记日志 + 错误弹窗
+                match self.switch_profile(&name) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        self.log(format!("Profile 切换被拒: {e}"));
+                        self.error_msg = Some(format!("切换 profile 失败: {e}"));
+                    }
+                }
+                ctx.request_repaint(); // 隐藏态下无周期帧 — 主动唤醒
+            }
             Ok(TrayAction::Exit) => {
                 self.should_exit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -719,6 +730,25 @@ impl GuiApp {
                 self.pending_new_profile = true;
             }
         });
+    }
+
+    /// 切换活动 profile（下拉与托盘菜单共用）：加载 → 重建 → 记忆。
+    /// dirty 守卫：有未保存编辑时拒绝（防静默丢弃 — 托盘路径无确认弹窗，
+    /// 拒绝后日志面板给出原因）。
+    fn switch_profile(&mut self, name: &str) -> Result<(), String> {
+        if self.dirty {
+            return Err("有未保存的修改 — 请先 Save 再切换".into());
+        }
+        let path =
+            profile::profile_path(name).ok_or_else(|| format!("非法 profile 名: '{name}'"))?;
+        let (bindings, templates) = profile::load_full_from(&path)?;
+        self.active_profile = name.to_string();
+        self.func_templates = templates;
+        self.rebuild_from_bindings(bindings);
+        self.dirty = false;
+        profile::write_last_profile(name); // 记忆
+        self.log(format!("Profile → '{name}'"));
+        Ok(())
     }
 
     /// 从 Binding 列表全量重建 GUI 行 + 重注册（Load from File 后）。
