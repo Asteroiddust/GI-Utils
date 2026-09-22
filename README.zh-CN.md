@@ -17,6 +17,7 @@ Windows 游戏输入自动化工具，Rust 实现。前身是 C++/Visual Studio 
 - [环境要求](#环境要求)
 - [安装驱动](#安装驱动)
 - [构建](#构建)
+- [运行](#运行)
 - [配置](#配置)
 - [功能一览](#功能一览)
 - [触发模式](#触发模式)
@@ -29,13 +30,18 @@ Windows 游戏输入自动化工具，Rust 实现。前身是 C++/Visual Studio 
 
 ## 功能特性
 
-- **GUI 配置面板**（egui）：运行时增删改按键绑定，即时生效，保存到
-  `config.toml`，无需重编译
-- **托盘图标**：关闭窗口隐藏到托盘，双击唤回，菜单退出
-- **崩溃自愈**：GUI 渲染上下文失效（睡眠唤醒后 wgl 丢失）时自动重建
-  窗口，最多重试 3 次 — 期间输入引擎全程存活，不中断功能
+- **GUI 配置面板**（egui）：运行时增删改按键绑定，即时生效，保存到当前
+  活动 profile，无需重编译
+- **Profile 体系**：exe 旁 `profiles/` 目录下多份 TOML 并列 — 面板的
+  Profile 栏或托盘菜单**实时切换**，记住上次使用的 profile
+- **托盘图标**：关闭窗口隐藏到托盘，双击唤回，菜单退出；`--silent` 可
+  纯托盘静默启动（适合登录自启，见[运行](#运行)）
+- **睡眠唤醒免疫**：wgpu + Vulkan 后端 — 每帧检查 surface、丢失即重建，
+  此前 OpenGL（glow/WGL）后端睡眠唤醒必崩的上下文丢失问题不再发生
+- **动态参数**：功能声明带类型的参数（间隔、按下时长、键位…），⚙ 弹窗
+  实时调整 — 不重编译、不重启线程
 - **三种触发模式**：`Once` / `Loop` / `Toggle`
-- **10 个内置功能**（见[功能一览](#功能一览)）
+- **13 个内置功能**（见[功能一览](#功能一览)）
 - **高精度时序**：
   - TSC 忙等延时，启动时校准（微秒级精度）
   - 时间轴调度器：绝对时刻编排，MIDI 编辑器语义（播放中实时编辑、
@@ -94,7 +100,7 @@ cargo build
 # 部署发布 — release + build-std（std 以 panic_unwind + native 调优重编）
 # + rust-lld 链接，全量约 1 分钟
 cargo build --release --config .cargo/build-std.toml
-# 输出: target/release/gi-utils-gui.exe（约 6.8 MB，自包含）
+# 输出: target/release/gi-utils-gui.exe（约 13 MB，自包含）
 ```
 
 构建配置要点：
@@ -102,10 +108,10 @@ cargo build --release --config .cargo/build-std.toml
 - `rustflags`：`-C target-cpu=native -Z threads=16`
 - 链接器：`rust-lld`（lld-link）
 - release：`opt-level=3`、fat LTO、`codegen-units=1`、`strip`、
-  `panic=unwind`（unwind 是 GUI 崩溃自愈的基础）
+  `panic=unwind`（保障 `Drop` 防护与崩溃日志 panic hook 生效）
 - dev：自身代码 `opt-level=0`，依赖统一 `opt-level=2`（界面流畅）
 
-测试：`cargo test` — 46 单测 + doctest，无需驱动。
+测试：`cargo test` — 66 单测 + 2 doctest，无需驱动。
 
 ## 运行
 
@@ -121,8 +127,8 @@ Save 写入当前活动 profile。关闭窗口即隐藏到托盘，F12 退出。
 
 ## 配置
 
-`config.toml` 位于 exe 同目录，首次运行自动生成。所有修改即时生效 —
-GUI 面板是主要编辑入口，文件本身是纯 TOML：
+profile 位于 exe 旁 `profiles/` 目录，一份 TOML 一个 profile（首次运行生成
+`profiles/默认.toml`）。所有修改即时生效 — GUI 面板是主要编辑入口：
 
 ```toml
 [[bindings]]
@@ -135,45 +141,32 @@ key = "F13"
 func = "连点器"
 mode = "Loop"
 
-[[bindings]]
-key = "F14"
-func = "快速拾取"
-mode = "Loop"
-
-[[bindings]]
-key = "F15"
-func = "鬼畜走路"
-mode = "Loop"
-
-[[bindings]]
-key = "F16"
-func = "火神跳喷"
-mode = "Loop"
-
-[[bindings]]
-key = "F17"
-func = "甘雨走A"
-mode = "Once"
-
-[[bindings]]
-key = "F18"
-func = "双玛头"
-mode = "Loop"
-
-[[bindings]]
-key = "F19"
-func = "坐标颜色"
-mode = "Loop"
+# ……F14–F19：快速拾取 / 鬼畜走路 / 火神跳喷 / 甘雨走A / 双玛头 / 坐标颜色
 
 [[bindings]]
 key = "NumpadAdd"
 func = "优化游戏"
 mode = "Once"
 
-# 可选自定义托盘图标（.ico）；留空使用程序生成的兜底图标
+[[bindings]]
+key = "F20"
+func = "线程采样"
+mode = "Once"
+
+# 功能参数模板 —— 同功能所有绑定行共享的基线。绑定行内只存
+# **相对模板的差量**：改模板即影响所有未覆盖该槽的行。
+[params."连点器"]
+interval_ms = 10.0
+hold_ms = 0.0
+
+# 可选：自定义托盘图标（.ico）与 CJK 补充字体；留空均自动回退
 [gui]
 icon_path = ""
+font_path = ""
 ```
+
+参数是**按绑定行**的：同一功能绑两个键（例如两行 `SpamKey`）时，各自持有
+自己的 `[bindings.params]` 差量 —— 可以敲不同的键、用不同的节奏。
 
 功能名多为中文（另有英文名 SpamKey）（与游戏内术语一致）；按键名支持常量表中 90+ 键
 （F1–F24、字母、小键盘、媒体键等）。
@@ -184,15 +177,17 @@ icon_path = ""
 |---|---|---|---|
 | 停止退出 | F12 | Once | 置位引擎停止标志 → 干净退出 |
 | 连点器 | F13 | Loop | 按住连点鼠标左键 — 动态参数（interval_ms / hold_ms，⚙ 面板实时调） |
-| SpamKey | F20 | Once | 重复敲击任意配置键（key / interval_ms / hold_ms 动态参数） |
-| 线程采样 | F20* | Once | 线程画像采样 → thread_sample.txt（分析工具，无注入） |
 | 快速拾取 | F14 | Loop | 循环 tap F + 滚轮下拉（掉落物收集） |
 | 鬼畜走路 | F15 | Loop | WASD 滚动短按（50ms 间隔、1ms 按住） |
 | 火神跳喷 | F16 | Loop | 初始跳跃后循环空格连跳 |
 | 甘雨走A | F17 | Once | 射箭后摇取消：左/右击 + R 键 |
 | 双玛头 | F18 | Loop | 玛薇卡双坠编排（左键长按 + 右键点按 + S） |
 | 坐标颜色 | F19 | Loop | 持续输出光标坐标 + 像素 RGB |
-| 优化游戏 | NumpadAdd | Once（奇偶切换） | 奇次：提升游戏优先级 + 切前台；偶次：恢复 |
+| 优化游戏 | NumpadAdd | Once（奇偶切换） | Advanced：游戏亲和性 + OTHER 隔离 + 优先级 + 热线程 pinning |
+| 优化游戏标准 | — | Once（奇偶切换） | Standard：OTHER 隔离 + 优先级（不动游戏亲和性、不 pin） |
+| 优化游戏简易 | — | Once（奇偶切换） | Minimal：仅优先级 + 前台（不碰亲和性） |
+| 线程采样 | F20 | Once | 线程画像采样 → `thread_sample.txt`（分析工具，无注入） |
+| SpamKey | — | Loop | 重复敲击任意配置键（key / interval_ms / hold_ms 动态参数） |
 
 ## 触发模式
 
@@ -206,8 +201,9 @@ icon_path = ""
 
 ```
 src/
-├── bin/gi-utils-gui/     GUI 二进制（面板、托盘、窗口操作）
-├── profile.rs             TOML 配置 + 函数工厂
+├── bin/gi-utils-gui/     GUI 二进制（面板、托盘、托盘图标、窗口操作）
+├── profile.rs            配置与 Profile 体系（profiles/ 目录、TOML 解析、
+│                         函数工厂、参数模板）
 ├── key.rs                ScanCode 新类型 + Key（扫描码+E0）+ 常量表
 ├── interception/
 │   ├── protocol.rs       Interception 用户层协议的原生 Rust 移植
@@ -216,10 +212,12 @@ src/
 ├── engine/
 │   ├── mod.rs            Engine 事件循环
 │   ├── event.rs          InputEvent + EventSequence + HeldTracker
-│   ├── bindings.rs       KeyFunction trait + 绑定注册表
+│   ├── bindings.rs       KeyFunction trait + 绑定注册表 + 参数槽
 │   └── timeline.rs       绝对时刻时间轴调度器
-├── utils/                delay（TSC）/ beep / affinity / screen / 日志桥
-└── functions/            每功能一文件
+├── utils/                delay（TSC）/ beep / affinity / screen / 日志桥 /
+│                         thread_info + thread_pin（线程采样与 pinning）
+└── functions/            每功能一文件（含 thread_sampler / spam_key /
+                          优化游戏三档）
 ```
 
 ## 路线图

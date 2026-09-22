@@ -18,6 +18,7 @@ Wuthering Waves.
 - [Requirements](#requirements)
 - [Installing the Driver](#installing-the-driver)
 - [Build](#build)
+- [Running](#running)
 - [Configuration](#configuration)
 - [Function Reference](#function-reference)
 - [Trigger Modes](#trigger-modes)
@@ -31,13 +32,21 @@ Wuthering Waves.
 ## Features
 
 - **GUI configuration panel** (egui): add/remove/rebind functions at
-  runtime — changes apply immediately, saved to `config.toml`
-- **Tray icon** with hide-to-tray behavior; double-click to restore
-- **Crash self-healing**: the GUI survives render-context loss
-  (e.g. after sleep/wake) by rebuilding the app up to 3 times; the input
-  engine keeps running throughout
+  runtime — changes apply immediately, saved to the active profile
+- **Profiles**: several TOML profiles side by side (`profiles/` next to the
+  exe) — switch live from the panel's Profile bar or the tray menu; the last
+  used one is remembered across runs
+- **Tray icon** with hide-to-tray behavior; double-click to restore.
+  `--silent` starts tray-only for a logon autostart entry (see
+  [Running](#running))
+- **Sleep/wake proof rendering**: wgpu + Vulkan backend — the surface is
+  checked every frame and rebuilt when the driver drops it, so the sleep/wake
+  context loss that used to crash the old OpenGL (glow/WGL) backend no longer
+  occurs
+- **Dynamic parameters**: functions declare typed parameters (interval, hold,
+  key…) editable live from the ⚙ popup — no rebuild, no thread restart
 - **Three trigger modes**: `Once` / `Loop` / `Toggle`
-- **10 built-in functions** (see [Function Reference](#function-reference))
+- **13 built-in functions** (see [Function Reference](#function-reference))
 - **High-precision timing**:
   - TSC busy-wait delays calibrated at startup (µs-level accuracy)
   - Timeline scheduler: absolute-time orchestration with MIDI-editor
@@ -98,7 +107,7 @@ cargo build
 # deployment — release + build-std (std rebuilt with panic_unwind + native
 # tuning) + rust-lld linker, full rebuild ~1 min
 cargo build --release --config .cargo/build-std.toml
-# output: target/release/gi-utils-gui.exe (~6.8 MB, self-contained)
+# output: target/release/gi-utils-gui.exe (~13 MB, self-contained)
 ```
 
 Build configuration highlights:
@@ -106,10 +115,10 @@ Build configuration highlights:
 - `rustflags`: `-C target-cpu=native -Z threads=16`
 - linker: `rust-lld` (lld-link)
 - release: `opt-level=3`, fat LTO, `codegen-units=1`, `strip`, `panic=unwind`
-  (unwind powers the GUI crash self-healing)
+  (keeps `Drop` guards and the crash-log panic hook working)
 - dev: `opt-level=0` for own code, deps at `opt-level=2` (smooth UI)
 
-Tests: `cargo test` — 56 unit tests + doctests, no driver required.
+Tests: `cargo test` — 66 unit tests + 2 doctests, no driver required.
 
 ## Running
 
@@ -126,9 +135,9 @@ Command-line flags:
 
 ## Configuration
 
-`config.toml` lives next to the exe and is auto-generated on first run.
-Every change is hot — the GUI panel is the primary editor, but the file is
-plain TOML:
+Profiles live in `profiles/` next to the exe, one plain TOML file per profile
+(`profiles/默认.toml` is generated on first run). Every change is hot — the GUI
+panel is the primary editor:
 
 ```toml
 [[bindings]]
@@ -141,45 +150,34 @@ key = "F13"
 func = "连点器"
 mode = "Loop"
 
-[[bindings]]
-key = "F14"
-func = "快速拾取"
-mode = "Loop"
-
-[[bindings]]
-key = "F15"
-func = "鬼畜走路"
-mode = "Loop"
-
-[[bindings]]
-key = "F16"
-func = "火神跳喷"
-mode = "Loop"
-
-[[bindings]]
-key = "F17"
-func = "甘雨走A"
-mode = "Once"
-
-[[bindings]]
-key = "F18"
-func = "双玛头"
-mode = "Loop"
-
-[[bindings]]
-key = "F19"
-func = "坐标颜色"
-mode = "Loop"
+# … F14–F19: 快速拾取 / 鬼畜走路 / 火神跳喷 / 甘雨走A / 双玛头 / 坐标颜色
 
 [[bindings]]
 key = "NumpadAdd"
 func = "优化游戏"
 mode = "Once"
 
-# Optional custom tray icon (.ico); empty = generated fallback
+[[bindings]]
+key = "F20"
+func = "线程采样"
+mode = "Once"
+
+# Function parameter template — the baseline every 连点器 row inherits.
+# A binding row only stores its *diff* against this template, so editing the
+# template moves every row that has not overridden that slot.
+[params."连点器"]
+interval_ms = 10.0
+hold_ms = 0.0
+
+# Optional custom tray icon (.ico) + CJK font; empty = automatic fallback
 [gui]
 icon_path = ""
+font_path = ""
 ```
+
+Parameters are per-binding: bind the same function to two keys (e.g. two
+`SpamKey` rows) and each row gets its own `[bindings.params]` diff — so they
+can strike different keys at different rhythms.
 
 Function names are mostly Chinese (plus English `SpamKey`) (matching the in-game terminology); key names
 accept any key in the 90+ constants table (F1–F24, letters, numpad, media
@@ -191,8 +189,6 @@ keys…).
 |---|---|---|---|
 | 停止退出 | F12 | Once | Sets the engine stop flag → clean shutdown |
 | 连点器 | F13 | Loop | Auto-click LMB — dynamic params (interval_ms / hold_ms, ⚙ panel live-edit) |
-| SpamKey | F20 | Once | Repeat-strike any configured key (key / interval_ms / hold_ms dynamic params) |
-| 线程采样 | F20* | Once | Thread-profile sampler → thread_sample.txt (analysis tool, no injection) |
 | 快速拾取 | F14 | Loop | Taps F + scrolls wheel down repeatedly (loot pickup) |
 | 鬼畜走路 | F15 | Loop | WASD rolling taps (50 ms interval, 1 ms hold) |
 | 火神跳喷 | F16 | Loop | Initial jump, then repeating space taps |
@@ -202,6 +198,8 @@ keys…).
 | 优化游戏 | NumpadAdd | Once (toggle) | Advanced: game affinity + OTHER isolation + priority + hot-thread pinning |
 | 优化游戏标准 | — | Once (toggle) | Standard: OTHER isolation + priority (no game affinity / pinning) |
 | 优化游戏简易 | — | Once (toggle) | Minimal: priority + foreground only (no affinity changes) |
+| 线程采样 | F20 | Once | Thread-profile sampler → `thread_sample.txt` (analysis tool, no injection) |
+| SpamKey | — | Loop | Repeat-strike any configured key (key / interval_ms / hold_ms dynamic params) |
 
 ## Trigger Modes
 
@@ -215,8 +213,9 @@ keys…).
 
 ```
 src/
-├── bin/gi-utils-gui/     GUI binary (panel, tray, window ops)
-├── profile.rs             TOML config + function factory
+├── bin/gi-utils-gui/     GUI binary (panel, tray, tray icon, window ops)
+├── profile.rs            Config & profile system (profiles/ dir, TOML,
+│                         function factory, param templates)
 ├── key.rs                ScanCode newtype + Key (scan code + E0) + constants
 ├── interception/
 │   ├── protocol.rs       Native Rust port of the Interception user-mode
@@ -225,10 +224,12 @@ src/
 ├── engine/
 │   ├── mod.rs            Engine event loop
 │   ├── event.rs          InputEvent + EventSequence + HeldTracker
-│   ├── bindings.rs       KeyFunction trait + binding registry
+│   ├── bindings.rs       KeyFunction trait + binding registry + params
 │   └── timeline.rs       Absolute-time timeline scheduler
-├── utils/                delay (TSC), beep, affinity, screen, log collector
-└── functions/            One file per game function
+├── utils/                delay (TSC), beep, affinity, screen, log collector,
+│                         thread_info + thread_pin (thread sampling/pinning)
+└── functions/            One file per function (incl. thread_sampler,
+                          spam_key, optimize_game's three modes)
 ```
 
 ## Roadmap
