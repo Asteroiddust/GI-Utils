@@ -213,11 +213,16 @@ impl eframe::App for GuiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // -0.7. 崩溃恢复继承隐藏态：新窗口首帧起按 hidden 补做 SW_HIDE。
-        // 幽灵窗口（winit 延迟销毁）期间 FindWindowW 可能匹配到旧窗口 —
-        // 在 ~2s 截止内每帧重试，直至新窗口被真正隐藏。
+        // -0.7. 崩溃恢复继承隐藏态 / `--silent` 启动：新窗口首帧起按 hidden
+        // 补做 SW_HIDE。幽灵窗口（winit 延迟销毁）期间 FindWindowW 可能匹配到
+        // 旧窗口 — 在 ~2s 截止内每帧重试，直至新窗口被真正隐藏。
         if self.hidden.load(Ordering::Acquire) && !self.hidden_applied {
             let deadline = *self.hidden_apply_deadline.get_or_insert_with(|| {
+                // 首次进入：请求立即重绘。eframe 自身以「创建时隐藏、首帧
+                // 渲染后 set_visible(true)」防白闪（epi_integration::
+                // post_rendering），不补一帧则窗口会以 100ms 节拍可见约
+                // 0.1s（静默启动的闪烁）— 本行的即时重绘把它压到一帧内。
+                ctx.request_repaint();
                 std::time::Instant::now() + std::time::Duration::from_secs(2)
             });
             if std::time::Instant::now() < deadline {
@@ -1465,13 +1470,22 @@ fn chrono_now() -> String {
 fn main() {
     use windows::core::w;
 
+    // 命令行参数：`--silent` = 静默启动（不显示配置窗口，仅托盘图标 +
+    // 引擎运行）。实现方式：启动即置 hidden（复用既有隐藏态机制 —
+    // 首帧 SW_HIDE 路径），窗口创建时 with_active(false) 不抢占焦点。
+    let silent = std::env::args().any(|a| a == "--silent");
+
     // 启动日志（GUI 无控制台，收集到内存后在日志面板显示）
     let mut startup_log: Vec<String> = vec![
         format!("GI-Utils GUI v{}", env!("CARGO_PKG_VERSION")),
         // LGPL §4(c) 合规：运行时显示所用库的版权与许可提示
         "Interception protocol layer: derived from interception.c (oblitum/Interception), LGPL 3.0 — see LICENSE-LGPL.txt"
             .into(),
-        "Initializing...".into(),
+        if silent {
+            "Silent start (--silent): window hidden, tray icon only".into()
+        } else {
+            "Initializing...".into()
+        },
     ];
 
     // 全局日志收集：功能线程（优化游戏、坐标颜色等）的 tracing 输出
@@ -1491,8 +1505,12 @@ fn main() {
                 // 激活既有实例：find_main_window 自带 IsWindow 校验 — 持有者
                 // 若处崩溃恢复的幽灵窗口期（同标题仍是有效 HWND），打中幽灵
                 // 的 SW_SHOW 是静默空操作，不伪造"已激活"（review 发现）。
-                if let Some(hwnd) = window_ops::find_main_window() {
-                    window_ops::show_and_activate(hwnd);
+                // `--silent` 例外：静默启动（如登录自启）不应打断已在运行的
+                // 实例、更不该抢焦点 — 直接退出。
+                if !silent {
+                    if let Some(hwnd) = window_ops::find_main_window() {
+                        window_ops::show_and_activate(hwnd);
+                    }
                 }
                 return;
             }
@@ -1610,9 +1628,10 @@ fn main() {
     startup_log.push("Engine running.".into());
 
     // 托盘可用性 / 窗口隐藏态 — 进程级共享（GuiApp 持 Arc；tray 线程失败
-    // 时重置以引导关窗走退出路径）
+    // 时重置以引导关窗走退出路径）。`--silent` 启动即隐藏（复用崩溃恢复
+    // 继承隐藏态的同一条首帧 SW_HIDE 路径）。
     let tray_ok_shared = Arc::new(AtomicBool::new(false));
-    let hidden_shared = Arc::new(AtomicBool::new(false));
+    let hidden_shared = Arc::new(AtomicBool::new(silent));
 
     // ── 7. GUI 事件循环（直接运行 — 无重试）──
     // dev-wgpu：睡眠唤醒的 glow/wgl make_current panic 已随后端切换消失
@@ -1696,7 +1715,10 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([800.0, 500.0])
-            .with_min_inner_size([600.0, 300.0]),
+            .with_min_inner_size([600.0, 300.0])
+            // `--silent`：创建时不激活（不抢焦点；窗口随即被首帧的
+            // SW_HIDE 隐藏 — 见 ui() 的 -0.7 块）
+            .with_active(!silent),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew({

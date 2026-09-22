@@ -111,6 +111,19 @@ Build configuration highlights:
 
 Tests: `cargo test` — 56 unit tests + doctests, no driver required.
 
+## Running
+
+Run **as administrator** (the Interception driver interface requires it). The
+first launch generates `profiles/默认.toml` next to the exe; switch, create and
+edit profiles from the **Profile** bar above the binding table — Save writes the
+active profile. Closing the window hides to the tray; F12 exits.
+
+Command-line flags:
+
+| Flag | Effect |
+|---|---|
+| `--silent` | Silent start — no configuration window, tray icon only (the engine runs as usual). Meant for a logon autostart entry. Launching a second copy with `--silent` leaves an already-running instance untouched |
+
 ## Configuration
 
 `config.toml` lives next to the exe and is auto-generated on first run.

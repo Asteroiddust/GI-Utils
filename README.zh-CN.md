@@ -107,6 +107,18 @@ cargo build --release --config .cargo/build-std.toml
 
 测试：`cargo test` — 46 单测 + doctest，无需驱动。
 
+## 运行
+
+请**以管理员身份运行**（Interception 驱动接口需要）。首次启动在 exe 旁生成
+`profiles/默认.toml`；在绑定表上方的 **Profile** 栏切换 / 新建 / 编辑 profile —
+Save 写入当前活动 profile。关闭窗口即隐藏到托盘，F12 退出。
+
+命令行参数：
+
+| 参数 | 效果 |
+|---|---|
+| `--silent` | 静默启动 — 不显示配置窗口，仅托盘图标（引擎照常运行）。适合登录自启。以 `--silent` 再次启动不会打断已在运行的实例 |
+
 ## 配置
 
 `config.toml` 位于 exe 同目录，首次运行自动生成。所有修改即时生效 —
