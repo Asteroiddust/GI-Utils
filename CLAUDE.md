@@ -1,4 +1,4 @@
-# GI-Utils — Rust 游戏输入自动化工具 v1.7.4
+# GI-Utils — Rust 游戏输入自动化工具 v1.7.5
 
 > **Review**: master 48/48 cleared · gi-utils-gui 2H/12M/15L cleared（含 L12，2026-08）· 时间轴调度器 15/15 cleared（2026-08-14）· GUI/托盘重写 13/13 cleared（2026-08-16）· 66 单测 + 2 doctest 通过 · DeepSeek 审查 20 项：17 修 / 2 有意不修（3.2/3.4）/ 1 驳（4.7），2026-08-16 · 原生移植审查 14 项全处置，2026-08-19 · **工作流审查 2026-09-20**（基线 de9ec82=v1.7.1 → v1.7.4 增量，4 文件）：14 项保留（13 项经独立子代理复现）+ 终稿复核 12 项（未复现级建议）；**2 高危同一根因**（Save 未写回模板段 → 重启后参数静默回落 spec 默认值）已修；3 轮优化（节奏引擎共用 / 单次 TSC 读 / 托盘动作走 logic 通道）；cargo test + fmt --check + release 构建全绿
 > **Build**: O3 + LTO fat + panic=unwind + rust-lld + target-cpu=native
