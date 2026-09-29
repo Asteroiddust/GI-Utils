@@ -46,7 +46,8 @@ pub const GAME_PROCESS_NAMES: &[&str] = &[
 /// DragValue 按 range 钳制），故此处不做 NaN 兜底。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ClickPlan {
-    /// `hold <= 0`：down+up 合并为一次驱动级原子批（v1 语义），随后等满 interval。
+    /// `hold <= 0`：down → up 连续发送（v1 语义；no-slicing 下为两次
+    /// 驱动请求，中间可能被并发发送插入），随后等满 interval。
     AtomicBatch,
     /// `hold > 0`：down → 等 `hold` → up → 等 `rest` 补足（v2 语义）。
     Split { hold: f64, rest: f64 },

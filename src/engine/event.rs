@@ -408,9 +408,8 @@ impl EventSequence {
 
     // ── 播放 — Playback ──────────────────────────────────────
 
-    /// 播放序列：连续的同类非 Sleep 事件经
-    /// [`SendContext::send_events`] 合并为一次 IOCTL_WRITE（驱动级原子
-    /// 送达），Sleep 处延时。
+    /// 播放序列：逐事件经 [`SendContext::send_events`] 发送
+    /// （no-slicing — 每事件一次驱动请求），Sleep 处延时。
     ///
     /// `stop` 为 `Some` 时延时走可中断版（Loop/Toggle 即时响应）；
     /// `None` 时不可中断（Once 模式，对齐原 `delay_ms` 语义）。
@@ -420,9 +419,9 @@ impl EventSequence {
     /// 立即返回 — 不再发送剩余事件（旧行为是排空剩余序列，停止后仍会
     /// 打出残留动作）。
     ///
-    /// Play the sequence: contiguous same-device non-Sleep events are
-    /// coalesced into a single IOCTL_WRITE via [`SendContext::send_events`];
-    /// delays happen at Sleep boundaries.
+    /// Play the sequence: events are sent one-by-one via
+    /// [`SendContext::send_events`] (no-slicing); delays happen at Sleep
+    /// boundaries.
     pub fn play(
         &self,
         send_ctx: &crate::interception::SendContext,

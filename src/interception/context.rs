@@ -13,10 +13,7 @@
 //! [`InterceptionContext`] 实现了 `Send` 但 **不** 实现 `Sync`。
 
 use crate::engine::event::InputEvent;
-use crate::interception::protocol::{
-    self, Device, InterceptionKeyStroke, InterceptionMouseStroke, KeyboardDevice,
-    MAX_STROKES_PER_IOCTL,
-};
+use crate::interception::protocol::{self, Device, InterceptionKeyStroke, KeyboardDevice};
 use std::marker::PhantomData;
 
 /// 创建原始上下文，失败 panic（驱动未安装）— 与旧 create_raw 语义一致。
@@ -142,42 +139,31 @@ impl SendContext {
         self.raw.send_keyboard(device, strokes);
     }
 
-    /// 发送事件序列：连续的同类非 Sleep 事件合并为一次 IOCTL_WRITE。
+    /// 发送事件序列 — **逐事件发送**（no-slicing 实验分支，2026-09）：
+    /// 取消"连续同类事件合并为一次 IOCTL_WRITE"的切片机制，每个事件
+    /// 独立一次驱动请求。
     ///
-    /// Sleep 与键盘/鼠标切换是批次边界（时序与设备顺序不可跨越）。
-    /// 合并使段内事件成为**驱动级原子送达**：无外部插入、间隔 ≈ 0 —
-    /// 连点器 v1 的 [down, up] 点击对由两次系统调用变为一次驱动请求，
-    /// 点击时长最短且不受其他功能线程并发发送的干扰。
+    /// 语义差异（相对 master 的切片版）：段内事件之间可能出现其他功能
+    /// 线程的并发插入（不再有"驱动级原子送达"），点击对 down/up 之间
+    /// 间隔不再恒为 ≈0。Sleep 事件在此层无操作（时间语义由调用方的
+    /// delay 原语承担，与切片版一致）。
     pub fn send_events(&self, events: &[InputEvent]) {
-        for segment in segments(events) {
-            self.send_segment(segment);
-        }
-    }
-
-    /// 发送一个已切好的同设备连续段（内部按 32/批上限分块）。
-    fn send_segment(&self, segment: &[InputEvent]) {
-        match segment[0] {
-            InputEvent::Keyboard { .. } => {
-                let mut strokes = [InterceptionKeyStroke::default(); MAX_STROKES_PER_IOCTL];
-                for chunk in segment.chunks(MAX_STROKES_PER_IOCTL) {
-                    for (i, event) in chunk.iter().enumerate() {
-                        strokes[i] = event.to_key_stroke().expect("键盘段仅含 Keyboard 事件");
+        for event in events {
+            match event {
+                InputEvent::Keyboard { .. } => {
+                    if let Some(stroke) = event.to_key_stroke() {
+                        self.raw
+                            .send_keyboard(protocol::keyboard(0), std::slice::from_ref(&stroke));
                     }
-                    self.raw
-                        .send_keyboard(protocol::keyboard(0), &strokes[..chunk.len()]);
                 }
-            }
-            InputEvent::Mouse { .. } => {
-                let mut strokes = [InterceptionMouseStroke::default(); MAX_STROKES_PER_IOCTL];
-                for chunk in segment.chunks(MAX_STROKES_PER_IOCTL) {
-                    for (i, event) in chunk.iter().enumerate() {
-                        strokes[i] = event.to_mouse_stroke().expect("鼠标段仅含 Mouse 事件");
+                InputEvent::Mouse { .. } => {
+                    if let Some(stroke) = event.to_mouse_stroke() {
+                        self.raw
+                            .send_mouse(protocol::mouse(0), std::slice::from_ref(&stroke));
                     }
-                    self.raw
-                        .send_mouse(protocol::mouse(0), &strokes[..chunk.len()]);
                 }
+                InputEvent::Sleep { .. } => {} // 无操作（切片版同样不发送 Sleep）
             }
-            InputEvent::Sleep { .. } => unreachable!("split_segments 已排除 Sleep"),
         }
     }
 }
@@ -187,113 +173,4 @@ impl SendContext {
 // 其 receive 方法若被共享会并发瓜分驱动队列，review）。
 unsafe impl Sync for SendContext {}
 
-/// 事件序列 → 可合并发送的连续段（**惰性迭代器，零分配**）。
-///
-/// 边界规则：Sleep 代表时间流逝，不可与前后动作合并；键盘与鼠标是
-/// 不同设备号且必须保持严格顺序，不可按类型分组。事件序列是构造后
-/// 不可变的静态数据 — 段边界在每次播放时重算，惰性迭代消除每迭代
-/// 一次的 Vec 分配（连点器 v1 每 10ms 周期调用一次）。
-fn segments(events: &[InputEvent]) -> impl Iterator<Item = &[InputEvent]> {
-    struct Segments<'a> {
-        events: &'a [InputEvent],
-        pos: usize,
-    }
-    impl<'a> Iterator for Segments<'a> {
-        type Item = &'a [InputEvent];
-
-        fn next(&mut self) -> Option<Self::Item> {
-            while self.pos < self.events.len() {
-                let start = self.pos;
-                let mut kind: Option<bool> = None; // Some(true)=键盘段，Some(false)=鼠标段
-                while self.pos < self.events.len() {
-                    match self.events[self.pos] {
-                        InputEvent::Sleep { .. } => break,
-                        InputEvent::Keyboard { .. } => {
-                            if kind == Some(false) {
-                                break; // 设备类型切换 → 切批
-                            }
-                            kind = Some(true);
-                            self.pos += 1;
-                        }
-                        InputEvent::Mouse { .. } => {
-                            if kind == Some(true) {
-                                break;
-                            }
-                            kind = Some(false);
-                            self.pos += 1;
-                        }
-                    }
-                }
-                if self.pos > start {
-                    return Some(&self.events[start..self.pos]);
-                }
-                // 当前位置是 Sleep（不发送）：跳过
-                self.pos += 1;
-            }
-            None
-        }
-    }
-    Segments { events, pos: 0 }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// 切段逻辑单测 — 纯函数，无驱动依赖
-// ═══════════════════════════════════════════════════════════════════
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::event::{InputEvent, ScrollDir};
-    use crate::key::Key;
-
-    #[test]
-    fn split_respects_sleep_and_device_boundaries() {
-        // K,K（键盘段）| M,M（类型切换切批）| Sleep | K（新段）
-        let events = vec![
-            InputEvent::press(Key::F),
-            InputEvent::release(Key::F),
-            InputEvent::left_down(),
-            InputEvent::left_up(),
-            InputEvent::Sleep { ms: 10.0 },
-            InputEvent::wheel(ScrollDir::DOWN),
-        ];
-        let segments: Vec<&[InputEvent]> = segments(&events).collect();
-        assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0].len(), 2); // 键盘对
-        assert_eq!(segments[1].len(), 2); // 鼠标对
-        assert_eq!(segments[2].len(), 1); // Sleep 后的滚轮
-    }
-
-    #[test]
-    fn split_handles_empty_and_sleep_edges() {
-        assert!(segments(&[]).next().is_none());
-        // 纯 Sleep 序列 → 无段（Sleep 不发送）
-        assert!(segments(&[InputEvent::Sleep { ms: 1.0 }]).next().is_none());
-        // 连续 Sleep：不产生空段
-        let events = vec![
-            InputEvent::press(Key::F),
-            InputEvent::Sleep { ms: 1.0 },
-            InputEvent::Sleep { ms: 2.0 },
-            InputEvent::release(Key::F),
-        ];
-        let segments: Vec<&[InputEvent]> = segments(&events).collect();
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].len(), 1);
-        assert_eq!(segments[1].len(), 1);
-    }
-
-    #[test]
-    fn split_keeps_strict_order_across_device_switch() {
-        // K,M,K 交替 → 必须按序切成三段（不得按类型分组乱序）
-        let events = vec![
-            InputEvent::press(Key::W),
-            InputEvent::left_down(),
-            InputEvent::release(Key::W),
-        ];
-        let segments: Vec<&[InputEvent]> = segments(&events).collect();
-        assert_eq!(segments.len(), 3);
-        assert!(matches!(segments[0][0], InputEvent::Keyboard { .. }));
-        assert!(matches!(segments[1][0], InputEvent::Mouse { .. }));
-        assert!(matches!(segments[2][0], InputEvent::Keyboard { .. }));
-    }
-}
+// 切段机制已移除（no-slicing 实验分支）— SendContext 单测随实现删除。
