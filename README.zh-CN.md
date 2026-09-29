@@ -111,7 +111,7 @@ cargo build --release --config .cargo/build-std.toml
   `panic=unwind`（保障 `Drop` 防护与崩溃日志 panic hook 生效）
 - dev：自身代码 `opt-level=0`，依赖统一 `opt-level=2`（界面流畅）
 
-测试：`cargo test` — 66 单测 + 2 doctest，无需驱动。
+测试：`cargo test` — 63 单测 + 2 doctest，无需驱动。
 
 ## 运行
 
