@@ -478,6 +478,10 @@ mode = "Once"
 interval_ms = 10.0
 hold_ms = 0.0
 
+# 优化游戏 — 单功能三档，默认 Advanced（高级全量）
+[params."优化游戏"]
+tier = "Advanced"
+
 # GUI 配置 — icon_path 指向 .ico 托盘图标；font_path 指向 CJK 补充字体；
 # 两者留空均使用自动回退（程序生成图标 / 系统字体 msyh→simsun）
 [gui]
@@ -485,17 +489,33 @@ icon_path = "E:/Projects/Rust/GI-Utils/assets/icon.ico"
 font_path = ""
 "#;
 
-/// 旧配置名归一（v1.10.0）：时间轴版连点器成为唯一实现后，旧配置名
-/// "连点器（时间轴）" 归一到 "连点器"（旧 Serial 版同名绑定本就叫 "连点器"）。
+/// 旧配置名归一：
+/// - v1.10.0："连点器（时间轴）" → "连点器"；
+/// - v1.11.0："优化游戏标准/简易" → "优化游戏"（档位改由 tier 参数表达）。
 pub fn normalize_func_name(name: &str) -> &str {
-    if name == "连点器（时间轴）" {
-        "连点器"
-    } else {
-        name
+    match name {
+        "连点器（时间轴）" => "连点器",
+        "优化游戏标准" | "优化游戏简易" => "优化游戏",
+        _ => name,
     }
 }
 
 /// 旧模板表迁移：别名模板并入规范名模板，并丢弃已移除的 debug_sample 槽。
+/// 旧优化游戏档位模板并入规范名模板（v1.11.0）；tier 属绑定行语义，
+/// 不进入共享模板（行级迁移在 load_full_from 中按旧函数名注入）。
+fn migrate_legacy_optimize_params(func_params: &mut FuncParams) {
+    for alias in ["优化游戏标准", "优化游戏简易"] {
+        if let Some(legacy) = func_params.remove(alias) {
+            let canonical = func_params.entry("优化游戏".into()).or_default();
+            for (k, v) in legacy {
+                if k != "tier" {
+                    canonical.entry(k).or_insert(v);
+                }
+            }
+        }
+    }
+}
+
 fn migrate_legacy_clicker_params(func_params: &mut FuncParams) {
     if let Some(legacy) = func_params.remove("连点器（时间轴）") {
         let canonical = func_params.entry("连点器".into()).or_default();
@@ -537,6 +557,7 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
     let raw: RawConfig = toml::from_str(&content).map_err(|e| format!("invalid config: {}", e))?;
     let mut func_params = raw.params.unwrap_or_default();
     migrate_legacy_clicker_params(&mut func_params);
+    migrate_legacy_optimize_params(&mut func_params);
 
     let mut bindings = Vec::new();
     for (i, b) in raw.bindings.iter().enumerate() {
@@ -546,6 +567,12 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
         // 逐槽覆盖顶层 `[params.<功能名>]`（**功能参数模板/默认值** —
         // 同功能所有行共享的基线）。合成规则：模板提供基线，行内显式
         // 设置的槽覆盖之 → 每行 = 模板 + 行内差量。行内为空则纯模板。
+        // 旧三档功能名 → 保留原档位语义：标准/简易行注入对应 tier（v1.11.0）。
+        let legacy_tier = match b.func.as_str() {
+            "优化游戏标准" => Some("Standard"),
+            "优化游戏简易" => Some("Minimal"),
+            _ => None,
+        };
         let func = normalize_func_name(&b.func).to_string();
         let template = func_params.get(&func).cloned().unwrap_or_default();
         let mut params = match b.params.clone() {
@@ -561,6 +588,10 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
         // 旧调试采样参数已移除（v1.10.0）：显式丢弃，避免未知参数报错。
         if func == "连点器" {
             params.remove("debug_sample");
+        }
+        // 旧三档绑定迁移：行级 tier 覆盖模板（不写回模板 — 档位属于行）。
+        if let Some(tier) = legacy_tier {
+            params.insert("tier".into(), toml::Value::String(tier.into()));
         }
         bindings.push(Binding {
             key,
@@ -693,8 +724,6 @@ pub fn list_function_names() -> Vec<&'static str> {
         "双玛头",
         "坐标颜色",
         "优化游戏",
-        "优化游戏标准",
-        "优化游戏简易",
         "线程采样",
     ]
 }
@@ -733,12 +762,6 @@ pub fn create_function(
         )),
         "坐标颜色" => Ok(Arc::new(crate::functions::mouse_color::坐标颜色::new())),
         "优化游戏" => Ok(Arc::new(crate::functions::optimize_game::优化游戏::new())),
-        "优化游戏标准" => Ok(Arc::new(
-            crate::functions::optimize_game::优化游戏标准::new(),
-        )),
-        "优化游戏简易" => Ok(Arc::new(
-            crate::functions::optimize_game::优化游戏简易::new(),
-        )),
         "线程采样" => Ok(Arc::new(crate::functions::thread_sampler::线程采样::new())),
         _ => Err(format!("unknown function: '{}'", name)),
     }
@@ -799,6 +822,29 @@ pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), 
             (ParamKind::Bool { .. }, toml::Value::Boolean(v)) => {
                 store.set_bool(idx, *v);
             }
+            (ParamKind::Choice { options, .. }, toml::Value::String(label)) => {
+                // 档位持久化为标签；大小写不敏感（手写配置宽容）
+                let Some((_, value)) = options
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(label.as_str()))
+                else {
+                    let avail: Vec<&str> = options.iter().map(|(name, _)| *name).collect();
+                    return Err(format!(
+                        "参数 '{name}' 取值无效: '{label}'（可选: {avail:?}）"
+                    ));
+                };
+                store.set_i64(idx, *value);
+            }
+            (ParamKind::Choice { options, .. }, toml::Value::Integer(value)) => {
+                // 兼容整数下标（0/1/2），但必须落在声明选项内
+                let Some((_, canonical)) = options.iter().find(|(_, v)| v == value) else {
+                    let avail: Vec<&str> = options.iter().map(|(name, _)| *name).collect();
+                    return Err(format!(
+                        "参数 '{name}' 取值无效: {value}（可选: {avail:?}）"
+                    ));
+                };
+                store.set_i64(idx, *canonical);
+            }
             (kind, v) => {
                 return Err(format!(
                     "参数 '{name}' 类型不匹配: 值 {v:?} 无法用于 {kind_name}",
@@ -806,6 +852,7 @@ pub fn apply_params(func: &Arc<dyn KeyFunction>, params: &Params) -> Result<(), 
                         ParamKind::Float { .. } => "Float",
                         ParamKind::Int { .. } => "Int",
                         ParamKind::Bool { .. } => "Bool",
+                        ParamKind::Choice { .. } => "Choice",
                     }
                 ));
             }
@@ -1090,6 +1137,7 @@ mod default_config_tests {
         // 顶层 per-function 参数表存在且归属正确
         assert!(raw.get("params").is_some());
         assert!(raw["params"]["连点器"]["interval_ms"].as_float() == Some(10.0));
+        assert_eq!(raw["params"]["优化游戏"]["tier"].as_str(), Some("Advanced"));
         // 行内旧格式不得再出现（skip_serializing 只管写出 — 此处保证模板源头干净）
         let text = crate::profile::DEFAULT_CONFIG;
         assert!(!text.contains("[bindings.params]"), "行内 params 已废弃");
@@ -1109,6 +1157,11 @@ mod param_tests {
     const SPEC: &[ParamSpec] = &[
         ParamSpec::float("interval_ms", 10.0, 1.0, 100.0, 0.5),
         ParamSpec::boolean("turbo", false),
+        ParamSpec::choice(
+            "tier",
+            0,
+            &[("Advanced", 0), ("Standard", 1), ("Minimal", 2)],
+        ),
     ];
     impl KeyFunction for ParamFunc {
         fn execute(&self, _: Arc<AtomicBool>) {}
@@ -1189,5 +1242,75 @@ mod param_tests {
         // typo 检测保留：功能**有**参数但键名不在 specs → 仍报错
         let (f, params) = mk(&[("intervl_ms", toml::Value::Float(1.0))]);
         assert!(apply_params(&(f as Arc<dyn KeyFunction>), &params).is_err());
+    }
+
+    #[test]
+    fn choice_accepts_label_and_integer_and_rejects_invalid() {
+        // 标签（GUI/默认配置写法）
+        let (f, params) = mk(&[("tier", toml::Value::String("Minimal".into()))]);
+        apply_params(&(f.clone() as Arc<dyn KeyFunction>), &params).unwrap();
+        assert_eq!(f.store.get_i64(2), 2);
+        // 整数下标（手写配置宽容）
+        let (f, params) = mk(&[("tier", toml::Value::Integer(1))]);
+        apply_params(&(f.clone() as Arc<dyn KeyFunction>), &params).unwrap();
+        assert_eq!(f.store.get_i64(2), 1);
+        // 未声明标签 / 越界整数 → 显式报错
+        let (f, params) = mk(&[("tier", toml::Value::String("Bogus".into()))]);
+        assert!(apply_params(&(f as Arc<dyn KeyFunction>), &params).is_err());
+        let (f, params) = mk(&[("tier", toml::Value::Integer(9))]);
+        assert!(apply_params(&(f as Arc<dyn KeyFunction>), &params).is_err());
+    }
+}
+
+#[cfg(test)]
+mod optimize_migration_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_optimize_function_names_migrate_with_tier() {
+        let dir = std::env::temp_dir().join(format!(
+            "gi-utils-profile-optimize-migration-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[bindings]]
+key = "F13"
+func = "优化游戏标准"
+mode = "Once"
+
+[[bindings]]
+key = "F14"
+func = "优化游戏简易"
+mode = "Once"
+
+[[bindings]]
+key = "F15"
+func = "优化游戏"
+mode = "Once"
+"#,
+        )
+        .unwrap();
+
+        let (bindings, templates) = load_full_from(&path).unwrap();
+        assert_eq!(bindings[0].func, "优化游戏");
+        assert_eq!(bindings[1].func, "优化游戏");
+        assert_eq!(bindings[2].func, "优化游戏");
+        assert_eq!(
+            bindings[0].params.get("tier").and_then(|v| v.as_str()),
+            Some("Standard")
+        );
+        assert_eq!(
+            bindings[1].params.get("tier").and_then(|v| v.as_str()),
+            Some("Minimal")
+        );
+        // 原本就是「优化游戏」的行不加 tier → 参数默认 Advanced
+        assert!(bindings[2].params.get("tier").is_none());
+        // 旧别名模板段不得残留
+        assert!(templates.get("优化游戏标准").is_none());
+        assert!(templates.get("优化游戏简易").is_none());
     }
 }

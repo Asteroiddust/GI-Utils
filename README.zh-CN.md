@@ -38,10 +38,10 @@ Windows 游戏输入自动化工具，Rust 实现。前身是 C++/Visual Studio 
   纯托盘静默启动（适合登录自启，见[运行](#运行)）
 - **睡眠唤醒免疫**：wgpu + Vulkan 后端 — 每帧检查 surface、丢失即重建，
   此前 OpenGL（glow/WGL）后端睡眠唤醒必崩的上下文丢失问题不再发生
-- **动态参数**：功能声明带类型的参数（间隔、按下时长、键位…），⚙ 弹窗
-  实时调整 — 不重编译、不重启线程
+- **动态参数**：功能声明带类型的参数（间隔、按下时长、键位、枚举档位…），
+  ⚙ 弹窗实时调整 — 不重编译、不重启线程
 - **三种触发模式**：`Once` / `Loop` / `Toggle`
-- **13 个内置功能**（见[功能一览](#功能一览)）
+- **11 个内置功能**（见[功能一览](#功能一览)）
 - **高精度时序**：
   - TSC 忙等延时，启动时校准（微秒级精度）
   - 时间轴调度器：绝对时刻编排，MIDI 编辑器语义（播放中实时编辑、
@@ -159,6 +159,10 @@ mode = "Once"
 interval_ms = 10.0
 hold_ms = 0.0
 
+# 优化游戏为单功能 + 档位参数（默认 Advanced）
+[params."优化游戏"]
+tier = "Advanced"   # Advanced / Standard / Minimal
+
 # 可选：自定义托盘图标（.ico）与 CJK 补充字体；留空均自动回退
 [gui]
 icon_path = ""
@@ -183,9 +187,7 @@ font_path = ""
 | 甘雨走A | F17 | Once | 射箭后摇取消：左/右击 + R 键 |
 | 双玛头 | F18 | Loop | 玛薇卡双坠编排（左键长按 + 右键点按 + S） |
 | 坐标颜色 | F19 | Loop | 持续输出光标坐标 + 像素 RGB |
-| 优化游戏 | NumpadAdd | Once（奇偶切换） | Advanced：游戏亲和性 + OTHER 隔离 + 优先级 + 热线程 pinning |
-| 优化游戏标准 | — | Once（奇偶切换） | Standard：OTHER 隔离 + 优先级（不动游戏亲和性、不 pin） |
-| 优化游戏简易 | — | Once（奇偶切换） | Minimal：仅优先级 + 前台（不碰亲和性） |
+| 优化游戏 | NumpadAdd | Once（奇偶切换） | 单功能；⚙ `tier` 选档：Advanced（默认，游戏亲和性 + OTHER 隔离 + 优先级 + 热线程 pinning）/ Standard（OTHER 隔离 + 优先级，不动亲和性、不 pin）/ Minimal（仅优先级 + 前台） |
 | 线程采样 | F20 | Once | 线程画像采样 → `thread_sample.txt`（分析工具，无注入） |
 | SpamKey | — | Loop | 重复敲击任意配置键（key / interval_ms / hold_ms 动态参数） |
 
@@ -217,7 +219,7 @@ src/
 ├── utils/                delay（TSC）/ beep / affinity / screen / 日志桥 /
 │                         thread_info + thread_pin（线程采样与 pinning）
 └── functions/            每功能一文件（含 thread_sampler / spam_key /
-                          优化游戏三档）
+                          优化游戏单功能档位）
 ```
 
 ## 路线图

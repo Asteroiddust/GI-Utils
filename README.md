@@ -44,9 +44,9 @@ Wuthering Waves.
   context loss that used to crash the old OpenGL (glow/WGL) backend no longer
   occurs
 - **Dynamic parameters**: functions declare typed parameters (interval, hold,
-  key…) editable live from the ⚙ popup — no rebuild, no thread restart
+  key, enum/choice…) editable live from the ⚙ popup — no rebuild, no thread restart
 - **Three trigger modes**: `Once` / `Loop` / `Toggle`
-- **13 built-in functions** (see [Function Reference](#function-reference))
+- **11 built-in functions** (see [Function Reference](#function-reference))
 - **High-precision timing**:
   - TSC busy-wait delays calibrated at startup (µs-level accuracy)
   - Timeline scheduler: absolute-time orchestration with MIDI-editor
@@ -169,6 +169,10 @@ mode = "Once"
 interval_ms = 10.0
 hold_ms = 0.0
 
+# Optimize Game is one function with a tier parameter (default Advanced).
+[params."优化游戏"]
+tier = "Advanced"   # Advanced / Standard / Minimal
+
 # Optional custom tray icon (.ico) + CJK font; empty = automatic fallback
 [gui]
 icon_path = ""
@@ -195,9 +199,7 @@ keys…).
 | 甘雨走A | F17 | Once | Aim-cancel combo: L/R clicks + R key |
 | 双玛头 | F18 | Loop | Mavuika double-cancel choreography (L hold + R clicks + S) |
 | 坐标颜色 | F19 | Loop | Prints cursor position + pixel RGB continuously |
-| 优化游戏 | NumpadAdd | Once (toggle) | Advanced: game affinity + OTHER isolation + priority + hot-thread pinning |
-| 优化游戏标准 | — | Once (toggle) | Standard: OTHER isolation + priority (no game affinity / pinning) |
-| 优化游戏简易 | — | Once (toggle) | Minimal: priority + foreground only (no affinity changes) |
+| 优化游戏 | NumpadAdd | Once (toggle) | One function; ⚙ `tier` selects Advanced (default: game affinity + OTHER isolation + priority + hot-thread pinning), Standard (OTHER isolation + priority, no affinity/pinning) or Minimal (priority + foreground only) |
 | 线程采样 | F20 | Once | Thread-profile sampler → `thread_sample.txt` (analysis tool, no injection) |
 | SpamKey | — | Loop | Repeat-strike any configured key (key / interval_ms / hold_ms dynamic params) |
 
@@ -229,7 +231,7 @@ src/
 ├── utils/                delay (TSC), beep, affinity, screen, log collector,
 │                         thread_info + thread_pin (thread sampling/pinning)
 └── functions/            One file per function (incl. thread_sampler,
-                          spam_key, optimize_game's three modes)
+                          spam_key, optimize_game with tier param)
 ```
 
 ## Roadmap

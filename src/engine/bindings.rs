@@ -50,7 +50,7 @@ pub trait KeyFunction: Send + Sync {
 // 动态参数 — ParamSpec / ParamValues（2026-08-22 路线图落地）
 // ═══════════════════════════════════════════════════════════════════
 
-/// 参数类型（固定三档 — TOML 原生类型对齐，GUI 类型化控件）。
+/// 参数类型（固定四档 — TOML 原生类型对齐，GUI 类型化控件）。
 #[derive(Clone)]
 pub enum ParamKind {
     /// f64（毫秒/比率类）— default/min/max/step。
@@ -60,10 +60,16 @@ pub enum ParamKind {
         max: f64,
         step: f64,
     },
-    /// 整数（次数/档位类）。
+    /// 整数（次数类）。
     Int { default: i64, min: i64, max: i64 },
     /// 布尔开关。
     Bool { default: bool },
+    /// 枚举选择 — 持久化为标签字符串（也接受整数下标），GUI 渲染 ComboBox。
+    /// 用于档位/模式类参数（如「优化游戏」的 Advanced/Standard/Minimal）。
+    Choice {
+        default: i64,
+        options: &'static [(&'static str, i64)],
+    },
 }
 
 /// 单个参数的声明（名字 + 类型/范围/默认值）。
@@ -97,6 +103,16 @@ impl ParamSpec {
             kind: ParamKind::Bool { default },
         }
     }
+    pub const fn choice(
+        name: &'static str,
+        default: i64,
+        options: &'static [(&'static str, i64)],
+    ) -> Self {
+        Self {
+            name,
+            kind: ParamKind::Choice { default, options },
+        }
+    }
 }
 
 /// 进程级共享参数值槽 — 与 `parameters()` 顺序对齐，全部原子读写
@@ -121,6 +137,7 @@ impl ParamValues {
                 ParamKind::Float { default, .. } => Slot::Float(AtomicU64::new(default.to_bits())),
                 ParamKind::Int { default, .. } => Slot::Int(AtomicI64::new(*default)),
                 ParamKind::Bool { default } => Slot::Bool(AtomicBool::new(*default)),
+                ParamKind::Choice { default, .. } => Slot::Int(AtomicI64::new(*default)),
             })
             .collect();
         Self { slots }

@@ -1,6 +1,6 @@
 # GI-Utils — Agent 指令与项目权威文档
 
-> **版本 v1.10.5** · release 基线 `v1.7.7`（`dd519fd`）· 本文档 2026-10-23 全量重写
+> **版本 v1.11.0** · release 基线 `v1.7.7`（`dd519fd`）· 本文档 2026-10-23 全量重写
 >
 > 本文档是**唯一权威项目文档**。旧的 `CLAUDE.md` 已删除，请勿再创建或引用。
 > 用户向说明见 [README.md](README.md) / [README.zh-CN.md](README.zh-CN.md)；本文档面向接手开发的 agent。
@@ -8,8 +8,8 @@
 > **维护规则**：改动行为、结构、配置格式或构建方式时，必须在同一次提交内同步本文档；
 > 文档与代码冲突时以代码为准，并当场修正文档。避免旧文档那种「修复被回滚、文档悄悄漂移」的第二次发生。
 >
-> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 98 单测
-> （lib 93 + GUI bin 5）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
+> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 101 单测
+> （lib 96 + GUI bin 5）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
 > 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理、Phase 2 健壮性、连点器统一与
 > v1.10.1 依赖升级，并发布 v1.7.7/v1.10.1；随后修复静默启动图标、调整绑定表按钮；
@@ -44,7 +44,7 @@
 从 C++（Visual Studio）项目 `E:\Projects\fmttest` 完整重构为 Rust。服务原神 / 崩铁 / 鸣潮 / 绝区零等。
 
 - 单 GUI 二进制 + 一个库 crate；配置为 exe 旁 `profiles/*.toml`，GUI 面板实时增删改绑定。
-- 13 个内置功能（含 3 档「优化游戏」、线程采样工具与连点器），三种触发模式 Once / Loop / Toggle。
+- 11 个内置功能（「优化游戏」为单功能 + 三档参数，另有线程采样工具与连点器），三种触发模式 Once / Loop / Toggle。
 - 输入走 Interception 内核驱动：**只拦截键盘**并全量转发，鼠标不拦截（仅注入）。
 - 用户向功能说明、驱动安装、配置示例：见 README（英文）/ README.zh-CN（中文）。
 
@@ -114,7 +114,7 @@ src/
     ├── ganyu_aim_cancel.rs     # 甘雨走A（Once）
     ├── mavuika_double_cancel.rs  # 双玛头（Loop）
     ├── mouse_color.rs          # 坐标颜色（Loop，屏幕取色显示）
-    ├── optimize_game.rs        # 优化游戏三档（Once，奇偶 toggle）
+    ├── optimize_game.rs        # 优化游戏（Once，奇偶 toggle；⚙ tier 选三档，默认 Advanced）
     ├── thread_sampler.rs       # 线程采样（Once，诊断工具：写 thread_sample.txt）
     └── timeline_clicker.rs     # 连点器 — Timestamp 绝对 TSC 网格（Loop/Toggle，唯一实现）
 ```
@@ -214,6 +214,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 - 日志面板 header 有 `Clear` 按钮：一次清空 GUI 已显示行与 `LogCollector` 尚未 drain 的行
   （否则下一帧会把缓冲旧日志补回来）；`✕` 只隐藏面板。
 - 绑定表格 Actions 列行尾删除按钮为 **`✕`**（普通 `Button`，与 Set Key / ⚙ 同高；悬停提示「删除该绑定」；v1.10.3 改文本，v1.10.4 对齐高度）。
+- ⚙ 参数弹窗对 `ParamKind::Choice` 渲染 ComboBox（如「优化游戏」的 tier：Advanced/Standard/Minimal，默认 Advanced）。
 - 窗口图标（任务栏/标题栏/Alt-Tab）在窗口**可见**时重试约 2s；隐藏态暂停计时，
   从托盘唤出时重置重试窗口（v1.10.2 修复 `--silent` 启动后图标回落默认的问题）。
 - 关闭窗口 = `ShowWindow(SW_HIDE)` 隐藏到托盘（不退出）；托盘菜单：显示窗口 / Profile 二级菜单
@@ -243,7 +244,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 | **表空不结束（live-edit）** | 0.5ms 轮询等追加；结束只由 stop_requested 决定（MIDI 编辑器语义） |
 | **RollingKeys 节奏滚动** | 按下实时产生、释放动态排程；卡顿节拍重锚（错过即弃、不突发追拍，有意偏离 C++） |
 | **KeyFunction 1 必需 + 2 默认方法** | `execute(stop_requested)` 必需；`parameters()`/`param_store()` 默认空实现（无参功能零改动） |
-| **动态参数直写** | 参数槽数量/类型实现期固定（Float/Int/Bool）；`ParamValues` 全原子（f64 存储位模式于 AtomicU64）；GUI ⚙ 直写 store，下周期生效；`apply_params` 显式拒绝 NaN/Inf（clamp 不滤 NaN，会穿透到下游 assert panic） |
+| **动态参数直写** | 参数槽数量/类型实现期固定（Float/Int/Bool/Choice）；`ParamValues` 全原子（f64 存储位模式于 AtomicU64）；GUI ⚙ 直写 store，下周期生效（Choice 渲染 ComboBox，持久化为标签字符串）；`apply_params` 显式拒绝 NaN/Inf 与非法 Choice 值 |
 | **参数持久化 = 模板 + 差量** | 顶层 `[params.<功能名>]` = 模板（活基线，同功能所有行共享）；行内 `[bindings.params]` = 差量（只存与模板不同的槽）。**Save 成对写回模板段 + 差量**；只写差量会在重启后丢参数（v1.7.4 高危修复）。GUI 切换功能/新建行以模板为初值（A+ 语义） |
 | **Profile 体系 + 记忆** | exe 旁 `profiles/<名>.toml`；`profiles/.last` 记录上次活动 profile，启动恢复（失效回退 `默认` 并回写）；旧 `gi-utils-config.toml`/`config.toml` 自动迁移、旧文件保留 |
 | **切 profile 共用 switch_profile** | 窗口下拉与托盘同一实现 + 三守卫：同名幂等（避免无谓 `clear_all` 打断 Loop）、dirty 拒绝、按键捕获中拒绝（rebuild 按行索引会错位） |
@@ -256,7 +257,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 | **wait_until_interruptible 单次 TSC 读** | 到期判定与检查点复用同一读数；本轮循环是 Loop/时间轴热路径，实测每轮 65→61 周期（固定窗口自旋 +7%，6/6 轮一致）；最坏晚一轮（~15ns）触发 stop 检查 |
 | **线程级核心分离** | 进程掩码 12-15；GUI 12,13 LOWEST；输入/功能 14,15 REALTIME 24；托盘 16 |
 | **热线程 pinning 金银核** | 进程名 → 模块白名单（`"模块名+0x"` 前缀）双采样 Δcycles 降序 Top-2 → 金核 A/B 的 LP 对；现注册原神/崩铁/绝区零（详见 `thread_pin.rs`）；未注册游戏只 HIGH + OTHER 隔离、不 pin；**终末地有意不注册**（反作弊封锁模块枚举，白名单不可用）；SET 权限被拒逐条降级。退出/恢复/panic 三路径兜底还原 |
-| **优化游戏三档** | Advanced = 游戏亲和性 + OTHER 隔离 + HIGH + 前台 + pin；Standard = OTHER 隔离 + HIGH + 前台（不改游戏亲和性、不 pin）；Minimal = 仅 HIGH + 前台。奇偶 toggle 按模式独立（`static [AtomicBool; 3]`）；偶数次恢复**有意不降游戏优先级**（降级要再开游戏句柄，反作弊路径；HIGH 留存无害） |
+| **优化游戏单功能三档** | `优化游戏` 单功能 + ⚙ `tier` 参数（Choice：Advanced/Standard/Minimal，默认 Advanced）：Advanced = 游戏亲和性 + OTHER 隔离 + HIGH + 前台 + pin；Standard = OTHER 隔离 + HIGH + 前台（不改游戏亲和性、不 pin）；Minimal = 仅 HIGH + 前台。旧「优化游戏标准/简易」名在加载时归一为 `优化游戏` 并注入对应 tier。奇偶 toggle 按档位独立（`static [AtomicBool; 3]`）；偶数次恢复**有意不降游戏优先级**（降级要再开游戏句柄，反作弊路径；HIGH 留存无害） |
 | **优化游戏找窗三级序** | ① 已登记名单（`GAME_PROCESS_NAMES` 7 游戏，进程名→pid→可见主窗口，有标题优先）→ ② 窗口类兜底（UnityWndClass / UnrealWindow）→ ③ 失败；名单优先覆盖窗口类不明的游戏。换游戏检测：hwnd/pid 过时即重捕获并走优化方向 |
 | **TSC 校准 20×100ms 阻塞启动 ~2s** | 有意保持：启动一次性成本换最大样本稳健性（实测散布 ±1.45ppm，最差样本对 10ms 时序误差 15ns 级）；QPC 缩窗方案（~100ms）评估过不采用 |
 | **单实例 mutex** | 命名 mutex，第二实例激活既有窗口（`--silent` 则静默退出）；句柄泄漏到进程结束，保排他 |
@@ -268,7 +269,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 ```bash
 # 日常（dev profile，增量秒级）—— 默认路径
 cargo check                 # 类型检查（0 warning 是当前基线）
-cargo test                  # 98 单测 + doctest
+cargo test                  # 101 单测 + doctest
 cargo build                 # target/debug/gi-utils-gui.exe（部署目录 gi-utils-dev.exe 指向它）
 cargo fmt --check           # 必须干净（2026-08-19 起全项目格式化）
 
@@ -321,8 +322,9 @@ gi-utils-dev.exe → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe    
 - 保存：`save_to` 原子写（临时文件 + rename），成对写回**模板段**与**行内差量**；差量只包含与
   模板不同的槽（改回模板值 → 差量消失 → 跟随模板）。
 - 无参功能上残留参数：静默忽略（历史数据/手写）；**功能有参数但键名写错**：报错（typo 检测）。
-- `apply_params` 对 Float/Int/Bool 做类型匹配；**Float 槽接受 Integer**（手写 `interval_ms = 10`
-  宽容转为 10.0），Int 槽只接受 Integer（键槽另接受键名字符串）；NaN/Inf 显式拒绝。
+- `apply_params` 对 Float/Int/Bool/Choice 做类型匹配；**Float 槽接受 Integer**（手写 `interval_ms = 10`
+  宽容转为 10.0），Int 槽只接受 Integer（键槽另接受键名字符串），Choice 接受标签字符串
+  （大小写不敏感）或选项内的整数下标；NaN/Inf 与非法 Choice 值显式拒绝。
 - v1.10.0 起旧配置名 `连点器（时间轴）` 在加载时自动归一为 `连点器`（模板并入规范名、
   旧 `debug_sample` 槽静默丢弃），旧 profile 无需手改；保存后按新名写回。
 
@@ -354,9 +356,11 @@ font_path = ""                                            # 留空回退系统 C
 - `Int`：i64，带 min/max；**键槽**是特例——低 16 位 ScanCode、位 16 为 E0，合并为整数持久化；
   GUI 对 `key` 槽渲染为键名下拉 + Set Key 捕获。
 - `Bool`：开关。
+- `Choice`：枚举档位；`options = [(标签, 整数)]`，GUI 渲染 ComboBox，持久化为标签字符串
+  （手写整数也接受，但必须落在 options 内；默认值来自 spec）。
 - 参数默认值来自 `ParamSpec`；未写进配置的槽取默认。
 
-## 9. 功能清单（13 项）
+## 9. 功能清单（11 项）
 
 | 功能 | 触发 | 模型/备注 |
 |---|---|---|
@@ -369,14 +373,12 @@ font_path = ""                                            # 留空回退系统 C
 | 甘雨走A | Once | 左右键连点 + R 取消后摇；Serial |
 | 双玛头 | Loop | 复杂鼠标序列 + S；Serial |
 | 坐标颜色 | Loop | 光标坐标 + 屏幕像素颜色显示；按住有效 |
-| 优化游戏 | Once（奇偶 toggle） | Advanced：亲和性 + OTHER 隔离 + HIGH + 前台 + 热线程 pin |
-| 优化游戏标准 | Once（奇偶 toggle） | OTHER 隔离 + HIGH + 前台（不改游戏亲和性、不 pin） |
-| 优化游戏简易 | Once（奇偶 toggle） | 仅 HIGH + 前台 |
+| 优化游戏 | Once（奇偶 toggle） | 单功能 + ⚙ `tier`（Choice，默认 Advanced）：Advanced = 亲和性 + OTHER 隔离 + HIGH + 前台 + 热线程 pin；Standard = OTHER 隔离 + HIGH + 前台（不改亲和性、不 pin）；Minimal = 仅 HIGH + 前台 |
 | 线程采样 | Once | 诊断工具：两次采样差分 → 写 exe 旁 `thread_sample.txt` + 日志摘要；目标按 `GAME_PROCESS_NAMES` 扫描 |
 
 默认配置（首次运行生成）绑 10 条：F12 停止、F13 连点器、F14 快速拾取、F15 鬼畜走路、F16 火神跳喷、
 F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20 线程采样；`[params."连点器"]`
-带默认值。SpamKey / 优化游戏标准 / 优化游戏简易 默认不绑定，GUI 里可选。
+与 `[params."优化游戏"] tier = "Advanced"` 带默认值。SpamKey 默认不绑定，GUI 里可选。
 
 ## 10. 开发流程与版本纪律
 
@@ -387,13 +389,13 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   `chore: 版本升至 vX.Y.Z — 主题`（minor=功能、patch=修复）——沿用。
 - 版本号唯一来源 `Cargo.toml`；升版本后 `Cargo.lock` 同步（`cargo build` 会更新）。
 - **tag**：v1.3.0 后长期缺 tag；2026-10-23 已补 `v1.7.6`（release 状态 `bb3f91b`）、
-  `v1.7.7`（`dd519fd`）与 `v1.8.0`–`v1.10.5`（含 v1.10.5 release 构建源 `fe03d1b`）；
+  `v1.7.7`（`dd519fd`）与 `v1.8.0`–`v1.11.0`（含 v1.10.5 release 构建源 `fe03d1b`）；
   `bench-getpixel-archive`（`2c949b5`）为本地存档 tag。今后发版：升版本 → 构建 → 打 tag。
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
-- 测试：98 个单测（lib 93：timeline 23 / profile 14 / bindings 9 / protocol 11 / event 4 / delay 3 /
-  functions/mod 3 / thread_pin 2 / pressed 15 / timeline_clicker 7 / log_collector 2；GUI bin 5）+ 2 doctest（1 ignored）。**测试缺口**：
+- 测试：101 个单测（lib 96：timeline 23 / profile 16 / bindings 9 / protocol 11 / event 4 / delay 3 /
+  functions/mod 3 / thread_pin 2 / pressed 15 / timeline_clicker 7 / log_collector 2 / optimize_game 1；GUI bin 5）+ 2 doctest（1 ignored）。**测试缺口**：
   SendContext 发送路径（需驱动）、thread_info NT 解析、optimize_game、log_collector；新增改动
   优先补可测纯函数。
 - 未跟踪分支 `bench-getpixel`（本地、未推送，2026-09-29，4 提交 +1362 行）：只含一次性诊断 bin
@@ -560,3 +562,6 @@ eframe 0.37 依赖升级；部署符号链接随 release 产物更新。
 `ERROR_NO_MORE_ITEMS` 空读固定返回 `Ok(0)`（防幻影 stroke）；测试 93→98（lib 93 + GUI bin 5）。
 2026-10-23 发版 v1.10.5：release 13,170,176 B（SHA256 115D3C3D…2CFD），含协议层审查 P1
 加固与 v1.10.2–v1.10.4 的图标/按钮修复；部署符号链接随 release 产物更新。
+2026-10-23 v1.11.0：优化游戏三档合并为单功能——`tier` Choice 参数（Advanced/Standard/
+Minimal，默认 Advanced）在 ⚙ 参数面板选择；旧配置名「优化游戏标准/简易」自动归一为
+「优化游戏」并注入对应 tier；功能数 13→11；测试 98→101（lib 96 + GUI bin 5）。

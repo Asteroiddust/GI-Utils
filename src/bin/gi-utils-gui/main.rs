@@ -1034,6 +1034,47 @@ impl GuiApp {
                                         self.dirty = true;
                                     }
                                 }
+                                ParamKind::Choice { options, .. } => {
+                                    // 档位/模式选择：持久化标签字符串（也接受整数）
+                                    let current = store.get_i64(si);
+                                    let selected = options
+                                        .iter()
+                                        .find(|(_, v)| *v == current)
+                                        .map(|(label, _)| *label)
+                                        .unwrap_or("?");
+                                    let mut chosen = current;
+                                    egui::ComboBox::from_id_salt(format!(
+                                        "param_choice_{}_{}",
+                                        id, si
+                                    ))
+                                    .selected_text(selected)
+                                    .width(140.0)
+                                    .show_ui(ui, |ui| {
+                                        for &(label, value) in options.iter() {
+                                            if ui
+                                                .selectable_label(current == value, label)
+                                                .clicked()
+                                            {
+                                                chosen = value;
+                                            }
+                                        }
+                                    });
+                                    if chosen != current {
+                                        store.set_i64(si, chosen);
+                                        if let Some(entry) = binding_params.as_mut() {
+                                            let label = options
+                                                .iter()
+                                                .find(|(_, v)| *v == chosen)
+                                                .map(|(label, _)| *label)
+                                                .unwrap_or("Advanced");
+                                            entry.insert(
+                                                spec.name.into(),
+                                                toml::Value::String(label.to_string()),
+                                            );
+                                        }
+                                        self.dirty = true;
+                                    }
+                                }
                                 ParamKind::Bool { .. } => {
                                     let mut v = store.get_bool(si);
                                     if ui.checkbox(&mut v, "").changed() {

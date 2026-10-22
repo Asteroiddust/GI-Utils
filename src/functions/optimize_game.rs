@@ -1,18 +1,20 @@
-//! 优化游戏 — 三档模式（2026-08-22 拆档）：
+//! 优化游戏 — 单功能 + 三档参数（v1.11.0 合并原三功能）：
 //!
-//! - **优化游戏**（Advanced）：全量 — 游戏进程亲和性（GAME_CORES_MASK）
+//! - **Advanced**（默认）：游戏进程亲和性（GAME_CORES_MASK）
 //!   + OTHER 进程隔离（isolate_game_cores）+ 优先级 HIGH + 前台切换
 //!   + 热线程 pinning（按进程名策略，见 thread_pin::STRATEGIES）
-//! - **优化游戏标准**（Standard）：minimal + OTHER 进程隔离
-//!   （不改游戏自身亲和性、不 pin）
-//! - **优化游戏简易**（Minimal）：仅提升游戏进程优先级 + 前台切换
-//!   （不碰任何亲和性 — no-op 场景：不想动系统级核心布局时）
+//! - **Standard**：OTHER 进程隔离 + 优先级 + 前台（不改游戏自身亲和性、不 pin）
+//! - **Minimal**：仅提升游戏进程优先级 + 前台切换（不碰任何亲和性）
 //!
-//! 三种模式共享：找窗三级序（名单 → 窗口类 → 失败）、换游戏检测
-//! （hwnd+pid 双校验，过时不论奇偶重捕获走优化）、`HIGH` 留存无害
-//! （3.4 决策）；奇偶 toggle 按模式独立（防多键绑定间串扰）。
+//! 档位由 ⚙ 参数面板的 `tier` 选择（Advanced/Standard/Minimal），默认
+//! Advanced；参数持久化到 `[params."优化游戏"] tier = "Advanced"` /
+//! 行内差量。旧配置名「优化游戏标准/简易」在加载时自动归一为
+//! 「优化游戏」并注入对应 tier（无需手改）。三档共享：找窗三级序（名单 →
+//! 窗口类 → 失败）、换游戏检测（hwnd+pid 双校验，过时不论奇偶重捕获走
+//! 优化）、`HIGH` 留存无害（3.4 决策）；奇偶 toggle 按档位独立（防多键
+//! 绑定间串扰）。
 
-use crate::engine::bindings::KeyFunction;
+use crate::engine::bindings::{KeyFunction, ParamSpec, ParamValues};
 use crate::utils;
 use crate::utils::delay;
 use std::sync::Arc;
@@ -51,7 +53,21 @@ impl OptimizeMode {
             OptimizeMode::Minimal => 2,
         }
     }
+
+    /// 参数值 → 档位；未知值回落 Advanced（参数层已校验，防御）。
+    fn from_i64(value: i64) -> Self {
+        match value {
+            1 => OptimizeMode::Standard,
+            2 => OptimizeMode::Minimal,
+            _ => OptimizeMode::Advanced,
+        }
+    }
 }
+
+/// 档位参数选项 — 值即 `OptimizeMode::idx`（持久化用标签字符串）。
+pub const TIER_OPTIONS: &[(&str, i64)] = &[("Advanced", 0), ("Standard", 1), ("Minimal", 2)];
+
+const TIER_SPEC: &[ParamSpec] = &[ParamSpec::choice("tier", 0, TIER_OPTIONS)];
 
 const MODE_COUNT: usize = 3;
 
@@ -282,58 +298,38 @@ impl Core {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 三个公开功能 struct — 工厂按名分派，共享 Core
+// 公开功能 struct — 单功能 + tier 参数，共享 Core
 // ═══════════════════════════════════════════════════════════════════
 
-/// 优化游戏（Advanced）— 全量档：游戏亲和性 + OTHER 隔离 + 优先级
-/// + 前台 + 热线程 pinning。Once 模式，按下 NumpadAdd 执行一次。
+/// 优化游戏 — 单功能；⚙ 参数面板选择档位（默认 Advanced）。
+/// Once 模式，按下热键执行一次（奇偶切换优化/恢复）。
 pub struct 优化游戏 {
     core: Core,
+    params: Arc<ParamValues>,
 }
 
 impl 优化游戏 {
     pub fn new() -> Self {
-        Self { core: Core::new() }
+        Self {
+            core: Core::new(),
+            params: Arc::new(ParamValues::new(TIER_SPEC)),
+        }
     }
 }
 
 impl KeyFunction for 优化游戏 {
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
-        self.core.execute(OptimizeMode::Advanced, stop_requested);
+        // 每次触发读取最新档位（GUI live 直写，下个周期生效）。
+        let mode = OptimizeMode::from_i64(self.params.get_i64(0));
+        self.core.execute(mode, stop_requested);
     }
-}
 
-/// 优化游戏标准（Standard）— 仅加 OTHER 进程隔离，不动游戏自身、不 pin。
-pub struct 优化游戏标准 {
-    core: Core,
-}
-
-impl 优化游戏标准 {
-    pub fn new() -> Self {
-        Self { core: Core::new() }
+    fn parameters(&self) -> &[ParamSpec] {
+        TIER_SPEC
     }
-}
 
-impl KeyFunction for 优化游戏标准 {
-    fn execute(&self, stop_requested: Arc<AtomicBool>) {
-        self.core.execute(OptimizeMode::Standard, stop_requested);
-    }
-}
-
-/// 优化游戏简易（Minimal）— 仅提升优先级 + 前台，不碰任何亲和性。
-pub struct 优化游戏简易 {
-    core: Core,
-}
-
-impl 优化游戏简易 {
-    pub fn new() -> Self {
-        Self { core: Core::new() }
-    }
-}
-
-impl KeyFunction for 优化游戏简易 {
-    fn execute(&self, stop_requested: Arc<AtomicBool>) {
-        self.core.execute(OptimizeMode::Minimal, stop_requested);
+    fn param_store(&self) -> Option<Arc<ParamValues>> {
+        Some(self.params.clone())
     }
 }
 
@@ -433,4 +429,18 @@ fn get_window_title(hwnd: HWND) -> String {
     let mut buf = [0u16; 128];
     let len = unsafe { GetWindowTextW(hwnd, &mut buf) } as usize;
     String::from_utf16_lossy(&buf[..len])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tier_value_maps_to_mode_with_advanced_fallback() {
+        assert_eq!(OptimizeMode::from_i64(0), OptimizeMode::Advanced);
+        assert_eq!(OptimizeMode::from_i64(1), OptimizeMode::Standard);
+        assert_eq!(OptimizeMode::from_i64(2), OptimizeMode::Minimal);
+        // 参数层已校验；越界值防御性回落默认档。
+        assert_eq!(OptimizeMode::from_i64(9), OptimizeMode::Advanced);
+    }
 }
