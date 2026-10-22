@@ -1,6 +1,6 @@
 # GI-Utils — Agent 指令与项目权威文档
 
-> **版本 v1.7.7** · 代码基线 `bb3f91b`（v1.7.6 release）· 本文档 2026-10-23 全量重写
+> **版本 v1.8.0** · release 基线 `v1.7.7`（`dd519fd`）· 本文档 2026-10-23 全量重写
 >
 > 本文档是**唯一权威项目文档**。旧的 `CLAUDE.md` 已删除，请勿再创建或引用。
 > 用户向说明见 [README.md](README.md) / [README.zh-CN.md](README.zh-CN.md)；本文档面向接手开发的 agent。
