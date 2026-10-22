@@ -1388,13 +1388,28 @@ fn show_message_box(title: &str, msg: &str) {
     }
 }
 
+/// 从 panic payload 提取可读消息（`&str` / `String` / 其他兜底）。
+///
+/// 用于启动失败路径：`catch_unwind` 捕获的 payload 转成可展示/落盘文本。
+/// 纯函数，便于单测（不依赖驱动或 Windows 环境）。
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "未知 panic（payload 不是字符串）".to_string()
+    }
+}
+
 /// 安装 panic hook：崩溃现场落盘 + 恢复亲和性 + MessageBox + 退出。
 ///
 /// hook 主动 `std::process::exit(1)` 会跳过正常关机路径（`shutdown_all` 才做
 /// thread_pin/affinity 还原）— 若 panic 前已隔离游戏核心，其它进程会停留在
 /// 受限核心，因此 hook 自己负责还原 thread_pin/affinity。
-/// 必须在任何可能 panic 的代码之前安装；注意 `Engine::new` 位于安装之前，
-/// 驱动缺失时此处 panic 走不到本 hook（已知技术债）。
+/// 必须在任何可能 panic 的代码之前安装；`Engine::new` 位于安装之前，
+/// 其 panic（驱动缺失/非管理员）由调用点的 catch_unwind 守卫负责弹窗 +
+/// 落盘 + exit(1)（见 main），走不到本 hook。
 ///
 /// 渲染自愈已退役（v1.7.0 切 wgpu）：原"GUI 渲染 panic 可恢复"分支
 /// （IN_GUI_RETRY/GUI_MAIN_THREAD/catch_unwind 重试）已随 glow 后端一起移除。
@@ -1563,16 +1578,37 @@ fn main() {
     // 记录回写（记录失效时归一化为回退值 — 指针恒指向真实 profile）
     profile::write_last_profile(&startup_profile);
 
-    // ── 3. 创建 Engine ──────────────────────────────────────
-    let engine = Engine::new();
+    // ── 3. 创建 Engine（panic 防线）─────────────────────────
+    // Engine::new 在 panic hook 安装之前执行：驱动缺失/非管理员时
+    // InterceptionContext::create 会 panic（interception/context.rs:20）。
+    // 默认 hook 只写 stderr，而 windows_subsystem="windows" 无控制台 →
+    // 用户只会看到「双击无反应」的静默退出。因此就地 catch_unwind：
+    // crash.log 落盘 + 弹窗 + exit(1)。
+    // 此阶段无需还原亲和性/pin：进程级掩码随进程退出消失，thread_pin
+    // 尚未施加，且尚无 Engine/功能线程被 spawn。
+    let engine = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Engine::new())) {
+        Ok(engine) => engine,
+        Err(payload) => {
+            let detail = panic_payload_message(payload.as_ref());
+            let msg = format!(
+                "引擎初始化失败（驱动未安装或未以管理员身份运行？）：
+
+{detail}"
+            );
+            // 先落盘再弹窗：模态弹窗期间用户强杀进程也不会丢崩溃现场
+            write_crash_log(&msg, &log_collector);
+            show_message_box("GI-Utils 启动失败", &msg);
+            std::process::exit(1);
+        }
+    };
     let key_bindings = engine.bindings();
     let send_ctx = engine.send_context();
     let stop_flag = engine.stop_flag();
 
     // panic hook 需持有 stop_flag（panic 时弹窗前置位停机 — 模态弹窗
     // 阻塞期间 engine/Loop 功能线程不得继续注入）。安装晚于 Engine 创建：
-    // Engine::new 自身的 panic（驱动缺失）无亲和性需要还原，且其 unwrap
-    // 消息经默认 hook 亦可读。
+    // Engine 创建期的 panic 已由上方 catch_unwind 守卫处理（弹窗 + 落盘 +
+    // exit(1)）；hook 覆盖的是此后才存在的 Engine/GUI/功能线程。
     install_panic_hook(log_collector.clone(), stop_flag.clone());
 
     // ── 4. 注册初始绑定 ─────────────────────────────────────
@@ -1770,5 +1806,53 @@ fn main() {
             write_crash_log(&msg, &log_collector);
             std::process::exit(1);
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 单元测试 — 纯函数，不依赖驱动 / Windows 窗口环境
+// ═══════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::panic_payload_message;
+
+    /// 构造与 catch_unwind Err 相同的 payload 形态。
+    fn payload<T: std::any::Any + Send>(v: T) -> Box<dyn std::any::Any + Send> {
+        Box::new(v)
+    }
+
+    #[test]
+    fn payload_message_from_str_slice() {
+        let p = payload("驱动未安装");
+        assert_eq!(panic_payload_message(p.as_ref()), "驱动未安装");
+    }
+
+    #[test]
+    fn payload_message_from_string() {
+        let p = payload(String::from(
+            "Failed to create Interception context (driver missing)",
+        ));
+        assert_eq!(
+            panic_payload_message(p.as_ref()),
+            "Failed to create Interception context (driver missing)"
+        );
+    }
+
+    #[test]
+    fn payload_message_unknown_payload_falls_back() {
+        let p = payload(42u32);
+        let msg = panic_payload_message(p.as_ref());
+        assert!(
+            msg.contains("未知 panic"),
+            "unexpected fallback text: {msg}"
+        );
+    }
+
+    /// 端到端：真实 catch_unwind 捕获的 payload 可提取为可读文本。
+    #[test]
+    fn payload_message_extracts_from_catch_unwind() {
+        let err = std::panic::catch_unwind(|| panic!("引擎 panic 测试")).unwrap_err();
+        assert_eq!(panic_payload_message(err.as_ref()), "引擎 panic 测试");
     }
 }
