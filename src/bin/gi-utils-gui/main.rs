@@ -957,13 +957,13 @@ impl GuiApp {
         let mut keyslot_capture: Option<CaptureTarget> = None;
 
         egui::Window::new(egui::RichText::new(format!("{key_name} — {func}")).strong())
-            .id(egui::Id::new(("param_window", id)))
+            .id(egui::Id::unique(("param_window", id)))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.set_min_width(240.0);
-                egui::Grid::new(egui::Id::new(("param_grid", id)))
+                egui::Grid::new(egui::Id::unique(("param_grid", id)))
                     .num_columns(2)
                     .min_col_width(90.0)
                     .show(ui, |ui| {

@@ -50,13 +50,13 @@
 
 | 依赖 | 版本/特性 | 用途 |
 |---|---|---|
-| Rust | nightly，edition 2024；实机 1.101.0-nightly（历史长期 1.100，未锁版本） | 全项目 |
-| `windows` | 0.62，features：Security / Storage_FileSystem / System_IO / System_Threading / Diagnostics_ToolHelp / Graphics_Gdi / UI_WindowsAndMessaging / UI_HiDpi / UI_Shell / System_LibraryLoader / Media / **Wdk_System_SystemInformation / Wdk_System_Threading / Win32_System_WindowsProgramming / Win32_System_Kernel** | Win32 + NT 查询 |
-| `eframe` | 0.36（锁定 0.36.1），`default-features = false`，features **`default_fonts` + `wgpu`** | GUI / 托盘窗口 |
+| Rust | nightly，edition 2024；实机 1.101.0-nightly（历史长期 1.100，未锁版本）；依赖 MSRV：eframe 0.37 要求 ≥1.95 | 全项目 |
+| `windows` | 0.62.2，features：Security / Storage_FileSystem / System_IO / System_Threading / Diagnostics_ToolHelp / Graphics_Gdi / UI_WindowsAndMessaging / UI_HiDpi / UI_Shell / System_LibraryLoader / Media / **Wdk_System_SystemInformation / Wdk_System_Threading / Win32_System_WindowsProgramming / Win32_System_Kernel** | Win32 + NT 查询 |
+| `eframe` | 0.37（锁定 0.37.0），`default-features = false`，features **`default_fonts` + `wgpu`** | GUI / 托盘窗口 |
 | `wgpu` | 30.0.1（由 eframe 引入），显式锁 **Vulkan** 后端 | GUI 渲染 |
-| `toml` + `serde` | 1 / 1 | 配置解析/序列化 |
-| `tracing` + `tracing-subscriber` | 0.1 / 0.3（仅 `fmt`） | 日志 → GUI 日志面板桥 |
-| `embed-resource` | 3（build-dependency） | 构建期嵌入 `assets/icon.ico` |
+| `toml` + `serde` | 1.1.8 / 1.0.229 | 配置解析/序列化 |
+| `tracing` + `tracing-subscriber` | 0.1.44 / 0.3.23（仅 `fmt`） | 日志 → GUI 日志面板桥 |
+| `embed-resource` | 3.0.12（build-dependency） | 构建期嵌入 `assets/icon.ico` |
 
 编译期注意：`profile.dev.package.libm` 与 `profile.release.package.libm` 都设 `opt-level = 0`，
 绕开 LLVM 21 的 SEH bug（llvm/llvm-project#199290，naga→libm 数学链）；上游修复后可移除。
@@ -414,8 +414,10 @@ Agent 不启动程序（见规则 5）。需要验证时：用户以管理员运
 5. **注释残留（剩余）**：`main.rs` 若干「崩溃恢复/恢复轮」历史注释（当前约 93-120、1343-1345、
    1550、1585、1659-1699 行）属已退役自愈体系，改这些文件时顺手修。其余已知漂移已于
    2026-10-23 清理。
-6. **依赖升级未评估**：eframe 0.36.2（2026-09-08）/ 0.37.0（2026-10-15）存在，仓库仍锁 0.36.1；
-   升级涉及 wgpu 版本跃迁 + API 变化，需单独评估（不要顺手 bump）。
+6. **依赖升级已完成（v1.10.1）**：eframe 0.36.1→0.37.0（`App::logic`/`App::ui` 接口不变，仅 `Id::new`→
+   `Id::unique`）、windows 0.62.2、toml 1.1.8、serde 1.0.229、tracing 0.1.44、
+   tracing-subscriber 0.3.23、embed-resource 3.0.12；wgpu 仍由 eframe 引入 30.0.1。下次升级注意
+   eframe 的 MSRV 与 wgpu 大版本联动。
 7. **仓库卫生**：无 CI、无 `rust-toolchain.toml`；`tools/*.py` 被 `/tools` 忽略但仍被跟踪
    （改 ignore 规则时注意）；`/target` 不跟踪。tag 情况见 10.1。
 8. **本机 git 维护被关闭**（仅此机器，不随仓库传播）：2026-09-11 对象库损坏事故后设置了
@@ -531,3 +533,6 @@ thread_pin try_lock 还原）；测试 63→82 单测（lib 78 + GUI bin 4）。
 测试 91→93 单测（lib 89 + GUI bin 4）。
 2026-10-23 v1.10.0：连点器统一——删除 Serial 版，时间轴版成为唯一实现并去掉名称括号、
 移除 `debug_sample` 调试采样；旧配置名/参数自动迁移；测试 93→92（lib 88 + GUI bin 4）。
+2026-10-23 v1.10.1：依赖升级至最新——eframe 0.37.0（egui 0.37，`Id::new`→`Id::unique`）、
+windows 0.62.2、toml 1.1.8、serde 1.0.229、tracing 0.1.44、tracing-subscriber 0.3.23、
+embed-resource 3.0.12；wgpu 30.0.1 不变；`cargo check`/test/build 全绿。

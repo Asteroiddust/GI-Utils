@@ -31,7 +31,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # GUI 用 wgpu+Vulkan 渲染后端（v1.7.0 — 睡眠唤醒修复，见 main.rs NativeOptions
 # 注释）+ 内置字体。关闭默认的 accesskit（无障碍）、links（超链接）、
 # persistence（窗口状态持久化，本项目用 profile 体系自行保存）、x11/wayland。
-eframe = { version = "0.36", default-features = false, features = [
+eframe = { version = "0.37", default-features = false, features = [
     "default_fonts",
     "wgpu",
 ] }
