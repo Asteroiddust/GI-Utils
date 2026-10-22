@@ -8,11 +8,13 @@
 > **维护规则**：改动行为、结构、配置格式或构建方式时，必须在同一次提交内同步本文档；
 > 文档与代码冲突时以代码为准，并当场修正文档。避免旧文档那种「修复被回滚、文档悄悄漂移」的第二次发生。
 >
-> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 63 单测 + 2 doctest
-> 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；debug/release 产物与部署链接均未过期。
-> 注：健康数据采于 2026-10-23。同日 Phase 1 清理：无切片语义定稿并同步全部注释、
-> `ClickPlan::AtomicBatch` → `BackToBack`、删除无调用者 `profile::save/load/load_full`、
-> 补打 `v1.7.6` 与 `bench-getpixel-archive` tag（本地）。代码基线 `bb3f91b`。
+> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 82 单测
+> （lib 78 + GUI bin 4）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
+> debug/release 产物与部署链接均未过期。
+> 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理（无切片定稿 + 注释/死 API）与
+> Phase 2 健壮性（启动失败可视化 + panic 挂起合成键补发：原子位图 + 失败重登记 +
+> 无登记发送路径 + hook 内 try_lock 还原）；补打 `v1.7.6` 与 `bench-getpixel-archive` tag
+> （本地）。代码基线 `bb3f91b`。
 
 ## 0. 给 Agent 的硬性规则
 
@@ -146,8 +148,8 @@ src/
    TSC 校准（20×100ms，约 2s，阻塞启动）→ 日志；
 4. GUI 线程 `configure_gui_self()`：pin 12,13 + LOWEST；
 5. 配置：legacy 迁移 → `profiles/.last` 记忆 → `load_full_from`（含模板表）；
-6. `Engine::new()`：建 recv 上下文（只设键盘过滤器）+ send 上下文；**必须在 panic hook 之前**
-   （驱动缺失时这里 panic，会走不到 hook，见技术债）；
+6. `Engine::new()`：建 recv 上下文（只设键盘过滤器）+ send 上下文。此处在 panic hook 安装之前，
+   故用 `catch_unwind` 就地守卫：失败 → `crash.log` + MessageBox（`--silent` 只落盘）+ exit(1)；
 7. 安装 panic hook（见下）；注册绑定（`create_function` + `apply_params`）；预载托盘图标；
 8. spawn Engine 线程 → spawn 托盘线程 → `eframe::run_native`（wgpu/Vulkan）。
 
@@ -155,7 +157,8 @@ src/
 
 ```
 stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ key_bindings.stop_all()
-→ beep_async → thread_pin::restore() → restore_all_affinity() → 销毁共享托盘图标（仅当托盘已退出）
+→ pressed::release_into（best-effort，补发残留挂起键）→ beep_async
+→ thread_pin::restore() → restore_all_affinity() → 销毁共享托盘图标（仅当托盘已退出）
 ```
 
 顺序有原因：先停引擎再收托盘避免退出被 2s 等待拖长；`stop_all` 必须在亲和性恢复之前
@@ -172,6 +175,9 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 - **发送**：`SendContext` 是独立类型（`unsafe impl Sync`，可被多个功能线程同时持有/发送），
   `send_event`/`send_events` 当前为**逐事件一次 DeviceIoControl**（v1.7.6「取消切片」）。
   因此不同功能线程的发送**可以交错**，down/up 之间不保证驱动级原子。
+- **panic 挂起键兜底**：`src/interception/pressed.rs` 原子位图——每次注入前登记 DOWN、UP 写成功
+  才清；panic hook 在停机后与 MessageBox 后各补发一遍 release；物理按键转发（`forward_keyboard`）
+  不登记。
 - **挂起键清理**：`EventSequence::play` 内置 `HeldTracker`（按下记录/松开移除/stop 时合并补发）；
   时间轴执行器退出时 `release_pending` 补发 release，防卡键。
 
@@ -244,14 +250,15 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 | **优化游戏找窗三级序** | ① 已登记名单（`GAME_PROCESS_NAMES` 7 游戏，进程名→pid→可见主窗口，有标题优先）→ ② 窗口类兜底（UnityWndClass / UnrealWindow）→ ③ 失败；名单优先覆盖窗口类不明的游戏。换游戏检测：hwnd/pid 过时即重捕获并走优化方向 |
 | **TSC 校准 20×100ms 阻塞启动 ~2s** | 有意保持：启动一次性成本换最大样本稳健性（实测散布 ±1.45ppm，最差样本对 10ms 时序误差 15ns 级）；QPC 缩窗方案（~100ms）评估过不采用 |
 | **单实例 mutex** | 命名 mutex，第二实例激活既有窗口（`--silent` 则静默退出）；句柄泄漏到进程结束，保排他 |
-| **panic hook = fail-fast** | 任意线程 panic：置 stop → `crash.log` 落盘 → 还原 thread_pin/affinity → MessageBox → `exit(1)`（unwind 下线程静默死亡会让 Loop 继续注入、F12 失效）。不再有 catch_unwind 重试 |
+| **panic hook = fail-fast + 补发** | 任意线程 panic：置 stop → 补发挂起键#1 → `crash.log`（`try_snapshot` 非阻塞，防日志锁死锁）→ 还原 thread_pin（**try_lock 版，自身绝不死锁**）/affinity → MessageBox → 补发#2 → `exit(1)`（unwind 下线程静默死亡会让 Loop 继续注入、F12 失效）。启动期 `Engine::new` 由 catch_unwind 守卫。 |
+| **panic 挂起合成键补发（原子位图）** | `pressed.rs`：64B 对齐 512-bit 键盘位图（256 ScanCode × E0）+ 5 鼠标键位；`before_send` 登记、`after_send` 写成功才清；`release_into` = swap 快照 → 逐条 `send_untracked`（不触发登记/误清并发新 press）→ 失败位重新登记供第二遍/关机重试；hook 两遍补发，空表零 IOCTL。局限：仅 unwind、快照 vs in-flight 竞态、同键多持有者单 bit、>0xFF 扫描码忽略 |
 
 ## 6. 构建
 
 ```bash
 # 日常（dev profile，增量秒级）—— 默认路径
 cargo check                 # 类型检查（0 warning 是当前基线）
-cargo test                  # 63 单测 + doctest
+cargo test                  # 82 单测 + doctest
 cargo build                 # target/debug/gi-utils-gui.exe（部署目录 gi-utils-dev.exe 指向它）
 cargo fmt --check           # 必须干净（2026-08-19 起全项目格式化）
 
@@ -369,9 +376,10 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
-- 测试：63 个 `#[test]`（timeline 23 / profile 13 / bindings 9 / protocol 6 / event 4 / delay 3 /
-  functions/mod 3 / thread_pin 2）+ 2 doctest（1 ignored）。**测试缺口**：GUI 二进制、SendContext
-  发送路径、thread_info NT 解析、optimize_game、log_collector 均无测试；新增改动优先补可测纯函数。
+- 测试：82 个单测（lib 78：timeline 23 / profile 13 / bindings 9 / protocol 6 / event 4 / delay 3 /
+  functions/mod 3 / thread_pin 2 / pressed 15；GUI bin 4）+ 2 doctest（1 ignored）。**测试缺口**：
+  SendContext 发送路径（需驱动）、thread_info NT 解析、optimize_game、log_collector；新增改动
+  优先补可测纯函数。
 - 未跟踪分支 `bench-getpixel`（本地、未推送，2026-09-29，4 提交 +1362 行）：只含一次性诊断 bin
   （`getpixel-bench` / `getpixel-compare`），**不碰生产 `screen.rs`、不建议 merge**（windows
   feature 膨胀 + 死代码）。其结论已归档在[第 12 节](#12-路线图)，作为性能决策依据；分支保留作存档
@@ -390,14 +398,16 @@ Agent 不启动程序（见规则 5）。需要验证时：用户以管理员运
 1. **无切片语义已定稿**（2026-10-23 作者确认）：保留现状、不恢复切片；全部过时注释已同步，
    `ClickPlan::AtomicBatch` → `BackToBack`。发送路径仍无驱动级回归测试（IOCTL 依赖驱动，
    无驱动不可测）——发送语义变更需人工实机验证。
-2. **panic 退出不补发挂起合成键**：hook 置 stop + exit(1)，若 panic 发生在 press 与 release 之间，
-   进程退出不会由 OS 释放合成按键（可能系统级卡键）。Phase 2 健壮性任务处理中。
-3. **驱动/权限失败路径**：`Engine::new` 在 panic hook 之前，驱动缺失或非管理员时 panic 走不到
-   hook（无 `crash.log`/弹窗；`windows_subsystem="windows"` 无控制台）——启动即静默退出。
-   Phase 2 健壮性任务处理中。
+2. **panic 补发限界**（详见 `pressed.rs` 头注释）：仅覆盖 panic=unwind 路径（kill/断电不补发）；
+   快照与其它线程 in-flight 发送的竞态由两遍补发降低、不能根除；同键多持有者只记 1 位；
+   >0xFF 扫描码不跟踪；hook 内发送失败时 `warn!` 仍可能触碰日志锁（`try_snapshot` 只护 crash.log）。
+3. **启动守卫覆盖范围**：`catch_unwind` 只包 `Engine::new`；同阶段仍有 `LogCollector::install`
+   的 expect、legacy 迁移的 `current_exe()` expect、`profile_path` expect 等静默 panic 面
+   （后两者需手改 `.last` 才可达）。根治 = 最小 panic hook 提前到日志安装后（低危，未做）。
 4. **Toggle 快速连按**：active 未清的极短窗口内第三次按下可能既不 spawn 也不 stop（低危，未复现）。
-5. **注释残留（剩余）**：`main.rs` 若干「崩溃恢复/恢复轮」历史注释（约 90-130、1200、1240 行）
-   属已退役自愈体系，改这些文件时顺手修。其余已知漂移已于 2026-10-23 清理。
+5. **注释残留（剩余）**：`main.rs` 若干「崩溃恢复/恢复轮」历史注释（当前约 93-120、1343-1345、
+   1550、1585、1659-1699 行）属已退役自愈体系，改这些文件时顺手修。其余已知漂移已于
+   2026-10-23 清理。
 6. **依赖升级未评估**：eframe 0.36.2（2026-09-08）/ 0.37.0（2026-10-15）存在，仓库仍锁 0.36.1；
    升级涉及 wgpu 版本跃迁 + API 变化，需单独评估（不要顺手 bump）。
 7. **仓库卫生**：无 CI、无 `rust-toolchain.toml`；`tools/*.py` 被 `/tools` 忽略但仍被跟踪
@@ -502,5 +512,7 @@ Interception 内核驱动的商业授权不在本仓库，使用前自行确认�
 
 **文档变更**：2026-10-23 v1.7.6 全量重写（替代 CLAUDE.md，修正 glow/自愈/测试数/体积/结构树/
 幽灵版本等漂移，补 no-slicing、取色 bench 结论、技术债清单与 agent 规则）。
-2026-10-23 Phase 1：无切片定稿并同步注释、ClickPlan 更名、删除 profile 死 API、补 tag；
-Phase 2（启动失败可视化 + panic 挂起键释放）完成后另记。
+2026-10-23 Phase 1：无切片定稿并同步注释、ClickPlan 更名、删除 profile 死 API、补 tag。
+2026-10-23 Phase 2：启动失败可视化（catch_unwind 守卫 + `--silent` 只落盘）；panic 挂起合成键
+补发（`pressed.rs` 原子位图 + 逐条无登记发送 + 失败重登记 + hook 两遍补发 + 正常关机兜底 +
+thread_pin try_lock 还原）；测试 63→82 单测（lib 78 + GUI bin 4）。

@@ -13,8 +13,7 @@
 
 use crate::utils::affinity;
 use crate::utils::thread_info;
-use std::sync::Mutex;
-use std::sync::PoisonError;
+use std::sync::{Mutex, PoisonError};
 use tracing::{info, warn};
 
 // ═══════════════════════════════════════════════════════════════════
@@ -382,6 +381,25 @@ pub fn restore() {
     let Some(state) = with_state(|state| state.take()) else {
         return; // 无状态 — 幂等
     };
+    restore_state(state);
+}
+
+/// panic hook 用 best-effort 非阻塞还原：`try_lock` 拿不到（另一线程正持锁）
+/// 或锁被 panic 污染（Poisoned）时返回 `false` 跳过，绝不阻塞 — hook 等锁
+/// 会把进程卡在退出路径。返回是否实际处理了状态（无状态也算成功/无操作）。
+/// 正常关机仍用 [`restore`]（阻塞，确保还原）。
+pub fn restore_best_effort() -> bool {
+    let Ok(mut guard) = PIN_STATE.try_lock() else {
+        return false; // WouldBlock / Poisoned — 跳过（best-effort）
+    };
+    if let Some(state) = guard.take() {
+        restore_state(state);
+    }
+    true
+}
+
+/// 共用还原实现（阻塞 `restore` 与 best-effort 版共用，避免两份漂移）。
+fn restore_state(state: PinState) {
     let mut restored = 0usize;
     for p in &state.pinned {
         if restore_thread(p.tid, state.pid, p.old_mask) {

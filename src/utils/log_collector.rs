@@ -6,7 +6,7 @@
 //! GUI 主线程每帧 [`drain`] 到日志面板。
 
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use tracing::Level;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -43,10 +43,16 @@ impl LogCollector {
         std::mem::take(&mut *buf)
     }
 
-    /// 快照当前缓冲区内容（**不取走**）— panic hook 崩溃落盘用：
-    /// 自愈重试路径之外的真崩溃需要现场，而 drain 会清空面板数据。
-    pub fn snapshot(&self) -> Vec<String> {
-        self.buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    /// 非阻塞快照（panic hook 崩溃落盘专用）：`try_lock` 拿不到锁
+    /// （WouldBlock）返回 `None` — 调用方写空日志段，绝不等待：持锁线程
+    /// 可能正是 panic 线程，阻塞式 `lock` 会永久死锁。毒化（Poisoned）时
+    /// 取回内部数据 — 日志 buffer 只是现场快照，毒化无碍。
+    pub fn try_snapshot(&self) -> Option<Vec<String>> {
+        match self.buf.try_lock() {
+            Ok(buf) => Some(buf.clone()),
+            Err(TryLockError::Poisoned(e)) => Some(e.into_inner().clone()),
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 }
 

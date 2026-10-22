@@ -12,6 +12,7 @@ use gi_utils::engine::Engine;
 use gi_utils::engine::TriggerMode;
 use gi_utils::engine::bindings::{KeyFunction, ParamKind};
 use gi_utils::interception::SendContext;
+use gi_utils::interception::pressed;
 use gi_utils::key::Key;
 use gi_utils::profile::{self, Binding};
 use gi_utils::utils;
@@ -1271,9 +1272,10 @@ impl Drop for GuiApp {
     }
 }
 
-/// 完整关机序列 — 仅在正常退出与重试耗尽时由 main 显式调用。
-/// 顺序：托盘收尾 → 停引擎 → stop_all（先于亲和性恢复，防优化游戏竞态）
-/// → 蜂鸣 → 恢复亲和性（决策 21）→ 共享图标销毁（最后，确认托盘线程已退出）。
+/// 完整关机序列 — 仅在正常退出时由 main 显式调用（Drop 不做破坏性清理）。
+/// 顺序：停引擎 → 托盘收尾 → stop_all（先于亲和性恢复，防优化游戏竞态）
+/// → 补发残留挂起键（正常关机单次 best-effort）→ 蜂鸣
+/// → 恢复亲和性（决策 21）→ 共享图标销毁（最后，确认托盘线程已退出）。
 fn shutdown_all(
     engine_handle: JoinHandle<()>,
     tray_handle: Option<JoinHandle<()>>,
@@ -1281,6 +1283,7 @@ fn shutdown_all(
     tray_icon: Option<tray_icon::SharedIcon>,
     stop_flag: &AtomicBool,
     key_bindings: &Arc<gi_utils::engine::bindings::KeyBindings>,
+    send_ctx: &SendContext,
 ) {
     // 先停引擎（stop_flag → join），再收尾托盘 — 托盘收尾最坏有 2s 有界等待，
     // 放前面会拖长退出路径（review #14）。engine_handle 为直值（单次运行
@@ -1293,6 +1296,12 @@ fn shutdown_all(
 
     // 显式停止所有功能线程 — 必须在亲和性恢复**之前**（决策 21）
     key_bindings.stop_all();
+
+    // 残留挂起键兜底：正常关机只单次 best-effort（失败位虽重新登记但进程
+    // 随即退出即丢；只有 panic hook 才两遍补发）。stop_all 已 join 全部功能
+    // 线程，此后无新发送者；健康路径位图为空 → 零 IOCTL，主要覆盖「UP 写
+    // 失败留位」等残留。
+    let _ = pressed::release_into(send_ctx);
 
     // 退出蜂鸣 — 异步播放（~300ms），由随后的亲和性恢复耗时覆盖
     gi_utils::utils::beep::beep_async(375, 300);
@@ -1398,11 +1407,15 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     } else if let Some(s) = payload.downcast_ref::<String>() {
         s.clone()
     } else {
-        "未知 panic（payload 不是字符串）".to_string()
+        format!(
+            "未知 panic（payload 类型: {}）",
+            std::any::type_name_of_val(payload)
+        )
     }
 }
 
-/// 安装 panic hook：崩溃现场落盘 + 恢复亲和性 + MessageBox + 退出。
+/// 安装 panic hook：停机 → 补发挂起合成键 → 落盘 → 还原亲和性 → 弹窗
+/// → 再补发一遍 → 退出。
 ///
 /// hook 主动 `std::process::exit(1)` 会跳过正常关机路径（`shutdown_all` 才做
 /// thread_pin/affinity 还原）— 若 panic 前已隔离游戏核心，其它进程会停留在
@@ -1411,21 +1424,37 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// 其 panic（驱动缺失/非管理员）由调用点的 catch_unwind 守卫负责弹窗 +
 /// 落盘 + exit(1)（见 main），走不到本 hook。
 ///
+/// 挂起合成键补发两遍（`pressed::release_into`）：第一遍在 stop 后立即执行
+/// （必须先于模态 MessageBox — 弹窗期间系统仍停留在按下态；原子位图无锁，
+/// panic 中不会死锁）；第二遍在 MessageBox 之后、exit 之前，覆盖第一遍快照
+/// 与其它线程 in-flight press 交错的竞态。补发逐条走无登记发送路径，写失败
+/// 位自动重新登记（第二遍重试；正常关机只单次）。
+///
+/// panic hook 内再 panic 会直接 abort，catch_unwind 在此无效，故补发/还原
+/// 都不包 catch。补发路径无自建锁、无堆分配（逐条构造 release 事件）；`send_raw`
+/// 的 `expect` 对 release 事件结构上不可达；驱动写失败仅 `warn!` 并返回 0，
+/// 日志锁残留风险见 AGENTS §11.2。pin 还原用 `restore_best_effort`
+/// （try_lock，拿不到锁就跳过，绝不阻塞）。
+///
 /// 渲染自愈已退役（v1.7.0 切 wgpu）：原"GUI 渲染 panic 可恢复"分支
 /// （IN_GUI_RETRY/GUI_MAIN_THREAD/catch_unwind 重试）已随 glow 后端一起移除。
-/// hook 现为纯 fail-fast：任何线程 panic = 落盘 + 还原 + 弹窗 + exit(1)
-/// （防 Loop 功能僵尸注入）。
+/// hook 现为纯 fail-fast：任何线程 panic = 停机 + 补发 + 落盘 + 还原 + 弹窗
+/// + exit(1)（防 Loop 功能僵尸注入）。
 fn install_panic_hook(
     log: gi_utils::utils::log_collector::LogCollector,
     stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    send_ctx: Arc<SendContext>,
 ) {
     std::panic::set_hook(Box::new(move |info| {
-        // 先停机再交互 — 弹窗是模态阻塞的，期间 engine/Loop 功能线程若
-        // 仍运行会持续注入（fail-fast 语义；顺序：停机 → 落盘 → 还原 → 弹窗）
+        // 先停机再补发/交互 — 弹窗是模态阻塞的，期间 engine/Loop 功能线程
+        // 若仍运行会持续注入（fail-fast 语义）
         stop_flag.store(true, std::sync::atomic::Ordering::Release);
+        // 补发第一遍：必须先于模态 MessageBox；无登记路径 + 失败位重登记。
+        let _ = pressed::release_into(&send_ctx);
         // 崩溃现场落盘（best-effort — panic 路径绝不 panic 或弹二次错误）
         write_crash_log(&format!("{info}"), &log);
-        let _ = utils::thread_pin::restore();
+        // try_lock 版还原：持锁线程 panic 时不阻塞 hook（拿不到锁则跳过）
+        let _ = utils::thread_pin::restore_best_effort();
         let _ = utils::affinity::restore_all_affinity();
         show_message_box(
             "GI-Utils 错误",
@@ -1436,6 +1465,9 @@ fn install_panic_hook(
                 info
             ),
         );
+        // 第二遍：第一遍快照可能与其它线程 in-flight 的 press 交错；模态
+        // 弹窗给了收尾时间，exit 前再补扫残留位（含第一遍写失败重登记的位）。
+        let _ = pressed::release_into(&send_ctx);
         // fail-fast：unwind 语义下线程静默死亡会让 Loop 功能继续注入、
         // F12 失效（僵尸进程）
         std::process::exit(1);
@@ -1460,7 +1492,9 @@ panic: {}
         chrono_now(),
         summary
     );
-    for line in log.snapshot() {
+    // try_snapshot：非阻塞（WouldBlock → 日志段为空）— hook 里持锁线程
+    // 可能正是 panic 线程，阻塞式 lock 会死锁。
+    for line in log.try_snapshot().unwrap_or_default() {
         content.push_str(&line);
         content.push('\n');
     }
@@ -1583,21 +1617,24 @@ fn main() {
     // InterceptionContext::create 会 panic（interception/context.rs:20）。
     // 默认 hook 只写 stderr，而 windows_subsystem="windows" 无控制台 →
     // 用户只会看到「双击无反应」的静默退出。因此就地 catch_unwind：
-    // crash.log 落盘 + 弹窗 + exit(1)。
+    // crash.log 落盘 + 弹窗（--silent 跳过弹窗）+ exit(1)。
     // 此阶段无需还原亲和性/pin：进程级掩码随进程退出消失，thread_pin
     // 尚未施加，且尚无 Engine/功能线程被 spawn。
     let engine = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Engine::new())) {
         Ok(engine) => engine,
         Err(payload) => {
             let detail = panic_payload_message(payload.as_ref());
-            let msg = format!(
-                "引擎初始化失败（驱动未安装或未以管理员身份运行？）：
-
-{detail}"
-            );
+            let mut msg =
+                format!("引擎初始化失败（驱动未安装或未以管理员身份运行？）：\n\n{detail}");
+            // --silent（登录自启）跳过模态弹窗：只落盘，避免登录时卡一个对话框
+            if silent {
+                msg.push_str("\n\n--silent 启动：跳过弹窗，详情见 exe 旁 crash.log");
+            }
             // 先落盘再弹窗：模态弹窗期间用户强杀进程也不会丢崩溃现场
             write_crash_log(&msg, &log_collector);
-            show_message_box("GI-Utils 启动失败", &msg);
+            if !silent {
+                show_message_box("GI-Utils 启动失败", &msg);
+            }
             std::process::exit(1);
         }
     };
@@ -1605,11 +1642,11 @@ fn main() {
     let send_ctx = engine.send_context();
     let stop_flag = engine.stop_flag();
 
-    // panic hook 需持有 stop_flag（panic 时弹窗前置位停机 — 模态弹窗
-    // 阻塞期间 engine/Loop 功能线程不得继续注入）。安装晚于 Engine 创建：
-    // Engine 创建期的 panic 已由上方 catch_unwind 守卫处理（弹窗 + 落盘 +
-    // exit(1)）；hook 覆盖的是此后才存在的 Engine/GUI/功能线程。
-    install_panic_hook(log_collector.clone(), stop_flag.clone());
+    // panic hook 需持有 stop_flag 与 send_ctx：panic 时先停机、再补发挂起
+    // 合成键（模态弹窗期间系统不得停留在按下态），然后落盘/还原/弹窗。
+    // 安装晚于 Engine 创建：Engine 创建期的 panic 已由上方 catch_unwind 守卫
+    // 处理（落盘 + 弹窗 + exit(1)）；hook 覆盖此后才存在的线程。
+    install_panic_hook(log_collector.clone(), stop_flag.clone(), send_ctx.clone());
 
     // ── 4. 注册初始绑定 ─────────────────────────────────────
     let stop_func: Arc<dyn KeyFunction> = Arc::new(gi_utils::functions::stop::停止退出::new(
@@ -1782,6 +1819,7 @@ fn main() {
                 preloaded_icon.take(),
                 &stop_flag,
                 &key_bindings,
+                &send_ctx,
             );
         }
         // 启动错误（非 panic）— 完整关机后提示退出
@@ -1793,6 +1831,7 @@ fn main() {
                 preloaded_icon.take(),
                 &stop_flag,
                 &key_bindings,
+                &send_ctx,
             );
             let msg = e.to_string();
             show_message_box(
@@ -1840,12 +1879,16 @@ mod tests {
     }
 
     #[test]
-    fn payload_message_unknown_payload_falls_back() {
+    fn payload_message_unknown_payload_falls_back_with_type() {
         let p = payload(42u32);
         let msg = panic_payload_message(p.as_ref());
         assert!(
             msg.contains("未知 panic"),
             "unexpected fallback text: {msg}"
+        );
+        assert!(
+            msg.contains("payload 类型"),
+            "fallback should mention payload type, got: {msg}"
         );
     }
 

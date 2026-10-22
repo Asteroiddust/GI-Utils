@@ -82,7 +82,7 @@ threads. Mouse input passes through untouched.
 - Windows 10 1903+ / Windows 11, x64
 - **Interception kernel driver installed** (not bundled — see below)
 - Run the application **as administrator**
-- Rust **nightly** toolchain for building (tested on 1.100)
+- Rust **nightly** toolchain for building (tested on 1.100–1.101)
 
 ## Installing the Driver
 
@@ -118,7 +118,7 @@ Build configuration highlights:
   (keeps `Drop` guards and the crash-log panic hook working)
 - dev: `opt-level=0` for own code, deps at `opt-level=2` (smooth UI)
 
-Tests: `cargo test` — 63 unit tests + 2 doctests, no driver required.
+Tests: `cargo test` — 82 unit tests (78 lib + 4 GUI) + 2 doctests, no driver required.
 
 ## Running
 

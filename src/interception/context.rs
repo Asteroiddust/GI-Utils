@@ -13,6 +13,7 @@
 //! [`InterceptionContext`] 实现了 `Send` 但 **不** 实现 `Sync`。
 
 use crate::engine::event::InputEvent;
+use crate::interception::pressed;
 use crate::interception::protocol::{self, Device, InterceptionKeyStroke, KeyboardDevice};
 use std::marker::PhantomData;
 
@@ -99,8 +100,9 @@ impl InterceptionContext {
 /// Interception 驱动明确支持通过同一个句柄并发发送。
 ///
 /// 发送是尽力而为：失败不向上传播，由 protocol 层 `warn!` 落日志即失败
-/// 信号（底层 send_* 返回的实际写入数在此层有意不消费 — 注入失败无法
-/// 有意义地重试，驱动级故障靠日志诊断即可）。
+/// 信号。底层 send_* 返回的实际写入数只在 UP 事件上消费（写成功才清除
+/// panic 安全登记的挂起位，见 [`pressed`]）；DOWN 失败不重试（驱动级故障
+/// 靠日志诊断即可）。
 ///
 /// Thread-safe to share across threads. Exposes only send
 /// methods — the driver supports concurrent sends through one handle.
@@ -116,25 +118,55 @@ impl SendContext {
     }
 
     /// 发送一个 [`InputEvent`]，自动路由到正确的设备（键盘 0 / 鼠标 0）。
+    ///
+    /// 同时做 panic 安全登记：DOWN 先登记，UP 写成功才清除（见 [`pressed`]）—
+    /// panic hook 退出前据此补发挂起合成键。
     pub fn send_event(&self, event: &InputEvent) {
+        self.send_one(event);
+    }
+
+    /// 单个事件的共用发送实现（send_event / send_events 唯一出口）：
+    /// before_send → 发送（消费实写数）→ after_send。
+    fn send_one(&self, event: &InputEvent) {
+        pressed::before_send(event);
+        let written = self.send_raw(event);
+        pressed::after_send(event, written);
+    }
+
+    /// 发送单个事件但**不更新挂起登记**（panic / 正常关机补发专用）。
+    ///
+    /// 补发必须走本路径：若走 `send_event`，release 会经 `after_send` 清位 —
+    /// 可能误清「快照之后其它线程并发按下」的同键位（补发丢位根因）。返回
+    /// 实写条数（`Sleep` 返回 0）；调用方据此决定失败位是否重新登记。
+    pub(crate) fn send_untracked(&self, event: &InputEvent) -> usize {
+        self.send_raw(event)
+    }
+
+    /// 设备路由 + 驱动发送（**合成事件唯一出口**；`forward_keyboard` 是物理
+    /// 转发旁路，不在此列），返回实写条数。
+    fn send_raw(&self, event: &InputEvent) -> usize {
         match event {
             InputEvent::Keyboard { .. } => {
                 let stroke = event.to_key_stroke().expect("Keyboard 分支");
                 self.raw
-                    .send_keyboard(protocol::keyboard(0), std::slice::from_ref(&stroke));
+                    .send_keyboard(protocol::keyboard(0), std::slice::from_ref(&stroke))
             }
             InputEvent::Mouse { .. } => {
                 let stroke = event.to_mouse_stroke().expect("Mouse 分支");
                 self.raw
-                    .send_mouse(protocol::mouse(0), std::slice::from_ref(&stroke));
+                    .send_mouse(protocol::mouse(0), std::slice::from_ref(&stroke))
             }
-            InputEvent::Sleep { .. } => {}
+            InputEvent::Sleep { .. } => 0,
         }
     }
 
     /// 引擎转发用：整批转发接收到的键盘 stroke（一次 IOCTL_WRITE，
     /// 与批量接收对称 — review：逐条转发浪费读侧省下的系统调用，
     /// 且更易与功能线程的发送交错）。
+    ///
+    /// **不做 panic 登记**：转发的是真实按键（OS 已有物理状态），panic 补发
+    /// release 会与物理按住状态冲突。保持 `pub`：物理转发是引擎专用旁路
+    /// （非合成事件），不属于 `send_raw` 的合成事件出口。
     pub fn forward_keyboard(&self, device: KeyboardDevice, strokes: &[InterceptionKeyStroke]) {
         self.raw.send_keyboard(device, strokes);
     }
@@ -149,21 +181,7 @@ impl SendContext {
     /// （`segments` + `send_segment`），已删除，不再恢复。
     pub fn send_events(&self, events: &[InputEvent]) {
         for event in events {
-            match event {
-                InputEvent::Keyboard { .. } => {
-                    if let Some(stroke) = event.to_key_stroke() {
-                        self.raw
-                            .send_keyboard(protocol::keyboard(0), std::slice::from_ref(&stroke));
-                    }
-                }
-                InputEvent::Mouse { .. } => {
-                    if let Some(stroke) = event.to_mouse_stroke() {
-                        self.raw
-                            .send_mouse(protocol::mouse(0), std::slice::from_ref(&stroke));
-                    }
-                }
-                InputEvent::Sleep { .. } => {} // 无操作（Sleep 无线上表示，不发送）
-            }
+            self.send_one(event);
         }
     }
 }

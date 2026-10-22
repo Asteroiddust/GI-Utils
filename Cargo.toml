@@ -70,7 +70,8 @@ strip = true                  # 彻底剥离符号信息
 
 # unwind：Drop 防护体系依赖 unwinding 语义 — panic 时 ActiveGuard 等 Drop
 # 清理全部生效。GUI 渲染自愈已于 v1.7.0（wgpu）退役，不再有 catch_unwind
-# 重试路径。hook 在 abort 下也会执行，依赖 unwind 的是 Drop 防护。
+# 重试路径。hook 在 abort 下也会执行，依赖 unwind 的是 Drop 防护。启动失败
+# 守卫（catch_unwind 包 Engine::new）同样依赖 unwind — 若改 abort 会静默失效。
 # 相比 abort 增加几十 KB unwind 表 — 早期"砍 30KB"的决策已被 GUI 体积稀释。
 panic = "unwind"              
 debug = false                 # 关闭调试符号
