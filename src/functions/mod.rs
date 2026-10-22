@@ -3,7 +3,6 @@
 //! 每个子模块定义一个 struct 并实现 `KeyFunction` trait，
 //! 通过 `TriggerMode` (Once / Loop / Toggle) 控制执行方式。
 
-pub mod auto_clicker;
 pub mod ganyu_aim_cancel;
 pub mod ghost_walk;
 pub mod mavuika_double_cancel;
@@ -36,8 +35,9 @@ pub const GAME_PROCESS_NAMES: &[&str] = &[
 ];
 
 // ═══════════════════════════════════════════════════════════════════
-// 敲击节奏引擎 — 连点器 / SpamKey 共用（2026-09 抽取：此前两份复制
-// 各自维护同一语义，属项目出现过的"两处复制 → 修复漂移"风险面）
+// 敲击节奏引擎 — 供 SpamKey 使用（2026-09 抽取：此前两份复制各自维护
+// 同一语义，属项目出现过的"两处复制 → 修复漂移"风险面）。连点器已于
+// v1.10.0 改为 Timestamp 专用调度器，不再走本引擎。
 // ═══════════════════════════════════════════════════════════════════
 
 /// 一个敲击周期的发送计划（纯决策 — 可单测）。
@@ -69,8 +69,8 @@ pub(crate) fn click_plan(interval_ms: f64, hold_ms: f64) -> ClickPlan {
     }
 }
 
-/// 执行一个周期的敲击 — 连点器与 SpamKey 的**唯一**实现（v1/v2 归并语义
-/// 此前在两侧各有一份复制，修复只能靠人肉对齐）。
+/// 执行一个周期的敲击 — SpamKey 的**唯一**实现（v1/v2 归并语义此前在
+/// 两侧各有一份复制，修复只能靠人肉对齐；连点器现为 Timestamp 方案）。
 ///
 /// `down`/`up` 由调用方按目标设备构造（鼠标左键 / 任意键盘键）；参数每
 /// 周期读取；停止响应由 `delay_ms_interruptible` 的 ~100us 检查点承担。

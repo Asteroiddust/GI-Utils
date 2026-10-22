@@ -485,6 +485,31 @@ icon_path = "E:/Projects/Rust/GI-Utils/assets/icon.ico"
 font_path = ""
 "#;
 
+/// 旧配置名归一（v1.10.0）：时间轴版连点器成为唯一实现后，旧配置名
+/// "连点器（时间轴）" 归一到 "连点器"（旧 Serial 版同名绑定本就叫 "连点器"）。
+pub fn normalize_func_name(name: &str) -> &str {
+    if name == "连点器（时间轴）" {
+        "连点器"
+    } else {
+        name
+    }
+}
+
+/// 旧模板表迁移：别名模板并入规范名模板，并丢弃已移除的 debug_sample 槽。
+fn migrate_legacy_clicker_params(func_params: &mut FuncParams) {
+    if let Some(legacy) = func_params.remove("连点器（时间轴）") {
+        let canonical = func_params.entry("连点器".into()).or_default();
+        for (k, v) in legacy {
+            if k != "debug_sample" {
+                canonical.insert(k, v);
+            }
+        }
+    }
+    if let Some(params) = func_params.get_mut("连点器") {
+        params.remove("debug_sample");
+    }
+}
+
 /// 从指定路径加载配置（含功能参数模板表）— 文件不存在时就地生成默认配置。
 /// 校验仅键唯一（功能可绑多键，2026-08-22）。
 /// 返回 (绑定列表, 模板表) — 模板表供 GUI 在切换功能/新建行时套基线
@@ -510,7 +535,8 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
         .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
 
     let raw: RawConfig = toml::from_str(&content).map_err(|e| format!("invalid config: {}", e))?;
-    let func_params = raw.params.unwrap_or_default();
+    let mut func_params = raw.params.unwrap_or_default();
+    migrate_legacy_clicker_params(&mut func_params);
 
     let mut bindings = Vec::new();
     for (i, b) in raw.bindings.iter().enumerate() {
@@ -520,8 +546,9 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
         // 逐槽覆盖顶层 `[params.<功能名>]`（**功能参数模板/默认值** —
         // 同功能所有行共享的基线）。合成规则：模板提供基线，行内显式
         // 设置的槽覆盖之 → 每行 = 模板 + 行内差量。行内为空则纯模板。
-        let template = func_params.get(&b.func).cloned().unwrap_or_default();
-        let params = match b.params.clone() {
+        let func = normalize_func_name(&b.func).to_string();
+        let template = func_params.get(&func).cloned().unwrap_or_default();
+        let mut params = match b.params.clone() {
             Some(inline) if !inline.is_empty() => {
                 let mut merged = template;
                 for (k, v) in inline {
@@ -531,9 +558,13 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
             }
             _ => template,
         };
+        // 旧调试采样参数已移除（v1.10.0）：显式丢弃，避免未知参数报错。
+        if func == "连点器" {
+            params.remove("debug_sample");
+        }
         bindings.push(Binding {
             key,
-            func: b.func.clone(),
+            func,
             mode,
             params,
         });
@@ -654,7 +685,6 @@ pub fn list_function_names() -> Vec<&'static str> {
     vec![
         "停止退出",
         "连点器",
-        "连点器（时间轴）",
         "SpamKey",
         "快速拾取",
         "鬼畜走路",
@@ -682,12 +712,9 @@ pub fn create_function(
     send_ctx: Arc<SendContext>,
 ) -> Result<Arc<dyn KeyFunction>, String> {
     match name {
-        "连点器" => Ok(Arc::new(crate::functions::auto_clicker::连点器::new(
+        "连点器" => Ok(Arc::new(crate::functions::timeline_clicker::连点器::new(
             send_ctx,
         ))),
-        "连点器（时间轴）" => Ok(Arc::new(
-            crate::functions::timeline_clicker::连点器时间轴::new(send_ctx),
-        )),
         "SpamKey" => Ok(Arc::new(crate::functions::spam_key::SpamKey::new(send_ctx))),
         "快速拾取" => Ok(Arc::new(crate::functions::quick_pickup::快速拾取::new(
             send_ctx,
@@ -859,6 +886,50 @@ mode = "Loop"
             bindings[1].params.get("hold_ms").and_then(|v| v.as_float()),
             Some(0.0)
         );
+    }
+
+    /// v1.10.0 配置迁移：旧名"连点器（时间轴）"→"连点器"，
+    /// 旧模板并入规范名，debug_sample 槽（已移除的参数）被丢弃。
+    #[test]
+    fn legacy_timeline_clicker_name_and_debug_param_migrate() {
+        let path = tmp_dir("legacy-clicker").join("legacy.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[bindings]]
+key = "F13"
+func = "连点器（时间轴）"
+mode = "Toggle"
+
+[bindings.params]
+debug_sample = true
+hold_ms = 5.0
+
+[params."连点器（时间轴）"]
+interval_ms = 20.0
+debug_sample = true
+"#,
+        )
+        .unwrap();
+
+        let (bindings, templates) = load_full_from(&path).unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].func, "连点器");
+        assert!(!bindings[0].params.contains_key("debug_sample"));
+        assert_eq!(
+            bindings[0]
+                .params
+                .get("interval_ms")
+                .and_then(|v| v.as_float()),
+            Some(20.0)
+        );
+        assert_eq!(
+            bindings[0].params.get("hold_ms").and_then(|v| v.as_float()),
+            Some(5.0)
+        );
+        assert!(templates.contains_key("连点器"));
+        assert!(!templates.contains_key("连点器（时间轴）"));
+        assert!(!templates["连点器"].contains_key("debug_sample"));
     }
 }
 
