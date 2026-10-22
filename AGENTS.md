@@ -8,8 +8,8 @@
 > **维护规则**：改动行为、结构、配置格式或构建方式时，必须在同一次提交内同步本文档；
 > 文档与代码冲突时以代码为准，并当场修正文档。避免旧文档那种「修复被回滚、文档悄悄漂移」的第二次发生。
 >
-> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 91 单测
-> （lib 87 + GUI bin 4）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
+> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 93 单测
+> （lib 89 + GUI bin 4）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
 > 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理与 Phase 2 健壮性；**作者实机验证
 > 正常后发布 v1.7.7**（release 13,693,440 B，SHA256 `8CD60E65…FBF3`，构建源 `dd519fd`）。
@@ -207,6 +207,8 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 - GUI 面板：绑定表格（增删/改键/捕获/参数 ⚙）、Profile 下拉 + New/Save、功能参数面板、日志面板。
 - 修改 live-apply：Save/改键会 `clear_all` + 全量重注册；**参数**是例外——GUI 直写原子参数槽，
   下个周期生效，不重注册、不打断运行中的功能。
+- 日志面板 header 有 `Clear` 按钮：一次清空 GUI 已显示行与 `LogCollector` 尚未 drain 的行
+  （否则下一帧会把缓冲旧日志补回来）；`✕` 只隐藏面板。
 - 关闭窗口 = `ShowWindow(SW_HIDE)` 隐藏到托盘（不退出）；托盘菜单：显示窗口 / Profile 二级菜单
   （当前项打勾）/ 退出。F12「停止退出」= 置 `stop_flag` → 帧监视器 → `post_close` 走完整关机。
 - 托盘动作经 `mpsc<TrayAction>` 交给 `eframe::App::logic` 消费（隐藏态 `request_repaint_after(500ms)`）。
@@ -259,7 +261,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 ```bash
 # 日常（dev profile，增量秒级）—— 默认路径
 cargo check                 # 类型检查（0 warning 是当前基线）
-cargo test                  # 91 单测 + doctest
+cargo test                  # 93 单测 + doctest
 cargo build                 # target/debug/gi-utils-gui.exe（部署目录 gi-utils-dev.exe 指向它）
 cargo fmt --check           # 必须干净（2026-08-19 起全项目格式化）
 
@@ -382,8 +384,8 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
-- 测试：91 个单测（lib 87：timeline 23 / profile 13 / bindings 9 / protocol 6 / event 4 / delay 3 /
-  functions/mod 3 / thread_pin 2 / pressed 15 / timeline_clicker 9；GUI bin 4）+ 2 doctest（1 ignored）。**测试缺口**：
+- 测试：93 个单测（lib 89：timeline 23 / profile 13 / bindings 9 / protocol 6 / event 4 / delay 3 /
+  functions/mod 3 / thread_pin 2 / pressed 15 / timeline_clicker 9 / log_collector 2；GUI bin 4）+ 2 doctest（1 ignored）。**测试缺口**：
   SendContext 发送路径（需驱动）、thread_info NT 解析、optimize_game、log_collector；新增改动
   优先补可测纯函数。
 - 未跟踪分支 `bench-getpixel`（本地、未推送，2026-09-29，4 提交 +1362 行）：只含一次性诊断 bin
@@ -527,3 +529,5 @@ thread_pin try_lock 还原）；测试 63→82 单测（lib 78 + GUI bin 4）。
 与 Serial 版并行；测试 82→89 单测（lib 85 + GUI bin 4）。
 2026-10-23 v1.8.1：连点器（时间轴）增加仅调试用采样（`debug_sample`，默认关；每 100 个
 按下间隔输出目标/实际均值、min/max、max|偏差|）；测试 89→91 单测（lib 87 + GUI bin 4）。
+2026-10-23 v1.9.0：GUI 日志面板增加 `Clear` 按钮（清空显示行 + collector 缓冲；`✕` 仅隐藏）；
+测试 91→93 单测（lib 89 + GUI bin 4）。

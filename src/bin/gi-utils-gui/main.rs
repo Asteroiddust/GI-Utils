@@ -373,6 +373,16 @@ impl eframe::App for GuiApp {
                             if ui.small_button("✕").clicked() {
                                 self.log_visible = false;
                             }
+                            // Clear：同时清 GUI 已显示行与 collector 尚未 drain 的行，
+                            // 否则清空后下一帧会把缓冲里的旧日志重新补回来。
+                            if ui
+                                .small_button("Clear")
+                                .on_hover_text("清空日志（含尚未显示的行）")
+                                .clicked()
+                            {
+                                self.log_messages.clear();
+                                self.log_collector.clear();
+                            }
                         });
                     });
                     ui.separator();

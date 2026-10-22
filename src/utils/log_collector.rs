@@ -43,6 +43,13 @@ impl LogCollector {
         std::mem::take(&mut *buf)
     }
 
+    /// 清空已缓冲的日志行（GUI 日志面板 Clear 按钮）。
+    ///
+    /// 与 GUI 已显示的行一起清空后，面板保持空白；之后新写入的日志照常收集。
+    pub fn clear(&self) {
+        self.buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     /// 非阻塞快照（panic hook 崩溃落盘专用）：`try_lock` 拿不到锁
     /// （WouldBlock）返回 `None` — 调用方写空日志段，绝不等待：持锁线程
     /// 可能正是 panic 线程，阻塞式 `lock` 会永久死锁。毒化（Poisoned）时
@@ -92,5 +99,42 @@ impl io::Write for LogWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 不安装全局 subscriber，直接构造共享 buffer（install 每进程只能一次）。
+    fn collector() -> LogCollector {
+        LogCollector {
+            buf: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    #[test]
+    fn drain_takes_all_pending_lines() {
+        let c = collector();
+        c.buf
+            .lock()
+            .unwrap()
+            .extend(["first".to_string(), "second".to_string()]);
+        assert_eq!(c.drain(), vec!["first".to_string(), "second".to_string()]);
+        assert!(c.drain().is_empty());
+    }
+
+    #[test]
+    fn clear_discards_pending_lines() {
+        let c = collector();
+        c.buf
+            .lock()
+            .unwrap()
+            .extend(["old".to_string(), "older".to_string()]);
+        c.clear();
+        assert!(c.drain().is_empty());
+        // 清空后新日志仍可正常收集。
+        c.buf.lock().unwrap().push("new".to_string());
+        assert_eq!(c.drain(), vec!["new".to_string()]);
     }
 }
