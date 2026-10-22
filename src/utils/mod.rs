@@ -21,7 +21,7 @@ pub mod screen;
 pub mod thread_info;
 
 /// 热线程 pinning — 按进程名策略把游戏最重线程钉上金银核
-/// （候选域过滤 + Top-N + 新鲜度重映射，见 CLAUDE.md 设计决策表）。
+/// （候选域过滤 + Top-N + 新鲜度重映射，见 AGENTS.md 设计决策表）。
 pub mod thread_pin;
 
 /// 全局日志收集 — Global log collection via tracing subscriber (GUI log panel).

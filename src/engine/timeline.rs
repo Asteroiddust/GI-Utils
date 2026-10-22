@@ -20,7 +20,7 @@
 //! - [`RollingKeys`] / [`RollingPlayer`]：节奏滚动 — 按下序列按间隔无限
 //!   均匀推进，释放事件按下时动态排程，无静态表边界缝隙
 //!
-//! 设计依据见 CLAUDE.md 决策表「时间轴绝对时刻调度」诸条。
+//! 设计依据见 AGENTS.md 决策表「时间轴绝对时刻调度」诸条。
 //! The second event-orchestration paradigm alongside `EventSequence`:
 //! each event carries an absolute time relative to playback start, and
 //! multi-key holds can overlap naturally.

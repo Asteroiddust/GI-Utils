@@ -281,7 +281,7 @@ pub fn run_tray_thread(
     use windows::core::w;
 
     // GUI 侧线程：pin 12,13 — 与渲染线程同核但非时序关键；避免落上 14,15
-    // 与 REALTIME 输入线程争抢（CLAUDE.md 核心分离纪律）。
+    // 与 REALTIME 输入线程争抢（AGENTS.md 核心分离纪律）。
     let _ =
         gi_utils::utils::affinity::pin_current_thread(gi_utils::utils::affinity::GUI_CORES_MASK);
     // 消息泵降档至 class 地板：IDLE 在 REALTIME class = 16（非字面 1 —

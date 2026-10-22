@@ -206,7 +206,7 @@ fn find_game_process() -> Option<(u32, String)> {
 }
 
 /// FILETIME（100ns since 1601）→ 本地时刻 "HH:MM:SS.mmm"。
-/// UTC+8 手工偏移（本机写定 — 项目定位声明，见 CLAUDE.md）。
+/// UTC+8 手工偏移（本机写定 — 项目定位声明，见 AGENTS.md）。
 fn filetime_to_local(ft: u64) -> String {
     const EPOCH_DIFF_MS: u64 = 116_444_736_000_000; // 1601→1970（ms）
     const TZ_OFFSET_MS: u64 = 8 * 3600 * 1000;
