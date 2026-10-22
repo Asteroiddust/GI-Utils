@@ -8,8 +8,8 @@
 > **维护规则**：改动行为、结构、配置格式或构建方式时，必须在同一次提交内同步本文档；
 > 文档与代码冲突时以代码为准，并当场修正文档。避免旧文档那种「修复被回滚、文档悄悄漂移」的第二次发生。
 >
-> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 93 单测
-> （lib 88 + GUI bin 5）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
+> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 98 单测
+> （lib 93 + GUI bin 5）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
 > 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理、Phase 2 健壮性、连点器统一与
 > v1.10.1 依赖升级，并发布 v1.7.7/v1.10.1；随后修复静默启动图标、调整绑定表按钮，
@@ -175,6 +175,9 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 - **发送**：`SendContext` 是独立类型（`unsafe impl Sync`，可被多个功能线程同时持有/发送），
   `send_event`/`send_events` 当前为**逐事件一次 DeviceIoControl**（v1.7.6「取消切片」）。
   因此不同功能线程的发送**可以交错**，down/up 之间不保证驱动级原子。
+- **set_filter 失败 fail-fast（v1.10.5）**：`Engine::new` 对启动关键过滤器设置失败直接 panic
+  （启动守卫写 `crash.log` + 弹窗），不再静默「启动成功但捕获不到键」；协议层查询类 IOCTL 失败
+  保留 C 默认值语义但 `warn!`；空读 `ERROR_NO_MORE_ITEMS` 固定按 0 条处理。
 - **panic 挂起键兜底**：`src/interception/pressed.rs` 原子位图——每次注入前登记 DOWN、UP 写成功
   才清；panic hook 在停机后与 MessageBox 后各补发一遍 release；物理按键转发（`forward_keyboard`）
   不登记。
@@ -226,7 +229,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 |---|---|
 | **Key = ScanCode + is_e0** | 单一类型消除 PS/2 值冲突，E0 自动注入 state；键名映射在 `key.rs` |
 | **SendContext 独立类型** | 发送/接收分离，编译器禁止并发接收；发送侧可多线程共享 |
-| **用户层协议原生移植** | 替代预编译 `interception.lib`：类型化收发切片、栈分批零堆分配、`Result` 错误传播、`set_filter` 闭包、Drop 清理——**内核驱动协议未改** |
+| **用户层协议原生移植** | 替代预编译 `interception.lib`：类型化收发切片、栈分批零堆分配、`Result` 错误传播、`set_filter` 闭包、Drop 清理——**内核驱动协议未改**；IOCTL 码/结构 offset 有编译期 C 金标准断言与对照测试（v1.10.5） |
 | **wgpu + Vulkan 后端** | v1.7.0（2026-09-05）睡眠唤醒修复：WGL 上下文跨电源转换永久失效是 glow/glutin 的结构问题；wgpu surface 可逐帧重建。**渲染自愈体系随之退役**，panic hook 退化为纯 fail-fast |
 | **取消输出切片（no-slicing，v1.7.6，最终形态）** | `send_events` 逐事件一次 IOCTL（Sleep 空操作）；不同功能线程的发送可交错，连点 down/up 无驱动级原子性；性能影响可忽略（10ms 周期连点 ≈ 200 请求/s）。**2026-10-23 作者确认现行使用无问题，保留为最终形态，不再回退**；历史切片实现见 `f621bf3^`（仅存档）。`ClickPlan::AtomicBatch` 已更名 `BackToBack` 以消除「原子批」歧义 |
 | **stop_requested 正向语义** | `true`=停止，全项目无双重否定 |
@@ -264,7 +267,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 ```bash
 # 日常（dev profile，增量秒级）—— 默认路径
 cargo check                 # 类型检查（0 warning 是当前基线）
-cargo test                  # 93 单测 + doctest
+cargo test                  # 98 单测 + doctest
 cargo build                 # target/debug/gi-utils-gui.exe（部署目录 gi-utils-dev.exe 指向它）
 cargo fmt --check           # 必须干净（2026-08-19 起全项目格式化）
 
@@ -388,7 +391,7 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
-- 测试：93 个单测（lib 88：timeline 23 / profile 14 / bindings 9 / protocol 6 / event 4 / delay 3 /
+- 测试：98 个单测（lib 93：timeline 23 / profile 14 / bindings 9 / protocol 11 / event 4 / delay 3 /
   functions/mod 3 / thread_pin 2 / pressed 15 / timeline_clicker 7 / log_collector 2；GUI bin 5）+ 2 doctest（1 ignored）。**测试缺口**：
   SendContext 发送路径（需驱动）、thread_info NT 解析、optimize_game、log_collector；新增改动
   优先补可测纯函数。
@@ -551,3 +554,6 @@ eframe 0.37 依赖升级；部署符号链接随 release 产物更新。
 2026-10-23 v1.10.4：删除按钮由 `small_button` 改为普通 `button`，与同行 Set Key / ⚙ 高度对齐。
 2026-10-23 发版 v1.10.4：release 13,169,664 B（SHA256 B11D1C5A…CFA2），含 `--silent`
 图标修复、绑定表删除按钮 Del→✕ 与高度对齐；部署符号链接随 release 产物更新。
+2026-10-23 v1.10.5：协议层审查加固——IOCTL/结构 offset 编译期 C 金标准 + 5 个对照测试；
+`set_filter` 返回 `Result` 且启动失败 fail-fast；查询类 IOCTL 失败 `warn!`；
+`ERROR_NO_MORE_ITEMS` 空读固定返回 `Ok(0)`（防幻影 stroke）；测试 93→98（lib 93 + GUI bin 5）。

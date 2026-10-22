@@ -28,8 +28,9 @@
 //! - **批量接收**：一次 IOCTL_READ 可读 [`MAX_STROKES_PER_IOCTL`] 条
 //!   （协议本身支持 nstroke，引擎以 32 条批缓冲调用）
 //! - **宽字符 API**：CreateFileW（CreateFileA 是 Win9x 遗留惯例）
-//! - **错误传播**：CreateFile / CreateEvent / DeviceIoControl 失败返回
-//!   `windows::core::Result`（C 版全部忽略）；create 中途失败由 Drop 自动清理
+//! - **错误传播**：create/set_filter 等启动关键路径返回 `windows::core::Result`
+//!   （C 版忽略）；查询/优先级/硬件 ID 写失败 `warn!` 并保留 C 的默认值语义；
+//!   create 中途失败由 Drop 自动清理
 //! - **set_filter 接受 Rust 闭包**（C 版需 extern "C" 函数指针）
 //! - **Context RAII**：句柄由结构所有权 + Drop 管理，无手工释放路径
 
@@ -131,6 +132,17 @@ const IOCTL_SET_EVENT: u32 = ctl_code(0x22, 0x810, 0, 0);
 const IOCTL_WRITE: u32 = ctl_code(0x22, 0x820, 0, 0);
 const IOCTL_READ: u32 = ctl_code(0x22, 0x840, 0, 0);
 const IOCTL_GET_HARDWARE_ID: u32 = ctl_code(0x22, 0x880, 0, 0);
+
+// C 金标准（interception.c:7-14 的 CTL_CODE 公式 + 函数号）；改协议前必须
+// 同步核对：设备驱动按这些数值分派 IOCTL。
+const _: () = assert!(IOCTL_SET_PRECEDENCE == 0x0022_2004);
+const _: () = assert!(IOCTL_GET_PRECEDENCE == 0x0022_2008);
+const _: () = assert!(IOCTL_SET_FILTER == 0x0022_2010);
+const _: () = assert!(IOCTL_GET_FILTER == 0x0022_2020);
+const _: () = assert!(IOCTL_SET_EVENT == 0x0022_2040);
+const _: () = assert!(IOCTL_WRITE == 0x0022_2080);
+const _: () = assert!(IOCTL_READ == 0x0022_2100);
+const _: () = assert!(IOCTL_GET_HARDWARE_ID == 0x0022_2200);
 
 // ═══════════════════════════════════════════════════════════════════
 // 按键状态标志 — Key state flags（interception.h 同名常量）
@@ -287,6 +299,18 @@ const _: () = assert!(std::mem::align_of::<InterceptionKeyStroke>() == 4);
 const _: () = assert!(std::mem::size_of::<InterceptionMouseStroke>() == 20);
 const _: () = assert!(std::mem::align_of::<InterceptionMouseStroke>() == 4);
 
+// 字段偏移金标准（与 interception.h:143-158 一致）— 同宽字段重排会
+// 静默通过 size/align 断言与 roundtrip 测试，必须锁 offset。
+const _: () = assert!(std::mem::offset_of!(InterceptionKeyStroke, code) == 0);
+const _: () = assert!(std::mem::offset_of!(InterceptionKeyStroke, state) == 2);
+const _: () = assert!(std::mem::offset_of!(InterceptionKeyStroke, information) == 4);
+const _: () = assert!(std::mem::offset_of!(InterceptionMouseStroke, state) == 0);
+const _: () = assert!(std::mem::offset_of!(InterceptionMouseStroke, flags) == 2);
+const _: () = assert!(std::mem::offset_of!(InterceptionMouseStroke, rolling) == 4);
+const _: () = assert!(std::mem::offset_of!(InterceptionMouseStroke, x) == 8);
+const _: () = assert!(std::mem::offset_of!(InterceptionMouseStroke, y) == 12);
+const _: () = assert!(std::mem::offset_of!(InterceptionMouseStroke, information) == 16);
+
 // ═══════════════════════════════════════════════════════════════════
 // 驱动线上格式 — hidclass 输入报告（IOCTL 读写缓冲，WDK 文档结构）
 // ═══════════════════════════════════════════════════════════════════
@@ -320,6 +344,21 @@ const _: () = assert!(std::mem::size_of::<KeyboardInputData>() == 12);
 const _: () = assert!(std::mem::size_of::<MouseInputData>() == 24);
 const _: () = assert!(std::mem::align_of::<KeyboardInputData>() == 4);
 const _: () = assert!(std::mem::align_of::<MouseInputData>() == 4);
+
+// 线上结构字段偏移金标准（与 interception.c:16-35 一致）。
+const _: () = assert!(std::mem::offset_of!(KeyboardInputData, unit_id) == 0);
+const _: () = assert!(std::mem::offset_of!(KeyboardInputData, make_code) == 2);
+const _: () = assert!(std::mem::offset_of!(KeyboardInputData, flags) == 4);
+const _: () = assert!(std::mem::offset_of!(KeyboardInputData, reserved) == 6);
+const _: () = assert!(std::mem::offset_of!(KeyboardInputData, extra_information) == 8);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, unit_id) == 0);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, flags) == 2);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, button_flags) == 4);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, button_data) == 6);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, raw_buttons) == 8);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, last_x) == 12);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, last_y) == 16);
+const _: () = assert!(std::mem::offset_of!(MouseInputData, extra_information) == 20);
 
 // ── 双向字段映射（协议保真的纯函数 — 可无驱动单测）────────────
 
@@ -483,6 +522,18 @@ fn records_from_bytes(bytes_returned: u32, record_size: usize, capacity: usize) 
     (bytes_returned as usize / record_size).min(capacity)
 }
 
+/// IOCTL_READ 结果归一化：`ERROR_NO_MORE_ITEMS` 视为成功且**固定返回 0**。
+///
+/// `bytes_returned` 在 DeviceIoControl 失败时按 Win32 契约为未定义；若
+/// 直接沿用可能把零初始化 raw 缓冲映射成幻影 stroke（code=0/state=0）。
+fn normalize_read_result(result: Result<()>, bytes_returned: u32) -> Result<u32> {
+    match result {
+        Ok(()) => Ok(bytes_returned),
+        Err(e) if e.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
 /// IOCTL_READ 原语：读入 `out` 字节缓冲，返回实际读取字节数。
 ///
 /// ERROR_NO_MORE_ITEMS（0x80070103）是**队列已空的正常信号** — 驱动对
@@ -491,7 +542,7 @@ fn records_from_bytes(bytes_returned: u32, record_size: usize, capacity: usize) 
 /// 真错误才向上传播告警（实测：否则每次按键都刷一条 warn）。
 fn ioctl_read(handle: HANDLE, out: &mut [u8]) -> Result<u32> {
     let mut bytes_returned = 0u32;
-    unsafe {
+    let result = unsafe {
         DeviceIoControl(
             handle,
             IOCTL_READ,
@@ -502,15 +553,8 @@ fn ioctl_read(handle: HANDLE, out: &mut [u8]) -> Result<u32> {
             Some(&mut bytes_returned),
             None,
         )
-    }
-    .or_else(|e| {
-        if e.code() == HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0) {
-            Ok(())
-        } else {
-            Err(e)
-        }
-    })?;
-    Ok(bytes_returned)
+    };
+    normalize_read_result(result, bytes_returned)
 }
 
 /// IOCTL_WRITE 原语：写入 `input` 字节缓冲，返回实际写入字节数。
@@ -652,7 +696,10 @@ impl Context {
     // ── 过滤 / 优先级 / 硬件 ID ─────────────────────────────
 
     /// 为满足谓词的设备设置过滤器（对齐 `interception_set_filter`）。
-    pub fn set_filter(&self, predicate: impl Fn(Device) -> bool, filter: u16) {
+    ///
+    /// 启动关键路径：任一设备 SET_FILTER 失败立即返回 Err（原 C 版静默
+    /// 忽略，会让程序“启动成功但捕获不到任何键”）。
+    pub fn set_filter(&self, predicate: impl Fn(Device) -> bool, filter: u16) -> Result<()> {
         for (i, slot) in self.devices.iter().enumerate() {
             let device = if i < MAX_KEYBOARD {
                 Device::Keyboard(KeyboardDevice(i as u8))
@@ -661,7 +708,7 @@ impl Context {
             };
             if predicate(device) {
                 unsafe {
-                    let _ = DeviceIoControl(
+                    DeviceIoControl(
                         slot.handle,
                         IOCTL_SET_FILTER,
                         Some(&filter as *const u16 as *const c_void),
@@ -670,17 +717,18 @@ impl Context {
                         0,
                         None,
                         None,
-                    );
+                    )?;
                 }
             }
         }
+        Ok(())
     }
 
-    /// 读取指定设备的当前过滤器；失败返回 0（对齐 C 版失败语义）。
+    /// 读取指定设备的当前过滤器；失败告警并返回 0（对齐 C 版默认值语义）。
     pub fn get_filter(&self, device: Device) -> u16 {
         let mut filter = 0u16;
-        unsafe {
-            let _ = DeviceIoControl(
+        if let Err(e) = unsafe {
+            DeviceIoControl(
                 self.device_slot(device.number()).handle,
                 IOCTL_GET_FILTER,
                 None,
@@ -689,15 +737,21 @@ impl Context {
                 std::mem::size_of::<u16>() as u32,
                 None,
                 None,
+            )
+        } {
+            warn!(
+                "interception get_filter failed (device {}): {e}",
+                device.number()
             );
         }
         filter
     }
 
     /// 设置设备优先级（对齐 `interception_set_precedence`）。
+    /// 失败告警（C 版静默；优先级非启动关键路径，保留默认值语义）。
     pub fn set_precedence(&self, device: Device, precedence: i32) {
-        unsafe {
-            let _ = DeviceIoControl(
+        if let Err(e) = unsafe {
+            DeviceIoControl(
                 self.device_slot(device.number()).handle,
                 IOCTL_SET_PRECEDENCE,
                 Some(&precedence as *const i32 as *const c_void),
@@ -706,15 +760,20 @@ impl Context {
                 0,
                 None,
                 None,
+            )
+        } {
+            warn!(
+                "interception set_precedence failed (device {}): {e}",
+                device.number()
             );
         }
     }
 
-    /// 读取设备优先级；失败返回 0。
+    /// 读取设备优先级；失败告警并返回 0（对齐 C 版默认值语义）。
     pub fn get_precedence(&self, device: Device) -> i32 {
         let mut precedence = 0i32;
-        unsafe {
-            let _ = DeviceIoControl(
+        if let Err(e) = unsafe {
+            DeviceIoControl(
                 self.device_slot(device.number()).handle,
                 IOCTL_GET_PRECEDENCE,
                 None,
@@ -723,16 +782,21 @@ impl Context {
                 std::mem::size_of::<i32>() as u32,
                 None,
                 None,
+            )
+        } {
+            warn!(
+                "interception get_precedence failed (device {}): {e}",
+                device.number()
             );
         }
         precedence
     }
 
-    /// 读取设备硬件 ID 字符串，返回写入的字节数。
+    /// 读取设备硬件 ID 字符串，返回写入的字节数；失败告警并返回 0。
     pub fn get_hardware_id(&self, device: Device, buffer: &mut [u8]) -> u32 {
         let mut bytes_returned = 0u32;
-        unsafe {
-            let _ = DeviceIoControl(
+        if let Err(e) = unsafe {
+            DeviceIoControl(
                 self.device_slot(device.number()).handle,
                 IOCTL_GET_HARDWARE_ID,
                 None,
@@ -741,6 +805,11 @@ impl Context {
                 buffer.len() as u32,
                 Some(&mut bytes_returned),
                 None,
+            )
+        } {
+            warn!(
+                "interception get_hardware_id failed (device {}): {e}",
+                device.number()
             );
         }
         bytes_returned
@@ -884,5 +953,98 @@ mod tests {
         assert_eq!(records_from_bytes(12 * 5, 12, 32), 5);
         assert_eq!(records_from_bytes(0, 12, 32), 0);
         assert_eq!(records_from_bytes(11, 12, 32), 0); // 非整条字节忽略
+    }
+
+    /// C 金标准：8 个 IOCTL 码值（interception.c:7-14 的 CTL_CODE 公式）。
+    #[test]
+    fn ioctl_codes_match_c_golden() {
+        assert_eq!(IOCTL_SET_PRECEDENCE, 0x0022_2004);
+        assert_eq!(IOCTL_GET_PRECEDENCE, 0x0022_2008);
+        assert_eq!(IOCTL_SET_FILTER, 0x0022_2010);
+        assert_eq!(IOCTL_GET_FILTER, 0x0022_2020);
+        assert_eq!(IOCTL_SET_EVENT, 0x0022_2040);
+        assert_eq!(IOCTL_WRITE, 0x0022_2080);
+        assert_eq!(IOCTL_READ, 0x0022_2100);
+        assert_eq!(IOCTL_GET_HARDWARE_ID, 0x0022_2200);
+    }
+
+    /// C 金标准：状态/过滤器常量（interception.h:54-141）。
+    #[test]
+    fn filter_constants_match_c_golden() {
+        assert_eq!(INTERCEPTION_KEY_DOWN, 0x00);
+        assert_eq!(INTERCEPTION_KEY_UP, 0x01);
+        assert_eq!(INTERCEPTION_KEY_E0, 0x02);
+        assert_eq!(INTERCEPTION_KEY_E1, 0x04);
+        assert_eq!(INTERCEPTION_FILTER_KEY_DOWN, 0x01);
+        assert_eq!(INTERCEPTION_FILTER_KEY_UP, 0x02);
+        assert_eq!(INTERCEPTION_FILTER_KEY_E0, 0x04);
+        assert_eq!(INTERCEPTION_FILTER_KEY_E1, 0x08);
+        assert_eq!(INTERCEPTION_FILTER_MOUSE_ALL, 0xFFFF);
+        assert_eq!(INTERCEPTION_MOUSE_BUTTON_5_UP, 0x200);
+        assert_eq!(INTERCEPTION_MOUSE_WHEEL, 0x400);
+        assert_eq!(INTERCEPTION_MOUSE_HWHEEL, 0x800);
+        assert_eq!(INTERCEPTION_FILTER_MOUSE_MOVE, 0x1000);
+    }
+
+    /// 字段 offset 金标准（与 interception.h / interception.c 布局对照）。
+    #[test]
+    fn struct_offsets_match_c_golden() {
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(InterceptionKeyStroke, code), 0);
+        assert_eq!(offset_of!(InterceptionKeyStroke, state), 2);
+        assert_eq!(offset_of!(InterceptionKeyStroke, information), 4);
+        assert_eq!(offset_of!(InterceptionMouseStroke, state), 0);
+        assert_eq!(offset_of!(InterceptionMouseStroke, flags), 2);
+        assert_eq!(offset_of!(InterceptionMouseStroke, rolling), 4);
+        assert_eq!(offset_of!(InterceptionMouseStroke, x), 8);
+        assert_eq!(offset_of!(InterceptionMouseStroke, y), 12);
+        assert_eq!(offset_of!(InterceptionMouseStroke, information), 16);
+        assert_eq!(offset_of!(KeyboardInputData, unit_id), 0);
+        assert_eq!(offset_of!(KeyboardInputData, extra_information), 8);
+        assert_eq!(offset_of!(MouseInputData, raw_buttons), 8);
+        assert_eq!(offset_of!(MouseInputData, last_x), 12);
+        assert_eq!(offset_of!(MouseInputData, extra_information), 20);
+    }
+
+    /// 非对称字段映射：同宽字段互换时 roundtrip 也会通过，必须逐字段断言。
+    #[test]
+    fn field_mapping_is_not_accidentally_symmetric() {
+        let ks = InterceptionKeyStroke {
+            code: 0x1122,
+            state: 0x3344,
+            information: 0x5566_7788,
+        };
+        let raw: KeyboardInputData = ks.into();
+        assert_eq!(raw.make_code, 0x1122);
+        assert_eq!(raw.flags, 0x3344);
+        assert_eq!(raw.extra_information, 0x5566_7788);
+        assert_eq!(InterceptionKeyStroke::from(raw), ks);
+
+        let ms = InterceptionMouseStroke {
+            state: 0x0102,
+            flags: 0x0304,
+            rolling: -0x1234,
+            x: 0x1122_3344,
+            y: -0x5566_7788,
+            information: 0x1234_5678,
+        };
+        let raw: MouseInputData = ms.into();
+        assert_eq!(raw.button_flags, 0x0102);
+        assert_eq!(raw.flags, 0x0304);
+        assert_eq!(raw.button_data, (-0x1234i16) as u16);
+        assert_eq!(raw.last_x, 0x1122_3344);
+        assert_eq!(raw.last_y, -0x5566_7788);
+        assert_eq!(InterceptionMouseStroke::from(raw), ms);
+    }
+
+    /// `ERROR_NO_MORE_ITEMS` 必须归一为 Ok(0)，不得沿用未定义的 bytes_returned。
+    #[test]
+    fn empty_read_normalizes_to_zero() {
+        let no_more =
+            windows::core::Error::from_hresult(HRESULT::from_win32(ERROR_NO_MORE_ITEMS.0));
+        assert_eq!(normalize_read_result(Err(no_more), 12).unwrap(), 0);
+        let other = windows::core::Error::from_hresult(HRESULT::from_win32(5));
+        assert!(normalize_read_result(Err(other), 12).is_err());
+        assert_eq!(normalize_read_result(Ok(()), 12).unwrap(), 12);
     }
 }

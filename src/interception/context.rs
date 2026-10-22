@@ -71,8 +71,15 @@ impl InterceptionContext {
     }
 
     /// 设置设备过滤器（谓词为 Rust 闭包，替代 C 版 extern "C" 函数指针）。
-    pub fn set_filter(&self, predicate: impl Fn(Device) -> bool, filter: u16) {
-        self.raw.set_filter(predicate, filter);
+    ///
+    /// 返回 `Err` 表示至少一个目标设备的 SET_FILTER 失败；启动路径必须处理
+    /// （否则会“启动成功但捕获不到任何键”）。
+    pub fn set_filter(
+        &self,
+        predicate: impl Fn(Device) -> bool,
+        filter: u16,
+    ) -> windows::core::Result<()> {
+        self.raw.set_filter(predicate, filter)
     }
 
     /// 从设备批量接收键盘输入，返回实际读到的前缀切片（防误用 API —
@@ -96,7 +103,7 @@ impl InterceptionContext {
 
 /// 只发送的 Interception 上下文，可在线程间安全共享。
 ///
-/// 仅暴露 `send_event()` 与 `forward_*` 方法。
+/// 仅暴露 `send_event()`/`send_events()` 与 `forward_*` 方法。
 /// Interception 驱动明确支持通过同一个句柄并发发送。
 ///
 /// 发送是尽力而为：失败不向上传播，由 protocol 层 `warn!` 落日志即失败

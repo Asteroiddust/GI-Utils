@@ -36,8 +36,12 @@ impl Engine {
         let recv_ctx = InterceptionContext::create();
         let send_ctx = Arc::new(SendContext::create());
 
-        // Set keyboard filter on the receive context: capture all key events
-        recv_ctx.set_filter(Device::is_keyboard, INTERCEPTION_FILTER_KEY_ALL);
+        // Set keyboard filter on the receive context: capture all key events.
+        // 启动关键路径：filter 失败必须 fail-fast（否则启动成功但收不到按键）。
+        // 本函数在 main 的 catch_unwind 启动守卫内调用 → 失败会落 crash.log + 弹窗。
+        recv_ctx
+            .set_filter(Device::is_keyboard, INTERCEPTION_FILTER_KEY_ALL)
+            .unwrap_or_else(|e| panic!("设置键盘过滤器失败（驱动未安装/无权限？）: {e}"));
 
         Self {
             recv_ctx,
