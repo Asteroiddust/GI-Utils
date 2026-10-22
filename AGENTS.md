@@ -8,8 +8,8 @@
 > **维护规则**：改动行为、结构、配置格式或构建方式时，必须在同一次提交内同步本文档；
 > 文档与代码冲突时以代码为准，并当场修正文档。避免旧文档那种「修复被回滚、文档悄悄漂移」的第二次发生。
 >
-> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 89 单测
-> （lib 85 + GUI bin 4）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
+> **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 91 单测
+> （lib 87 + GUI bin 4）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
 > 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理与 Phase 2 健壮性；**作者实机验证
 > 正常后发布 v1.7.7**（release 13,693,440 B，SHA256 `8CD60E65…FBF3`，构建源 `dd519fd`）。
@@ -242,7 +242,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 | **锁序 bindings → pending_joins** | 全部路径同序，无嵌套反转 |
 | **托盘图标 / exe 图标 / WM_SETICON** | `[gui] icon_path` 指定 .ico（失败回退程序生成蓝 G）；build.rs 嵌入 exe 图标；托盘线程找到主窗口后用同一 HICON 覆盖任务栏/标题栏/Alt-Tab |
 | **托盘动作走 App::logic** | 隐藏态 500ms 周期唤醒；Exit 分支另有 `post_close` 兜底。实机验证通过（2026-09-20），机制细节未单独测量 |
-| **时间轴连点器** | `timeline_clicker.rs`：Timestamp 范式鼠标左键连点，`next_down` 绝对 TSC 网格（+interval）推进、释放独立排程；按下间隔严格锚定 interval（发送抖动 µs 级），卡顿越过下一拍重锚（错过即弃、不突发）；`hold` 钳到 `[0, interval]`、hold==interval 时先补发上一拍 release；等待期 ≤1ms 轮询 interval，缩短时立即重锚下一拍；推荐 Toggle/Loop，Once 不适用 |
+| **时间轴连点器** | `timeline_clicker.rs`：Timestamp 范式鼠标左键连点，`next_down` 绝对 TSC 网格（+interval）推进、释放独立排程；按下间隔严格锚定 interval（发送抖动 µs 级），卡顿越过下一拍重锚（错过即弃、不突发）；`hold` 钳到 `[0, interval]`、hold==interval 时先补发上一拍 release；等待期 ≤1ms 轮询 interval，缩短时立即重锚下一拍；`debug_sample`（Bool 默认关）每 100 个间隔输出一次统计（仅调试）；推荐 Toggle/Loop，Once 不适用 |
 | **敲击节奏引擎共用** | `functions/mod.rs`：`click_plan`（纯决策）+ `click_rhythm`（唯一执行）——连点器与 SpamKey 此前各一份复制（项目典型「两处复制→修复漂移」风险面），2026-09-20 抽取；`hold` 钳到 `[0, interval]` |
 | **wait_until_interruptible 单次 TSC 读** | 到期判定与检查点复用同一读数；本轮循环是 Loop/时间轴热路径，实测每轮 65→61 周期（固定窗口自旋 +7%，6/6 轮一致）；最坏晚一轮（~15ns）触发 stop 检查 |
 | **线程级核心分离** | 进程掩码 12-15；GUI 12,13 LOWEST；输入/功能 14,15 REALTIME 24；托盘 16 |
@@ -259,7 +259,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 ```bash
 # 日常（dev profile，增量秒级）—— 默认路径
 cargo check                 # 类型检查（0 warning 是当前基线）
-cargo test                  # 89 单测 + doctest
+cargo test                  # 91 单测 + doctest
 cargo build                 # target/debug/gi-utils-gui.exe（部署目录 gi-utils-dev.exe 指向它）
 cargo fmt --check           # 必须干净（2026-08-19 起全项目格式化）
 
@@ -351,7 +351,7 @@ font_path = ""                                            # 留空回退系统 C
 |---|---|---|
 | 停止退出 | Once | 置 engine `stop_flag` → 完整关机；**不是** `create_function` 分支（main 特判，注入 stop_flag） |
 | 连点器 | Loop | 鼠标左键；`interval_ms`(1–10000, 默认10) / `hold_ms`(0–interval, 默认0)；Serial |
-| 连点器（时间轴） | Loop / Toggle（推荐 Toggle） | 鼠标左键；`interval_ms` / `hold_ms`；Timestamp 绝对 TSC 网格——按下间隔严格 = interval（无累计漂移、卡顿即弃不追拍）；与 Serial 连点器并行 |
+| 连点器（时间轴） | Loop / Toggle（推荐 Toggle） | 鼠标左键；`interval_ms` / `hold_ms` / `debug_sample`（Bool 默认 false，每 100 次输出间隔统计）；Timestamp 绝对 TSC 网格——按下间隔严格 = interval（无累计漂移、卡顿即弃不追拍）；与 Serial 连点器并行 |
 | SpamKey | Loop | 任意键；`key`(打包 Int) / `interval_ms`(默认50) / `hold_ms`；Serial |
 | 快速拾取 | Loop | F + 滚轮下拉；Serial |
 | 鬼畜走路 | Loop | WASD 交错短按；**RollingKeys 时间轴** |
@@ -382,8 +382,8 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
-- 测试：89 个单测（lib 85：timeline 23 / profile 13 / bindings 9 / protocol 6 / event 4 / delay 3 /
-  functions/mod 3 / thread_pin 2 / pressed 15 / timeline_clicker 7；GUI bin 4）+ 2 doctest（1 ignored）。**测试缺口**：
+- 测试：91 个单测（lib 87：timeline 23 / profile 13 / bindings 9 / protocol 6 / event 4 / delay 3 /
+  functions/mod 3 / thread_pin 2 / pressed 15 / timeline_clicker 9；GUI bin 4）+ 2 doctest（1 ignored）。**测试缺口**：
   SendContext 发送路径（需驱动）、thread_info NT 解析、optimize_game、log_collector；新增改动
   优先补可测纯函数。
 - 未跟踪分支 `bench-getpixel`（本地、未推送，2026-09-29，4 提交 +1362 行）：只含一次性诊断 bin
@@ -525,3 +525,5 @@ thread_pin try_lock 还原）；测试 63→82 单测（lib 78 + GUI bin 4）。
 2026-10-23 发版 v1.7.7：作者实机验证正常；release 13,693,440 B（SHA256 8CD60E65…FBF3）。
 2026-10-23 新增连点器（时间轴）：Timestamp 绝对 TSC 网格（按下间隔严格 = interval），
 与 Serial 版并行；测试 82→89 单测（lib 85 + GUI bin 4）。
+2026-10-23 v1.8.1：连点器（时间轴）增加仅调试用采样（`debug_sample`，默认关；每 100 个
+按下间隔输出目标/实际均值、min/max、max|偏差|）；测试 89→91 单测（lib 87 + GUI bin 4）。

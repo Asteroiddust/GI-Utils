@@ -26,6 +26,12 @@
 //! 每次按下前读取参数快照；等待期间每 ≤1ms 复检一次 **interval**，缩短间隔会在
 //! ≤1ms 内重新锚定下一拍（不沿用旧间隔的远期截止时刻）。参数由 GUI 直写原子槽，
 //! 不重启线程。
+//!
+//! # 调试采样（仅验证用）
+//!
+//! Bool 参数 **debug_sample**（默认 false）：开启后每累计 100 个按下间隔输出一行
+//! 统计到 GUI 日志面板——目标均值 / 实际均值 / 最小 / 最大 / 最大绝对偏差（µs），
+//! 停止时输出收尾统计。关闭时热路径只多一次 Bool 读取，不做任何统计。
 
 use crate::engine::bindings::{KeyFunction, ParamSpec, ParamValues};
 use crate::engine::event::InputEvent;
@@ -33,11 +39,13 @@ use crate::interception::SendContext;
 use crate::utils::delay;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tracing::info;
 
-/// 参数声明 — 索引即槽位（interval=0，hold=1）。
+/// 参数声明 — 索引即槽位（interval=0，hold=1，debug_sample=2）。
 const SPEC: &[ParamSpec] = &[
     ParamSpec::float("interval_ms", 10.0, 1.0, 10_000.0, 0.5),
     ParamSpec::float("hold_ms", 0.0, 0.0, 10_000.0, 0.5),
+    ParamSpec::boolean("debug_sample", false),
 ];
 
 /// 时间轴连点器 — Timestamp 范式的鼠标左键连点。
@@ -67,12 +75,18 @@ impl KeyFunction for 连点器时间轴 {
         let mut scheduled_interval_ticks = 0u64;
         // 按住释放的绝对截止时刻（hold=0 时不排队，按下后立即释放）。
         let mut pending_up: Option<u64> = None;
+        // 调试采样：上一次按下 TSC 与窗口统计（debug_sample 关闭时仅一次 Bool 读取）。
+        let mut last_down_tsc: Option<u64> = None;
+        let mut sample = IntervalSample::default();
 
         loop {
             // 0. 停止优先：先补发未释放的按下，再退出（防卡鼠标左键）。
             if stop_requested.load(Ordering::Acquire) {
                 if pending_up.take().is_some() {
                     self.send_ctx.send_event(&InputEvent::left_up());
+                }
+                if read_debug(&self.params) && sample.gaps > 0 {
+                    sample.log("收尾");
                 }
                 return;
             }
@@ -110,12 +124,25 @@ impl KeyFunction for 连点器时间轴 {
                     self.send_ctx.send_event(&InputEvent::left_up());
                 }
 
+                let debug = read_debug(&self.params);
+                let down_tsc = delay::tsc_now();
                 self.send_ctx.send_event(&InputEvent::left_down());
                 let hold_ticks = delay::ms_to_ticks(hold);
                 if hold_ticks == 0 {
                     self.send_ctx.send_event(&InputEvent::left_up());
                 } else {
                     pending_up = Some(delay::tsc_now().saturating_add(hold_ticks));
+                }
+
+                // 调试采样：记录本次按下与上一次按下的实际 TSC 间隔。
+                if debug {
+                    if let Some(prev) = last_down_tsc {
+                        sample.record(down_tsc.saturating_sub(prev), interval_ticks);
+                    }
+                    if sample.gaps >= SAMPLE_WINDOW {
+                        sample.log("周期");
+                    }
+                    last_down_tsc = Some(down_tsc);
                 }
 
                 next_down = plan.next_down;
@@ -157,6 +184,76 @@ impl KeyFunction for 连点器时间轴 {
 
 /// 等待期间参数复检窗口（毫秒）：缩短 interval 后最迟这么久重锚下一拍。
 const PARAM_POLL_MS: f64 = 1.0;
+
+/// 调试采样窗口：累计这么多个按下间隔后输出一次统计。
+const SAMPLE_WINDOW: u64 = 100;
+
+/// 按下间隔采样窗口（纯统计，可单测）。
+///
+/// `sum_expected_ticks` 为每个间隔对应的计划间隔之和（参数变更时逐拍取当时的
+/// `interval_ticks`），`max_abs_dev_ticks` 为实际间隔与计划间隔的最大绝对偏差。
+#[derive(Debug, Default)]
+struct IntervalSample {
+    gaps: u64,
+    sum_ticks: u64,
+    sum_expected_ticks: u64,
+    min_ticks: u64,
+    max_ticks: u64,
+    max_abs_dev_ticks: u64,
+}
+
+impl IntervalSample {
+    fn record(&mut self, gap_ticks: u64, expected_ticks: u64) {
+        if self.gaps == 0 {
+            self.min_ticks = gap_ticks;
+            self.max_ticks = gap_ticks;
+        } else {
+            self.min_ticks = self.min_ticks.min(gap_ticks);
+            self.max_ticks = self.max_ticks.max(gap_ticks);
+        }
+        self.gaps += 1;
+        self.sum_ticks = self.sum_ticks.saturating_add(gap_ticks);
+        self.sum_expected_ticks = self.sum_expected_ticks.saturating_add(expected_ticks);
+        self.max_abs_dev_ticks = self
+            .max_abs_dev_ticks
+            .max(gap_ticks.abs_diff(expected_ticks));
+    }
+
+    /// 输出一行统计并清空窗口。`tag` 区分周期窗口与停止收尾。
+    fn log(&mut self, tag: &str) {
+        if self.gaps == 0 {
+            return;
+        }
+        let per_ms = delay::ms_to_ticks(1.0) as f64;
+        let to_us = |ticks: u64| {
+            if per_ms > 0.0 {
+                ticks as f64 * 1000.0 / per_ms
+            } else {
+                0.0
+            }
+        };
+        let count = self.gaps as f64;
+        let mean_actual_ms = to_us(self.sum_ticks) / count / 1000.0;
+        let mean_expected_ms = to_us(self.sum_expected_ticks) / count / 1000.0;
+        info!(
+            "时间轴连点器[{}]: {} 次按下 | 目标均值 {:.3}ms | 实际均值 {:.3}ms | min {:.3}ms | max {:.3}ms | max|偏差| {:.1}µs",
+            tag,
+            self.gaps,
+            mean_expected_ms,
+            mean_actual_ms,
+            to_us(self.min_ticks) / 1000.0,
+            to_us(self.max_ticks) / 1000.0,
+            to_us(self.max_abs_dev_ticks),
+        );
+        *self = Self::default();
+    }
+}
+
+/// debug_sample 开关（索引 2）。
+#[inline]
+fn read_debug(params: &ParamValues) -> bool {
+    params.get_bool(2)
+}
 
 /// 一次按下的决策结果（纯函数输出，便于单测顺序与网格逻辑）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +398,35 @@ mod tests {
         assert_eq!(read_hold(&params, 10.0), 10.0);
         params.set_f64(1, 4.0);
         assert_eq!(read_hold(&params, 10.0), 4.0);
+    }
+
+    #[test]
+    fn interval_sample_aggregates_and_reports_deviation() {
+        let mut sample = IntervalSample::default();
+        sample.record(1000, 1000);
+        sample.record(1200, 1000);
+        sample.record(800, 1000);
+        assert_eq!(sample.gaps, 3);
+        assert_eq!(sample.sum_ticks, 3000);
+        assert_eq!(sample.sum_expected_ticks, 3000);
+        assert_eq!(sample.min_ticks, 800);
+        assert_eq!(sample.max_ticks, 1200);
+        // 双向偏差都取绝对值：|1200-1000| 与 |800-1000| 均为 200。
+        assert_eq!(sample.max_abs_dev_ticks, 200);
+    }
+
+    #[test]
+    fn interval_sample_first_record_initializes_min_max() {
+        let mut sample = IntervalSample::default();
+        sample.record(500, 700);
+        assert_eq!(sample.gaps, 1);
+        assert_eq!(sample.min_ticks, 500);
+        assert_eq!(sample.max_ticks, 500);
+        assert_eq!(sample.max_abs_dev_ticks, 200);
+        sample.record(600, 500);
+        assert_eq!(sample.min_ticks, 500);
+        assert_eq!(sample.max_ticks, 600);
+        assert_eq!(sample.max_abs_dev_ticks, 200);
     }
 
     #[test]

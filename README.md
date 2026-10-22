@@ -118,7 +118,7 @@ Build configuration highlights:
   (keeps `Drop` guards and the crash-log panic hook working)
 - dev: `opt-level=0` for own code, deps at `opt-level=2` (smooth UI)
 
-Tests: `cargo test` — 89 unit tests (85 lib + 4 GUI) + 2 doctests, no driver required.
+Tests: `cargo test` — 91 unit tests (87 lib + 4 GUI) + 2 doctests, no driver required.
 
 ## Running
 
