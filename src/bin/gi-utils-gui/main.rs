@@ -540,7 +540,8 @@ impl GuiApp {
                                     ui.add_enabled(false, egui::Button::new("⚙"))
                                         .on_disabled_hover_text("此功能无参数");
                                 }
-                                if ui.small_button("Del").clicked() {
+                                if ui.small_button("✕").on_hover_text("删除该绑定").clicked()
+                                {
                                     remove_idx = Some(i);
                                 }
                             });
