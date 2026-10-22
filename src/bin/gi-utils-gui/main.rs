@@ -255,11 +255,12 @@ impl eframe::App for GuiApp {
             }
         }
 
-        // -0.6. 窗口图标重设（任务栏/标题栏/Alt-Tab）：恢复轮的托盘线程
-        // 可能把 WM_SETICON 发到了幽灵窗口（延迟销毁）— 本 app 的帧循环
-        // 运行于新窗口存续期（幽灵已在事件循环启动时销毁），从首帧起重试
-        // 设置直到 ~2s 截止，保证真窗口拿到图标。
-        if self.window_icon.is_some() && !self.icon_applied {
+        // -0.6. 窗口图标重设（任务栏/标题栏/Alt-Tab）：从窗口可见的首帧起
+        // 重试 ~2s，保证真窗口拿到图标。**隐藏态不得计时**：`--silent` 启动
+        // 首帧即隐藏，若此处照常启动 deadline，2s 会在用户从托盘唤出前过期，
+        // 唤出后直接置 icon_applied=true 而图标从未设置（v1.10.2 修复）。
+        let hidden = self.hidden.load(Ordering::Acquire);
+        if icon_retry_active(hidden, self.window_icon.is_some(), self.icon_applied) {
             let deadline = *self.icon_apply_deadline.get_or_insert_with(|| {
                 std::time::Instant::now() + std::time::Duration::from_secs(2)
             });
@@ -271,8 +272,16 @@ impl eframe::App for GuiApp {
                     window_ops::set_window_icon(hwnd, icon);
                 }
             } else {
+                // 截止前最后再试一次（避免窗口可见前的重试窗口空转），随后收尾。
+                if let Some(hwnd) = window_ops::find_main_window() {
+                    let icon = self.window_icon.as_ref().unwrap().raw();
+                    window_ops::set_window_icon(hwnd, icon);
+                }
                 self.icon_applied = true;
             }
+        } else if hidden && !self.icon_applied {
+            // 隐藏态暂停计时：唤出后重新获得完整 2s 重试窗口。
+            self.icon_apply_deadline = None;
         }
 
         // -0.5. 窗口关闭 → 隐藏到托盘（除非托盘菜单或 F12 触发退出）
@@ -809,6 +818,10 @@ impl GuiApp {
         match self.tray_rx.try_recv() {
             Ok(TrayAction::Show) => {
                 self.hidden.store(false, Ordering::Release);
+                // 每次唤出都重新应用图标：静默启动期间图标重试被隐藏态暂停，
+                // 此处重置 deadline/applied，令可见首帧重新走 ~2s 重试窗口。
+                self.icon_applied = false;
+                self.icon_apply_deadline = None;
                 // 单次 show_and_activate 可能打在幽灵窗口上（L3）— 记录
                 // 截止时刻，由 deadline 块每帧重试直到 ~2s（review #5）
                 self.show_until =
@@ -1858,13 +1871,21 @@ fn main() {
     }
 }
 
+/// 图标重试门控：仅「窗口可见 + 有自定义图标 + 尚未应用」才启动/继续
+/// 2s 重试。隐藏态（`--silent` 首帧即隐藏 / 托盘隐藏）不计时 — 否则 deadline
+/// 会在用户唤出窗口前过期，唤出后直接标记 applied 而图标从未设置。
+#[inline]
+fn icon_retry_active(hidden: bool, has_icon: bool, applied: bool) -> bool {
+    !hidden && has_icon && !applied
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // 单元测试 — 纯函数，不依赖驱动 / Windows 窗口环境
 // ═══════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
-    use super::panic_payload_message;
+    use super::{icon_retry_active, panic_payload_message};
 
     /// 构造与 catch_unwind Err 相同的 payload 形态。
     fn payload<T: std::any::Any + Send>(v: T) -> Box<dyn std::any::Any + Send> {
@@ -1907,5 +1928,16 @@ mod tests {
     fn payload_message_extracts_from_catch_unwind() {
         let err = std::panic::catch_unwind(|| panic!("引擎 panic 测试")).unwrap_err();
         assert_eq!(panic_payload_message(err.as_ref()), "引擎 panic 测试");
+    }
+
+    /// `--silent` 启动回归：隐藏态不得启动/继续图标重试计时，否则唤出后
+    /// deadline 已过期、icon_applied 被误置 true（任务栏/标题图标回落默认）。
+    #[test]
+    fn icon_retry_gated_off_while_hidden() {
+        assert!(!icon_retry_active(true, true, false));
+        assert!(!icon_retry_active(true, false, false));
+        assert!(icon_retry_active(false, true, false));
+        assert!(!icon_retry_active(false, true, true));
+        assert!(!icon_retry_active(false, false, false));
     }
 }
