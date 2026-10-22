@@ -12,9 +12,10 @@
 > （lib 93 + GUI bin 5）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
 > 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理、Phase 2 健壮性、连点器统一与
-> v1.10.1 依赖升级，并发布 v1.7.7/v1.10.1；随后修复静默启动图标、调整绑定表按钮，
-> **v1.10.4 再次发版**（release 13,169,664 B，SHA256 `B11D1C5A…CFA2`，构建源 `f78b0de`）。
-> 版本 tag 与 `bench-getpixel-archive` 见 git。代码基线 `bb3f91b`。
+> v1.10.1 依赖升级，并发布 v1.7.7/v1.10.1；随后修复静默启动图标、调整绑定表按钮；
+> 协议层审查 P1 加固后 **v1.10.5 发版**（release 13,170,176 B，SHA256
+> `115D3C3D…2CFD`，构建源 `fe03d1b`）。版本 tag 与 `bench-getpixel-archive` 见 git。
+> 代码基线 `bb3f91b`。
 
 ## 0. 给 Agent 的硬性规则
 
@@ -305,10 +306,10 @@ gi-utils-dev.exe → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe    
 
 - 配置与用户数据（`profiles/`、`crash.log`、`thread_sample.txt`）都写在 **exe 旁**，即部署目录。
   部署目录里的 `verbose.exe`/`zzz-utils.exe`/`gi-utils-config.toml` 是历史遗留，不属仓库。
-- 2026-10-23 发布 **v1.10.4**：release 13,169,664 B（13.17MB，SHA256 `B11D1C5A…CFA2`）、
-  debug 18.87MB；含 `--silent` 图标修复、绑定表 `Del`→`✕` 与高度对齐。部署符号链接自动指向
-  新 release（前次 v1.10.1/v1.7.7 release 已被覆盖，可按对应 tag 重建）。开发后记得刷新 debug
-  （见规则 3）。
+- 2026-10-23 发布 **v1.10.5**：release 13,170,176 B（13.17MB，SHA256 `115D3C3D…2CFD`）、
+  debug 18.87MB；含协议层审查 P1 加固（ABI 金标准、`set_filter` fail-fast、空读归零）与
+  v1.10.2–v1.10.4 的图标/按钮修复。部署符号链接自动指向新 release（前次 release 已被覆盖，
+  可按对应 tag 重建）。开发后记得刷新 debug（见规则 3）。
 
 ## 8. 配置系统
 
@@ -386,7 +387,7 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   `chore: 版本升至 vX.Y.Z — 主题`（minor=功能、patch=修复）——沿用。
 - 版本号唯一来源 `Cargo.toml`；升版本后 `Cargo.lock` 同步（`cargo build` 会更新）。
 - **tag**：v1.3.0 后长期缺 tag；2026-10-23 已补 `v1.7.6`（release 状态 `bb3f91b`）、
-  `v1.7.7`（`dd519fd`）与 `v1.8.0`–`v1.10.1`（含 v1.10.1 release 构建源 `964f6c9`）；
+  `v1.7.7`（`dd519fd`）与 `v1.8.0`–`v1.10.5`（含 v1.10.5 release 构建源 `fe03d1b`）；
   `bench-getpixel-archive`（`2c949b5`）为本地存档 tag。今后发版：升版本 → 构建 → 打 tag。
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
@@ -557,3 +558,5 @@ eframe 0.37 依赖升级；部署符号链接随 release 产物更新。
 2026-10-23 v1.10.5：协议层审查加固——IOCTL/结构 offset 编译期 C 金标准 + 5 个对照测试；
 `set_filter` 返回 `Result` 且启动失败 fail-fast；查询类 IOCTL 失败 `warn!`；
 `ERROR_NO_MORE_ITEMS` 空读固定返回 `Ok(0)`（防幻影 stroke）；测试 93→98（lib 93 + GUI bin 5）。
+2026-10-23 发版 v1.10.5：release 13,170,176 B（SHA256 115D3C3D…2CFD），含协议层审查 P1
+加固与 v1.10.2–v1.10.4 的图标/按钮修复；部署符号链接随 release 产物更新。
