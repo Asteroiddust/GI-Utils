@@ -11,9 +11,10 @@
 > **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 92 单测
 > （lib 88 + GUI bin 4）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
-> 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理与 Phase 2 健壮性；**作者实机验证
-> 正常后发布 v1.7.7**（release 13,693,440 B，SHA256 `8CD60E65…FBF3`，构建源 `dd519fd`）。
-> `v1.7.6`/`v1.7.7` 与 `bench-getpixel-archive` tag 均为本地。代码基线 `bb3f91b`。
+> 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理与 Phase 2 健壮性，并发布 v1.7.7；
+> 连点器统一与 v1.10.1 依赖升级后按用户要求发版（release 13,168,128 B，SHA256
+> `73D4F9C4…3229`，构建源 `964f6c9`）。版本 tag 与 `bench-getpixel-archive` 见 git。
+> 代码基线 `bb3f91b`。
 
 ## 0. 给 Agent 的硬性规则
 
@@ -298,8 +299,9 @@ gi-utils-dev.exe → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe    
 
 - 配置与用户数据（`profiles/`、`crash.log`、`thread_sample.txt`）都写在 **exe 旁**，即部署目录。
   部署目录里的 `verbose.exe`/`zzz-utils.exe`/`gi-utils-config.toml` 是历史遗留，不属仓库。
-- 2026-10-23 发布 **v1.7.7**：release 13,693,440 B（13.69MB，SHA256 `8CD60E65…FBF3`）、
-  debug 19.39MB；部署符号链接自动指向新 release。开发后记得刷新 debug（见规则 3）。
+- 2026-10-23 发布 **v1.10.1**：release 13,168,128 B（13.17MB，SHA256 `73D4F9C4…3229`）、
+  debug 18.87MB；部署符号链接自动指向新 release（前次 v1.7.7 release 13,693,440 B 已被覆盖，
+  可按 tag 重建）。开发后记得刷新 debug（见规则 3）。
 
 ## 8. 配置系统
 
@@ -377,8 +379,8 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   `chore: 版本升至 vX.Y.Z — 主题`（minor=功能、patch=修复）——沿用。
 - 版本号唯一来源 `Cargo.toml`；升版本后 `Cargo.lock` 同步（`cargo build` 会更新）。
 - **tag**：v1.3.0 后长期缺 tag；2026-10-23 已补 `v1.7.6`（release 状态 `bb3f91b`）、
-  `v1.7.7`（`dd519fd`，v1.7.7 release 构建源）与 `bench-getpixel-archive`（本地存档
-  `2c949b5`）。今后发版：升版本 → 构建 → 打 tag。
+  `v1.7.7`（`dd519fd`）与 `v1.8.0`–`v1.10.1`（含 v1.10.1 release 构建源 `964f6c9`）；
+  `bench-getpixel-archive`（`2c949b5`）为本地存档 tag。今后发版：升版本 → 构建 → 打 tag。
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
@@ -536,3 +538,5 @@ thread_pin try_lock 还原）；测试 63→82 单测（lib 78 + GUI bin 4）。
 2026-10-23 v1.10.1：依赖升级至最新——eframe 0.37.0（egui 0.37，`Id::new`→`Id::unique`）、
 windows 0.62.2、toml 1.1.8、serde 1.0.229、tracing 0.1.44、tracing-subscriber 0.3.23、
 embed-resource 3.0.12；wgpu 30.0.1 不变；`cargo check`/test/build 全绿。
+2026-10-23 发版 v1.10.1：release 13,168,128 B（SHA256 73D4F9C4…3229），含连点器统一与
+eframe 0.37 依赖升级；部署符号链接随 release 产物更新。
