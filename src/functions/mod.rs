@@ -14,6 +14,7 @@ pub mod quick_pickup;
 pub mod spam_key;
 pub mod stop;
 pub mod thread_sampler;
+pub mod timeline_clicker;
 
 use crate::engine::event::InputEvent;
 use crate::interception::SendContext;

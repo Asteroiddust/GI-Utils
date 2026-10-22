@@ -654,6 +654,7 @@ pub fn list_function_names() -> Vec<&'static str> {
     vec![
         "停止退出",
         "连点器",
+        "连点器（时间轴）",
         "SpamKey",
         "快速拾取",
         "鬼畜走路",
@@ -684,6 +685,9 @@ pub fn create_function(
         "连点器" => Ok(Arc::new(crate::functions::auto_clicker::连点器::new(
             send_ctx,
         ))),
+        "连点器（时间轴）" => Ok(Arc::new(
+            crate::functions::timeline_clicker::连点器时间轴::new(send_ctx),
+        )),
         "SpamKey" => Ok(Arc::new(crate::functions::spam_key::SpamKey::new(send_ctx))),
         "快速拾取" => Ok(Arc::new(crate::functions::quick_pickup::快速拾取::new(
             send_ctx,

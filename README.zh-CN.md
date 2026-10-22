@@ -41,7 +41,7 @@ Windows 游戏输入自动化工具，Rust 实现。前身是 C++/Visual Studio 
 - **动态参数**：功能声明带类型的参数（间隔、按下时长、键位…），⚙ 弹窗
   实时调整 — 不重编译、不重启线程
 - **三种触发模式**：`Once` / `Loop` / `Toggle`
-- **13 个内置功能**（见[功能一览](#功能一览)）
+- **14 个内置功能**（见[功能一览](#功能一览)）
 - **高精度时序**：
   - TSC 忙等延时，启动时校准（微秒级精度）
   - 时间轴调度器：绝对时刻编排，MIDI 编辑器语义（播放中实时编辑、
@@ -111,7 +111,7 @@ cargo build --release --config .cargo/build-std.toml
   `panic=unwind`（保障 `Drop` 防护与崩溃日志 panic hook 生效）
 - dev：自身代码 `opt-level=0`，依赖统一 `opt-level=2`（界面流畅）
 
-测试：`cargo test` — 82 单测（78 lib + 4 GUI）+ 2 doctest，无需驱动。
+测试：`cargo test` — 89 单测（85 lib + 4 GUI）+ 2 doctest，无需驱动。
 
 ## 运行
 
@@ -177,6 +177,7 @@ font_path = ""
 |---|---|---|---|
 | 停止退出 | F12 | Once | 置位引擎停止标志 → 干净退出 |
 | 连点器 | F13 | Loop | 按住连点鼠标左键 — 动态参数（interval_ms / hold_ms，⚙ 面板实时调） |
+| 连点器（时间轴） | — | Toggle / Loop | 绝对 TSC 网格连点：按下间隔严格 = `interval_ms`（无累计漂移，卡顿即弃不追拍）— 与串行版并存 |
 | 快速拾取 | F14 | Loop | 循环 tap F + 滚轮下拉（掉落物收集） |
 | 鬼畜走路 | F15 | Loop | WASD 滚动短按（50ms 间隔、1ms 按住） |
 | 火神跳喷 | F16 | Loop | 初始跳跃后循环空格连跳 |

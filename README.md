@@ -46,7 +46,7 @@ Wuthering Waves.
 - **Dynamic parameters**: functions declare typed parameters (interval, hold,
   key…) editable live from the ⚙ popup — no rebuild, no thread restart
 - **Three trigger modes**: `Once` / `Loop` / `Toggle`
-- **13 built-in functions** (see [Function Reference](#function-reference))
+- **14 built-in functions** (see [Function Reference](#function-reference))
 - **High-precision timing**:
   - TSC busy-wait delays calibrated at startup (µs-level accuracy)
   - Timeline scheduler: absolute-time orchestration with MIDI-editor
@@ -118,7 +118,7 @@ Build configuration highlights:
   (keeps `Drop` guards and the crash-log panic hook working)
 - dev: `opt-level=0` for own code, deps at `opt-level=2` (smooth UI)
 
-Tests: `cargo test` — 82 unit tests (78 lib + 4 GUI) + 2 doctests, no driver required.
+Tests: `cargo test` — 89 unit tests (85 lib + 4 GUI) + 2 doctests, no driver required.
 
 ## Running
 
@@ -189,6 +189,7 @@ keys…).
 |---|---|---|---|
 | 停止退出 | F12 | Once | Sets the engine stop flag → clean shutdown |
 | 连点器 | F13 | Loop | Auto-click LMB — dynamic params (interval_ms / hold_ms, ⚙ panel live-edit) |
+| 连点器（时间轴） | — | Toggle / Loop | Absolute-TSC clicker: press-to-press interval equals `interval_ms` (no cumulative drift; missed beats dropped, no burst) — parallel to the serial clicker |
 | 快速拾取 | F14 | Loop | Taps F + scrolls wheel down repeatedly (loot pickup) |
 | 鬼畜走路 | F15 | Loop | WASD rolling taps (50 ms interval, 1 ms hold) |
 | 火神跳喷 | F16 | Loop | Initial jump, then repeating space taps |
