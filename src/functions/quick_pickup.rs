@@ -35,7 +35,7 @@ impl KeyFunction for 快速拾取 {
     /// 执行快速拾取循环。
     ///
     /// 反复播放 tap F → sleep 10ms → wheel DOWN → sleep 10ms；[F↓, F↑]
-    /// 点击对经 play 合并为一次 IOCTL_WRITE，每次 sleep 后检查 `stop_requested`。
+    /// 点击对经 play 逐事件发送（无切片：每个事件一次驱动请求），每次 sleep 后检查 `stop_requested`。
     fn execute(&self, stop_requested: Arc<AtomicBool>) {
         while !stop_requested.load(Ordering::Acquire) {
             self.sequence.play(&self.send_ctx, Some(&stop_requested));

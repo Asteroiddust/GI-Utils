@@ -46,20 +46,20 @@ pub const GAME_PROCESS_NAMES: &[&str] = &[
 /// DragValue 按 range 钳制），故此处不做 NaN 兜底。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ClickPlan {
-    /// `hold <= 0`：down → up 连续发送（v1 语义；no-slicing 下为两次
-    /// 驱动请求，中间可能被并发发送插入），随后等满 interval。
-    AtomicBatch,
+    /// `hold <= 0`：down → up 连续两次发送（v1 语义；无切片为最终形态 —
+    /// 两次独立驱动请求，中间可能被并发发送插入），随后等满 interval。
+    BackToBack,
     /// `hold > 0`：down → 等 `hold` → up → 等 `rest` 补足（v2 语义）。
     Split { hold: f64, rest: f64 },
 }
 
 /// 节奏参数 → 本周期动作计划（纯函数）。`hold` 钳到 `[0, interval]`：
-/// 负值/未配置 → 0（原子批）；超过 interval → 钳到 interval（此时
+/// 负值/未配置 → 0（BackToBack 连续发送）；超过 interval → 钳到 interval（此时
 /// `rest = 0`，调用方跳过补足等待 — 周期即按下时长）。
 pub(crate) fn click_plan(interval_ms: f64, hold_ms: f64) -> ClickPlan {
     let hold = hold_ms.clamp(0.0, interval_ms);
     if hold <= 0.0 {
-        ClickPlan::AtomicBatch
+        ClickPlan::BackToBack
     } else {
         ClickPlan::Split {
             hold,
@@ -82,9 +82,9 @@ pub(crate) fn click_rhythm(
     up: InputEvent,
 ) {
     match click_plan(interval_ms, hold_ms) {
-        ClickPlan::AtomicBatch => {
-            // 原子批：down+up 一次 IOCTL（栈数组，零分配）— 点击时长最短，
-            // 且不受其他功能线程并发发送插入
+        ClickPlan::BackToBack => {
+            // 连续发送：down、up 各一次驱动请求（send_events 当前逐事件
+            // 发送）— 点击时长最短，但两次请求之间可能被其他功能线程插入
             send_ctx.send_events(&[down, up]);
             delay::delay_ms_interruptible(interval_ms, stop);
         }
@@ -106,10 +106,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn click_plan_zero_or_negative_hold_is_atomic_batch() {
-        assert_eq!(click_plan(10.0, 0.0), ClickPlan::AtomicBatch);
-        // 负值（未配置/手写错误）钳到 0 → 原子批（不分拆成按下/松开）
-        assert_eq!(click_plan(10.0, -5.0), ClickPlan::AtomicBatch);
+    fn click_plan_zero_or_negative_hold_is_back_to_back() {
+        assert_eq!(click_plan(10.0, 0.0), ClickPlan::BackToBack);
+        // 负值（未配置/手写错误）钳到 0 → 连续发送（不分拆成按下/松开）
+        assert_eq!(click_plan(10.0, -5.0), ClickPlan::BackToBack);
     }
 
     #[test]

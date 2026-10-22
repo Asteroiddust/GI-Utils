@@ -1,7 +1,7 @@
 //!
 //! 配置与 Profile 系统 — exe 旁 `profiles/` 目录，每个 `*.toml` 一个
 //! profile（文件名即 profile 名）。启动加载活动 profile，不存在则生成
-//! `profiles/默认.toml`；GUI 可实时切换/新建/另存。
+//! `profiles/默认.toml`；GUI 可实时切换/新建并保存活动 profile。
 //!
 //! 兼容：旧单文件 `gi-utils-config.toml` / `config.toml` 首启自动迁移
 //! 为 `profiles/默认.toml`（旧文件保留 — 用户数据绝不自动销毁）。
@@ -485,21 +485,12 @@ icon_path = "E:/Projects/Rust/GI-Utils/assets/icon.ico"
 font_path = ""
 "#;
 
-/// 加载并解析配置文件 — Load and parse the config file. Generates a default if missing.
-///
-/// 若文件不存在则自动创建默认配置。验证双向唯一性：每个按键只能绑定一个功能，
-/// 每个功能只能绑定一个按键。
-/// If the file is missing, a default config is generated. Validates bidirectional
-/// uniqueness: each key maps to one function and each function maps to one key.
-/// 加载配置（含功能参数模板表）— load() 的完整形态。
+/// 从指定路径加载配置（含功能参数模板表）— 文件不存在时就地生成默认配置。
 /// 校验仅键唯一（功能可绑多键，2026-08-22）。
 /// 返回 (绑定列表, 模板表) — 模板表供 GUI 在切换功能/新建行时套基线
 /// （A+：与加载路径合成规则一致，避免"GUI 切一次就偏离模板"）。
-pub fn load_full() -> Result<(Vec<Binding>, FuncParams), String> {
-    load_full_from(&default_config_path())
-}
-
-/// 从指定路径加载配置（含功能参数模板表）— Load from File 的实现。
+/// Load and parse config from `path`, generating the default config if missing.
+/// Validates key uniqueness only (a function may bind multiple keys).
 pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParams), String> {
     let path = path.to_path_buf();
 
@@ -566,11 +557,6 @@ pub fn load_full_from(path: &std::path::Path) -> Result<(Vec<Binding>, FuncParam
     Ok((bindings, func_params))
 }
 
-/// 加载配置 — 仅取绑定列表（便捷包装，注册用）。
-pub fn load() -> Result<Vec<Binding>, String> {
-    load_full().map(|(bindings, _)| bindings)
-}
-
 /// 加载 `[gui]` 段配置（图标路径等）。解析失败/缺段时返回默认值 —
 /// GUI 配置损坏不应阻止程序启动，回退默认行为即可。
 /// Load the `[gui]` section. Failures fall back to defaults — a broken
@@ -579,7 +565,7 @@ pub fn load_gui_config() -> GuiConfig {
     load_gui_config_from(&default_config_path())
 }
 
-/// 从指定路径读取 `[gui]` 段（Load from File 时同步托盘/字体设置）。
+/// 从指定路径读取 `[gui]` 段（启动加载用；profile 体系下无独立 Load 按钮）。
 pub fn load_gui_config_from(path: &std::path::Path) -> GuiConfig {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -594,21 +580,16 @@ pub fn load_gui_config_from(path: &std::path::Path) -> GuiConfig {
     }
 }
 
-/// 保存绑定列表到默认配置文件 — Serialize bindings back to config file.
-///
-/// [gui] 段由调用方传入的 `gui` 原样写回 — **fail-closed**：绝不读磁盘
-/// 回填（读回失败静默回退默认值会清空用户 icon_path — review #3）。
-/// 无法序列化的键返回错误（不写 "?" — "?" 下次启动解析失败会拖垮全部绑定）。
-pub fn save(bindings: &[Binding], templates: &FuncParams, gui: &GuiConfig) -> Result<(), String> {
-    save_to(&default_config_path(), bindings, templates, gui)
-}
-
-/// 另存为指定路径 — Save As 的实现（原子写同默认路径）。
+/// 写入指定路径（活动 profile 的 Save 与 New Profile 共用）— 原子写。
 ///
 /// `bindings` 的行内参数是**相对 `templates` 的差量**（调用方经
 /// `params_diff` 计算），因此模板段必须同时写回：只写差量会让"与模板
 /// 相同的槽"在下次加载时无来源（回落 spec 默认值 — 用户调好的参数静默
 /// 丢失，v1.7.4 回归）。模板段为空时省略该段（无基线，行内即全量）。
+///
+/// [gui] 段由调用方传入的 `gui` 原样写回 — **fail-closed**：绝不读磁盘
+/// 回填（读回失败静默回退默认值会清空用户 icon_path — review #3）。
+/// 无法序列化的键返回错误（不写 "?" — "?" 下次启动解析失败会拖垮全部绑定）。
 pub fn save_to(
     path: &std::path::Path,
     bindings: &[Binding],

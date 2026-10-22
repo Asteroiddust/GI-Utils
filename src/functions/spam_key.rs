@@ -7,7 +7,7 @@
 //!   （手写文件里的键名字符串由 `profile::apply_params` 解析）；槽直写下
 //!   周期生效 — 不触发重注册
 //! - `interval_ms`：敲击周期（1.0–10000）
-//! - `hold_ms`：按下时长（0–interval；0 = down+up 一次驱动级原子批）
+//! - `hold_ms`：按下时长（0–interval；0 = down+up 连续两次发送，无切片）
 //!
 //! 与连点器的区别：连点器固定敲鼠标左键；本功能敲任意可配置键。
 //! 两者共用同一节奏引擎（[`crate::functions::click_rhythm`]，v1/v2 归并
@@ -66,7 +66,7 @@ const SPAM_SPEC: &[ParamSpec] = &[
 /// Spam Key 功能 — Loop 模式。
 ///
 /// 每周期读参数快照：向 `key` 槽指向的键发送敲击。`hold_ms` 语义与连点器
-/// 一致（0 = down+up 原子批；>0 = down → hold → up → 补足 interval）。
+/// 一致（0 = down+up 连续两次发送；>0 = down → hold → up → 补足 interval）。
 pub struct SpamKey {
     send_ctx: Arc<SendContext>,
     params: Arc<ParamValues>,
@@ -88,7 +88,7 @@ impl KeyFunction for SpamKey {
             let key = unpack_key(self.params.get_i64(0));
             let interval = self.params.get_f64(1);
             let hold = self.params.get_f64(2);
-            // 节奏语义（hold 钳制 + 原子批 down/up）与连点器共用同一实现，
+            // 节奏语义（hold 钳制 + down/up 连续发送）与连点器共用同一实现，
             // 仅目标键事件不同
             click_rhythm(
                 &self.send_ctx,

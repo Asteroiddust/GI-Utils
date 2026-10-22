@@ -38,7 +38,7 @@ impl KeyFunction for 甘雨走A {
     /// 执行甘雨走 A 序列（单次，不循环）。
     ///
     /// 顺序播放 left_click → 50ms → right_click → 30ms → press R → release R；
-    /// 各点击对与 R 对经 play 合并为一次 IOCTL_WRITE（6 次发送 → 3 次）。
+    /// 各事件经 play 逐事件发送（无切片：每个事件一次驱动请求，不再合并）。
     /// `stop` 传 None — 延时不可中断（Once 模式无需在 sleep 中响应停止，
     /// 对齐原 `delay_ms` 语义）。
     fn execute(&self, _stop_requested: Arc<AtomicBool>) {

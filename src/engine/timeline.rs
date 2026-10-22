@@ -424,9 +424,9 @@ impl TimelinePlayer {
         let start = delay::tsc_now();
         // 活动音符集合：Down 已发、Up 未到的键（对应 MIDI 活动 note 集）
         let mut pending: Vec<Key> = Vec::new();
-        // 同帧批量缓冲 — 循环外分配、每轮 clear 复用容量（播放态忙等循环
-        // 最快 0.5ms 一轮，逐轮 with_capacity 分配与热路径零分配的自我
-        // 要求不一致）
+        // 同帧 due 收集缓冲 — 循环外分配、每轮 clear 复用容量（播放态忙等
+        // 循环最快 0.5ms 一轮）。send_events 当前逐事件发送，buffer 仅作
+        // 统一发送入口，无合并收益；保留以免逐轮分配。
         let mut batch: Vec<InputEvent> = Vec::new();
 
         loop {
@@ -437,8 +437,8 @@ impl TimelinePlayer {
             //    已触发即移除 → 表恒为未触发条目；动态插入的新条目在到期帧
             //    被 partition_point 捕获，天然不重复、不遗漏。
             let due = self.state.drain_due(delay::tsc_now() - start);
-            // 同帧到期条目之间无间隔 → 收集后一次 send_events 批量发送
-            // （段内按 Sleep/设备类型自动切批，顺序保持）
+            // 同帧到期条目之间无间隔 → 收集后一次 send_events 调用
+            // （当前逐事件发送；统一入口保留，顺序保持）
             batch.clear();
             for item in due {
                 if stop_requested.load(AtomicOrdering::Acquire) {
@@ -478,7 +478,7 @@ impl TimelinePlayer {
     }
 
     /// 补发挂起键的 release 并清空列表（MIDI 活动音符 note-off）—
-    /// 收集后一次 `send_events` 合并发送（全键盘段 = 单次 IOCTL，
+    /// 收集后一次 `send_events` 调用（当前逐事件发送，无合并；
     /// 与 EventSequence 侧 `HeldTracker::release_into` 同模式；
     /// `batch` 为调用方循环缓冲，停止路径复用避免额外分配）。
     fn release_pending(&self, pending: &mut Vec<Key>, batch: &mut Vec<InputEvent>) {
@@ -618,7 +618,7 @@ impl RollingPlayer {
             // 0. 停止优先于一切发送：stop 置位 → 补发所有挂起释放后退出。
             //    （等待期 stop 在 ~100μs 检查点返回后由本检查兜底，不会多发按键）
             if stop_requested.load(AtomicOrdering::Acquire) {
-                // 补发合并为一次 send_events（全键盘段 = 单次 IOCTL，
+                // 补发走一次 send_events 调用（当前逐事件发送，无合并；
                 // 与 TimelinePlayer::release_pending 同模式；冷路径，小分配可接受）
                 let releases: Vec<InputEvent> = releases
                     .drain(..)

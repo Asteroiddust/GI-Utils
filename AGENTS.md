@@ -10,8 +10,9 @@
 >
 > **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 63 单测 + 2 doctest
 > 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；debug/release 产物与部署链接均未过期。
-> 注：健康数据采于 2026-10-23；本轮仅文档重写 + 5 处源注释引用更新（纯注释，无行为变更），
-> 已提交，代码基线仍为 `bb3f91b`。
+> 注：健康数据采于 2026-10-23。同日 Phase 1 清理：无切片语义定稿并同步全部注释、
+> `ClickPlan::AtomicBatch` → `BackToBack`、删除无调用者 `profile::save/load/load_full`、
+> 补打 `v1.7.6` 与 `bench-getpixel-archive` tag（本地）。代码基线 `bb3f91b`。
 
 ## 0. 给 Agent 的硬性规则
 
@@ -216,7 +217,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
 | **SendContext 独立类型** | 发送/接收分离，编译器禁止并发接收；发送侧可多线程共享 |
 | **用户层协议原生移植** | 替代预编译 `interception.lib`：类型化收发切片、栈分批零堆分配、`Result` 错误传播、`set_filter` 闭包、Drop 清理——**内核驱动协议未改** |
 | **wgpu + Vulkan 后端** | v1.7.0（2026-09-05）睡眠唤醒修复：WGL 上下文跨电源转换永久失效是 glow/glutin 的结构问题；wgpu surface 可逐帧重建。**渲染自愈体系随之退役**，panic hook 退化为纯 fail-fast |
-| **取消输出切片（no-slicing，v1.7.6）** | `send_events` 逐事件一次 IOCTL（Sleep 空操作）；语义变化：段内事件可被并发发送插入，连点 down/up 不再驱动级原子；性能影响目前可忽略（10ms 周期连点 ≈ 200 请求/s），时间轴同帧 N 条由 1 次变 N 次。**动机是实验对比并发插入行为，后「转正」**；若需恢复原子批，历史实现见 `f621bf3^:src/interception/context.rs`（`segments` + `send_segment`） |
+| **取消输出切片（no-slicing，v1.7.6，最终形态）** | `send_events` 逐事件一次 IOCTL（Sleep 空操作）；不同功能线程的发送可交错，连点 down/up 无驱动级原子性；性能影响可忽略（10ms 周期连点 ≈ 200 请求/s）。**2026-10-23 作者确认现行使用无问题，保留为最终形态，不再回退**；历史切片实现见 `f621bf3^`（仅存档）。`ClickPlan::AtomicBatch` 已更名 `BackToBack` 以消除「原子批」歧义 |
 | **stop_requested 正向语义** | `true`=停止，全项目无双重否定 |
 | **ActiveGuard Drop 防护** | 线程 panic 时自动清 active（panic=unwind 下真正生效；build-std 也保持 unwind） |
 | **Mutex 外 join / pending_joins 惰性 join** | stop 不阻塞事件循环；GUI 帧只 `is_finished`，绝不阻塞 |
@@ -363,7 +364,8 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   中文说明为主。历史纪律：**每个功能/修复后紧跟一个版本号提交**
   `chore: 版本升至 vX.Y.Z — 主题`（minor=功能、patch=修复）——沿用。
 - 版本号唯一来源 `Cargo.toml`；升版本后 `Cargo.lock` 同步（`cargo build` 会更新）。
-- **tag 缺口**：tag 只到 `v1.3.0`（2026-08-20），v1.4.0+ 均未打 tag。若今后发版，建议补 tag；
+- **tag**：v1.3.0 后长期缺 tag；2026-10-23 已补 `v1.7.6`（指向 release 状态 `bb3f91b`）与
+  `bench-getpixel-archive`（本地存档，`2c949b5`）。今后发版：升版本 → 构建 → 打 tag。
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
@@ -372,7 +374,8 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   发送路径、thread_info NT 解析、optimize_game、log_collector 均无测试；新增改动优先补可测纯函数。
 - 未跟踪分支 `bench-getpixel`（本地、未推送，2026-09-29，4 提交 +1362 行）：只含一次性诊断 bin
   （`getpixel-bench` / `getpixel-compare`），**不碰生产 `screen.rs`、不建议 merge**（windows
-  feature 膨胀 + 死代码）。其结论已归档在[第 12 节](#12-路线图)，作为性能决策依据；分支保留作存档。
+  feature 膨胀 + 死代码）。其结论已归档在[第 12 节](#12-路线图)，作为性能决策依据；分支保留作存档
+  （2026-10-23 已打本地 tag `bench-getpixel-archive`）。
 
 ### 10.2 实机验证
 
@@ -384,31 +387,26 @@ Agent 不启动程序（见规则 5）。需要验证时：用户以管理员运
 
 > 这些是**已知且已评估**的项，接手时不要重复发现、也不要未经确认就大改。
 
-1. **no-slicing 语义收尾**（v1.7.6）：`ClickPlan::AtomicBatch` 名称与实际不符（实为两次驱动请求）；
-   代码里约 12 处注释仍写「一次 IOCTL / 驱动级原子批」（如 `functions/mod.rs:86`、`auto_clicker.rs:5`、
-   `spam_key.rs:10`、`quick_pickup.rs:38`、`ganyu_aim_cancel.rs`、`event.rs`、`timeline.rs` 等）。
-   时间轴内 `batch` Vec 已无合并收益。发送路径无回归测试；若恢复切片，参考 `f621bf3^`。
+1. **无切片语义已定稿**（2026-10-23 作者确认）：保留现状、不恢复切片；全部过时注释已同步，
+   `ClickPlan::AtomicBatch` → `BackToBack`。发送路径仍无驱动级回归测试（IOCTL 依赖驱动，
+   无驱动不可测）——发送语义变更需人工实机验证。
 2. **panic 退出不补发挂起合成键**：hook 置 stop + exit(1)，若 panic 发生在 press 与 release 之间，
-   进程退出不会由 OS 释放合成按键（可能系统级卡键）。属已知风险，实机未见报告。
+   进程退出不会由 OS 释放合成按键（可能系统级卡键）。Phase 2 健壮性任务处理中。
 3. **驱动/权限失败路径**：`Engine::new` 在 panic hook 之前，驱动缺失或非管理员时 panic 走不到
    hook（无 `crash.log`/弹窗；`windows_subsystem="windows"` 无控制台）——启动即静默退出。
-4. **死 API**：`profile::save` / `load` / `load_full` 已无调用者，实际路径是 `save_to`/
-   `load_full_from`。直接调用会绕过 `.last` 记忆。可删，但需先确认无外部使用。
-5. **Toggle 快速连按**：active 未清的极短窗口内第三次按下可能既不 spawn 也不 stop（低危，未复现）。
-6. **注释/文档残留**（改这些文件时顺手修，不要单独大扫除）：
-   - `Cargo.toml` release 注释仍称 unwind 是「GUI 崩溃自愈」基础（自愈已退役，unwind 现在服务 Drop 防护）；
-   - `.cargo/build-std.toml` 注释同样残留「catch_unwind 自愈依赖」；
-   - `main.rs` 头部仍写 `gi-utils-config.toml`（现为 `profiles/`）；panic hook 注释仍提 `panic=abort`；
-   - `SpamKey` 文档仍称 `hold=0` 是「原子批」。
-7. **依赖升级未评估**：eframe 0.36.2（2026-09-08）/ 0.37.0（2026-10-15）存在，仓库仍锁 0.36.1；
+   Phase 2 健壮性任务处理中。
+4. **Toggle 快速连按**：active 未清的极短窗口内第三次按下可能既不 spawn 也不 stop（低危，未复现）。
+5. **注释残留（剩余）**：`main.rs` 若干「崩溃恢复/恢复轮」历史注释（约 90-130、1200、1240 行）
+   属已退役自愈体系，改这些文件时顺手修。其余已知漂移已于 2026-10-23 清理。
+6. **依赖升级未评估**：eframe 0.36.2（2026-09-08）/ 0.37.0（2026-10-15）存在，仓库仍锁 0.36.1；
    升级涉及 wgpu 版本跃迁 + API 变化，需单独评估（不要顺手 bump）。
-8. **仓库卫生**：无 CI、无 `rust-toolchain.toml`；`tools/*.py` 被 `/tools` 忽略但仍被跟踪
-   （改 ignore 规则时注意）；`/target` 不跟踪。tag 缺口见 10.1。
-9. **本机 git 维护被关闭**（仅此机器，不随仓库传播）：2026-09-11 对象库损坏事故后设置了
+7. **仓库卫生**：无 CI、无 `rust-toolchain.toml`；`tools/*.py` 被 `/tools` 忽略但仍被跟踪
+   （改 ignore 规则时注意）；`/target` 不跟踪。tag 情况见 10.1。
+8. **本机 git 维护被关闭**（仅此机器，不随仓库传播）：2026-09-11 对象库损坏事故后设置了
    `maintenance.auto=false`、`gc.auto=0`，备份已删，根因未证实（疑 FS/AV 干扰）。不要在未确认时
    跑 `git gc --aggressive`。
-10. **GPU 超频崩溃**：2026-10-22 `crash.log`（egui-wgpu staging buffer panic）是超频调试期的
-    显存分配失败（作者 2026-10-23 确认），不是代码缺陷；稳定运行下无需处理。
+9. **GPU 超频崩溃**：2026-10-22 `crash.log`（egui-wgpu staging buffer panic）是超频调试期的
+   显存分配失败（作者 2026-10-23 确认），不是代码缺陷；稳定运行下无需处理。
 
 ## 12. 路线图
 
@@ -441,7 +439,8 @@ VSync/G-SYNC 下 `GetPixel` 恒约 **6.25ms/读**（≈160 QPS，合成层节流
 形态无差异。200×200 小块快照 GDI≈DXGI（噪声内）；**4K 全屏快照 GDI 25.5ms vs DXGI 6.6ms（3.8×）**。
 结论：单点/单帧触发（如克洛琳德）用现有 `screen.rs` 足够；**多点/全屏分析必须走 DXGI 全屏快照，
 不要逐点 `GetPixel`**（20 点逐点 125ms vs 一次抓取 6.25ms）。注意 `screen.rs` 头部注释
-「~0.01ms/次」在 VSync 下失真约 600 倍。
+「~0.01ms/次」在 VSync 下失真约 600 倍（该注释已于 2026-10-23 更正）。分支已打本地存档 tag
+`bench-getpixel-archive`（2026-10-23），不 merge。
 
 ### 12.4 其他候选
 
@@ -487,7 +486,7 @@ VSync/G-SYNC 下 `GetPixel` 恒约 **6.25ms/读**（≈160 QPS，合成层节流
   3 轮优化（节奏引擎共用 / 单次 TSC 读 / 托盘动作走 logic）；10 项低危**有意不修**：
   手写 `.last` 指向保留设备名才可达的 expect、无参功能残留参数 debug 日志、`params_diff`
   结构相等、键槽捕获硬编码 `"key"`、托盘被拒反馈仅 UI pass 可见、`config_ok` 未复位、
-  `wide()` 重复实现、`main.rs` 过时注释、`profile::save/load_full` 无调用者、profile 测试覆盖缺口。
+  `wide()` 重复实现、`main.rs` 过时注释、`profile::save/load_full` 无调用者（2026-10-23 已删）、profile 测试覆盖缺口。
 - 2026-09-11 事故：仓库对象库损坏 → 恢复中 `git gc` 被 SIGTERM → 原地重建；本地关闭自动维护
   （见技术债 9）。**教训**：09-08 的 CLAUDE.md 漂移修复当时只是**未提交改动**，09-11 仓库重建后
   工作区回落到 `f1a7d8d`（09-07 提交）而丢失，成为旧文档大面积过期的直接原因 →
@@ -503,3 +502,5 @@ Interception 内核驱动的商业授权不在本仓库，使用前自行确认�
 
 **文档变更**：2026-10-23 v1.7.6 全量重写（替代 CLAUDE.md，修正 glow/自愈/测试数/体积/结构树/
 幽灵版本等漂移，补 no-slicing、取色 bench 结论、技术债清单与 agent 规则）。
+2026-10-23 Phase 1：无切片定稿并同步注释、ClickPlan 更名、删除 profile 死 API、补 tag；
+Phase 2（启动失败可视化 + panic 挂起键释放）完成后另记。

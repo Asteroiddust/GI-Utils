@@ -1,9 +1,12 @@
 //! 屏幕工具：像素取色与光标位置 — Screen utilities: pixel color capture, cursor position.
 //!
-//! 使用 GDI `GetPixel` 进行单像素读取（每次调用约 0.01ms）。
-//! Uses GDI `GetPixel` for single-pixel reads (~0.01ms per call).
-//! 如需批量截取，考虑使用 DXGI Desktop Duplication。
-//! For bulk capture, consider DXGI Desktop Duplication.
+//! 使用 GDI `GetPixel` 进行单像素读取。实测（bench-getpixel，2026-09-29）：
+//! VSync/G-SYNC 下受合成层节流约 **6.25ms/次**（≈160 QPS），与调用开销无关；
+//! 旧注释「~0.01ms/次」在此场景失真约 600 倍。4K 全屏快照 GDI 25.5ms vs
+//! DXGI 6.6ms（3.8×）— 多点/全屏分析请走 DXGI 全屏快照，不要逐点 GetPixel。
+//! `GetPixel` under VSync/G-SYNC is throttled by the compositor to ~6.25ms/call
+//! (~160 QPS, measured 2026-09-29); the old "~0.01ms" figure was ~600× off.
+//! For bulk capture use DXGI Desktop Duplication, not per-point `GetPixel`.
 
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, HDC, ReleaseDC};

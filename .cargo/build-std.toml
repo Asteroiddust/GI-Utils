@@ -3,8 +3,10 @@
 #
 # std 用 panic_unwind 变体 + .cargo/config.toml 的 rustflags/O3 重编（含 native
 # 特性）：热路径（Mutex/atomic/格式化）与主程序同档优化。变体与 release
-# profile 的 panic=unwind 一致（GUI catch_unwind 自愈依赖 unwinding）。
-# 不用 panic_immediate_abort — 它会跳过 panic hook，破坏 GUI 的亲和性恢复兜底。
+# profile 的 panic=unwind 一致（Drop 防护依赖 unwinding；GUI 渲染自愈已于
+# v1.7.0 退役）。
+# 不用 panic_immediate_abort — 它会让 panic 立即 abort，跳过 panic hook 与
+# 崩溃落盘/亲和性还原兜底。
 #
 # 不能放进全局 config.toml：[unstable] 为全局配置，cargo test 会为 dev+test
 # 两个 profile 各编一份 std，两份 core 同时链接报 duplicate lang item（cargo

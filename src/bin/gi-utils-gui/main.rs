@@ -1,8 +1,9 @@
 //! GI-Utils GUI 配置面板 — GUI Configuration Panel (egui).
 //!
-//! 可视化绑定管理：增删改按键绑定，修改即时生效，保存写入配置文件（默认 exe 旁 gi-utils-config.toml，可另存/加载任意路径）。
-//! Visual binding management: add/edit/delete key bindings,
-//! live-apply changes, save to config.toml.
+//! 可视化绑定管理：增删改按键绑定，修改即时生效；Save 写入活动 profile
+//! （exe 旁 `profiles/<名>.toml`），New 以当前状态新建 profile。
+//! Visual binding management: add/edit/delete key bindings, live-apply
+//! changes, save to the active profile (`profiles/<name>.toml`).
 
 #![windows_subsystem = "windows"]
 
@@ -127,7 +128,7 @@ struct GuiApp {
     /// （review #5）；与 hide/icon 同模式，~2s 内每帧重试 show_and_activate。
     show_until: Option<std::time::Instant>,
 
-    /// 启动时加载的 [gui] 配置 — save() 需原样写回（fail-closed：不读磁盘，
+    /// 启动时加载的 [gui] 配置 — save_to 需原样写回（fail-closed：不读磁盘，
     /// 读回失败静默回退默认会清空用户 icon_path — review #3）。
     gui_config: gi_utils::profile::GuiConfig,
     /// 活动 profile 名（profiles/ 目录内 .toml 的去扩展名）— Save 目标、
@@ -1130,7 +1131,7 @@ impl GuiApp {
     }
 
     /// 校验键唯一性（一键一功能；功能可绑多键 — 2026-08-22 用户决策）。
-    /// 未设键的行跳过。与 profile::load 的校验规则一致；live_apply 与
+    /// 未设键的行跳过。与 profile::load_full_from 的校验规则一致（仅键唯一）；live_apply 与
     /// save_config 共用。
     fn validate_bindings(&self) -> Result<(), String> {
         let mut keys = std::collections::HashSet::new();
@@ -1235,7 +1236,7 @@ impl GuiApp {
         )
     }
 
-    /// 另存为指定路径 — New Profile 的实现（同 save 校验）。
+    /// 另存为指定路径 — New Profile 的实现（同 save_to 校验）。
     /// 模板表用**内存中的当前表**：差量（同上）与模板段成对写出，
     /// 副本文件自洽（无模板段则差量无基线 — v1.7.4 回归）。
     fn save_config_to(&self, path: &std::path::Path) -> Result<(), String> {
@@ -1387,21 +1388,18 @@ fn show_message_box(title: &str, msg: &str) {
     }
 }
 
-/// 安装 panic hook：恢复 CPU 亲和性 + MessageBox 显示错误。
-///
-/// panic=abort 时 Drop 不执行（`restore_all_affinity` 在 Drop 路径中），
-/// 若 panic 前已隔离游戏核心，其它进程会停留在受限核心 — hook 兜底恢复。
-/// 必须在任何可能 panic 的代码之前安装。
 /// 安装 panic hook：崩溃现场落盘 + 恢复亲和性 + MessageBox + 退出。
 ///
-/// panic=abort 时 Drop 不执行（`restore_all_affinity` 在 Drop 路径中），
-/// 若 panic 前已隔离游戏核心，其它进程会停留在受限核心 — hook 兜底恢复。
-/// 必须在任何可能 panic 的代码之前安装。
+/// hook 主动 `std::process::exit(1)` 会跳过正常关机路径（`shutdown_all` 才做
+/// thread_pin/affinity 还原）— 若 panic 前已隔离游戏核心，其它进程会停留在
+/// 受限核心，因此 hook 自己负责还原 thread_pin/affinity。
+/// 必须在任何可能 panic 的代码之前安装；注意 `Engine::new` 位于安装之前，
+/// 驱动缺失时此处 panic 走不到本 hook（已知技术债）。
 ///
-/// dev-wgpu：原"GUI 渲染 panic 可恢复"分支（IN_GUI_RETRY/GUI_MAIN_THREAD/
-/// catch_unwind 重试）已随 glow 后端一起移除 — wgpu surface Lost 逐帧
-/// 自愈，渲染层不再 panic（睡眠唤醒实测通过）。hook 现为纯兜底：
-/// 任何线程 panic = 落盘 + 还原 + 弹窗 + fail-fast（防 Loop 功能僵尸注入）。
+/// 渲染自愈已退役（v1.7.0 切 wgpu）：原"GUI 渲染 panic 可恢复"分支
+/// （IN_GUI_RETRY/GUI_MAIN_THREAD/catch_unwind 重试）已随 glow 后端一起移除。
+/// hook 现为纯 fail-fast：任何线程 panic = 落盘 + 还原 + 弹窗 + exit(1)
+/// （防 Loop 功能僵尸注入）。
 fn install_panic_hook(
     log: gi_utils::utils::log_collector::LogCollector,
     stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,

@@ -139,14 +139,14 @@ impl SendContext {
         self.raw.send_keyboard(device, strokes);
     }
 
-    /// 发送事件序列 — **逐事件发送**（no-slicing 实验分支，2026-09）：
-    /// 取消"连续同类事件合并为一次 IOCTL_WRITE"的切片机制，每个事件
-    /// 独立一次驱动请求。
+    /// 发送事件序列 — **逐事件发送**（no-slicing 为最终形态，2026-10-23
+    /// 作者确认）：每个事件独立一次 DeviceIoControl，不存在"连续同类事件
+    /// 合并为一次 IOCTL_WRITE"的切片机制。
     ///
-    /// 语义差异（相对 master 的切片版）：段内事件之间可能出现其他功能
-    /// 线程的并发插入（不再有"驱动级原子送达"），点击对 down/up 之间
-    /// 间隔不再恒为 ≈0。Sleep 事件在此层无操作（时间语义由调用方的
-    /// delay 原语承担，与切片版一致）。
+    /// 语义：不同功能线程的并发发送可以交错（无驱动级原子送达），点击对
+    /// down/up 之间的间隔不保证 ≈0。Sleep 事件在此层无操作（时间语义由
+    /// 调用方的 delay 原语承担）。历史切片实现见 `f621bf3^`
+    /// （`segments` + `send_segment`），已删除，不再恢复。
     pub fn send_events(&self, events: &[InputEvent]) {
         for event in events {
             match event {
@@ -162,7 +162,7 @@ impl SendContext {
                             .send_mouse(protocol::mouse(0), std::slice::from_ref(&stroke));
                     }
                 }
-                InputEvent::Sleep { .. } => {} // 无操作（切片版同样不发送 Sleep）
+                InputEvent::Sleep { .. } => {} // 无操作（Sleep 无线上表示，不发送）
             }
         }
     }
@@ -173,4 +173,4 @@ impl SendContext {
 // 其 receive 方法若被共享会并发瓜分驱动队列，review）。
 unsafe impl Sync for SendContext {}
 
-// 切段机制已移除（no-slicing 实验分支）— SendContext 单测随实现删除。
+// 切段机制已移除（no-slicing 为最终形态，2026-10-23 作者确认）— SendContext 单测随实现删除。

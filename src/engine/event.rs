@@ -196,7 +196,7 @@ impl InputEvent {
     }
 
     // ── 线上 stroke 转换 — 唯一的字段映射出处 ─────────────────
-    // SendContext 的 send_event / send_segment 共用此处构造器，
+    // SendContext 的 send_event / send_events 共用此处构造器，
     // information 恒 0（对齐原生移植前的写缓冲路径）。
 
     /// 键盘事件 → 线上 stroke。非键盘事件返回 `None`。
@@ -409,7 +409,8 @@ impl EventSequence {
     // ── 播放 — Playback ──────────────────────────────────────
 
     /// 播放序列：逐事件经 [`SendContext::send_events`] 发送
-    /// （no-slicing — 每事件一次驱动请求），Sleep 处延时。
+    /// （无切片为最终形态，2026-10-23 作者确认 — 每事件一次驱动请求），
+    /// Sleep 处延时。
     ///
     /// `stop` 为 `Some` 时延时走可中断版（Loop/Toggle 即时响应）；
     /// `None` 时不可中断（Once 模式，对齐原 `delay_ms` 语义）。
@@ -420,8 +421,8 @@ impl EventSequence {
     /// 打出残留动作）。
     ///
     /// Play the sequence: events are sent one-by-one via
-    /// [`SendContext::send_events`] (no-slicing); delays happen at Sleep
-    /// boundaries.
+    /// [`SendContext::send_events`] (no-slicing is the final form — one driver
+    /// request per event); delays happen at Sleep boundaries.
     pub fn play(
         &self,
         send_ctx: &crate::interception::SendContext,
@@ -438,7 +439,7 @@ impl EventSequence {
             }
             if i > start {
                 send_ctx.send_events(&events[start..i]);
-                // 段内顺序 = 播放顺序，逐事件更新挂起追踪
+                // 区间内顺序 = 播放顺序，逐事件更新挂起追踪
                 for event in &events[start..i] {
                     tracker.track(event);
                 }
@@ -528,7 +529,7 @@ impl HeldTracker {
         send_ctx.send_events(&releases);
     }
 
-    /// 纯函数：挂起集的 release 事件（键盘先、鼠标后，供单测与合并发送）。
+    /// 纯函数：挂起集的 release 事件（键盘先、鼠标后，供单测与统一发送入口）。
     fn release_events(&self) -> Vec<InputEvent> {
         let mut out = Vec::with_capacity(self.keys.len() + self.buttons.len());
         for key in &self.keys {
