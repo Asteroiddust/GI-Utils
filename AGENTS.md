@@ -11,10 +11,9 @@
 > **当前健康（2026-10-23 实测）**：`cargo check` 0 error / 0 warning；`cargo test` 82 单测
 > （lib 78 + GUI bin 4）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
-> 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理（无切片定稿 + 注释/死 API）与
-> Phase 2 健壮性（启动失败可视化 + panic 挂起合成键补发：原子位图 + 失败重登记 +
-> 无登记发送路径 + hook 内 try_lock 还原）；补打 `v1.7.6` 与 `bench-getpixel-archive` tag
-> （本地）。代码基线 `bb3f91b`。
+> 注：健康数据采于 2026-10-23。同日完成 Phase 1 清理与 Phase 2 健壮性；**作者实机验证
+> 正常后发布 v1.7.7**（release 13,693,440 B，SHA256 `8CD60E65…FBF3`，构建源 `dd519fd`）。
+> `v1.7.6`/`v1.7.7` 与 `bench-getpixel-archive` tag 均为本地。代码基线 `bb3f91b`。
 
 ## 0. 给 Agent 的硬性规则
 
@@ -296,7 +295,8 @@ gi-utils-dev.exe → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe    
 
 - 配置与用户数据（`profiles/`、`crash.log`、`thread_sample.txt`）都写在 **exe 旁**，即部署目录。
   部署目录里的 `verbose.exe`/`zzz-utils.exe`/`gi-utils-config.toml` 是历史遗留，不属仓库。
-- 2026-09-30 构建产物：release 13.7MB、debug 19.4MB；开发后记得刷新 debug（见规则 3）。
+- 2026-10-23 发布 **v1.7.7**：release 13,693,440 B（13.69MB，SHA256 `8CD60E65…FBF3`）、
+  debug 19.39MB；部署符号链接自动指向新 release。开发后记得刷新 debug（见规则 3）。
 
 ## 8. 配置系统
 
@@ -371,8 +371,9 @@ F17 甘雨走A、F18 双玛头、F19 坐标颜色、NumpadAdd 优化游戏、F20
   中文说明为主。历史纪律：**每个功能/修复后紧跟一个版本号提交**
   `chore: 版本升至 vX.Y.Z — 主题`（minor=功能、patch=修复）——沿用。
 - 版本号唯一来源 `Cargo.toml`；升版本后 `Cargo.lock` 同步（`cargo build` 会更新）。
-- **tag**：v1.3.0 后长期缺 tag；2026-10-23 已补 `v1.7.6`（指向 release 状态 `bb3f91b`）与
-  `bench-getpixel-archive`（本地存档，`2c949b5`）。今后发版：升版本 → 构建 → 打 tag。
+- **tag**：v1.3.0 后长期缺 tag；2026-10-23 已补 `v1.7.6`（release 状态 `bb3f91b`）、
+  `v1.7.7`（`dd519fd`，v1.7.7 release 构建源）与 `bench-getpixel-archive`（本地存档
+  `2c949b5`）。今后发版：升版本 → 构建 → 打 tag。
   注意历史上文档曾引用不存在的「v1.5.2」——**不要在不存在的版本上写记录**。
 - 发版清单（用户明确要求时）：升版本 → `cargo build --release --config .cargo/build-std.toml` →
   更新 README 的体积/测试数/功能数 → 更新本文档变更 → 建议打 tag。
@@ -516,3 +517,4 @@ Interception 内核驱动的商业授权不在本仓库，使用前自行确认�
 2026-10-23 Phase 2：启动失败可视化（catch_unwind 守卫 + `--silent` 只落盘）；panic 挂起合成键
 补发（`pressed.rs` 原子位图 + 逐条无登记发送 + 失败重登记 + hook 两遍补发 + 正常关机兜底 +
 thread_pin try_lock 还原）；测试 63→82 单测（lib 78 + GUI bin 4）。
+2026-10-23 发版 v1.7.7：作者实机验证正常；release 13,693,440 B（SHA256 8CD60E65…FBF3）。
