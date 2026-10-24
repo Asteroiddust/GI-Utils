@@ -454,7 +454,10 @@ impl GuiApp {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 egui::Grid::new("binding_grid")
                     .striped(true)
-                    .min_col_width(80.0)
+                    // 五列控件紧凑排列：列间 2px，行间 4px（原 min_col_width(80)
+                    // 会让短列留出大片空白，v1.11.1 收紧）。
+                    .min_col_width(0.0)
+                    .spacing(egui::vec2(2.0, 4.0))
                     .show(ui, |ui| {
                         ui.strong("Key");
                         ui.strong("Function");
@@ -524,6 +527,9 @@ impl GuiApp {
 
                             // ---- Actions 列 ----
                             ui.horizontal(|ui| {
+                                // 三个操作按钮之间同样收到 2px（Grid spacing 只
+                                // 作用于单元格之间，cell 内部 horizontal 用默认 8px）。
+                                ui.spacing_mut().item_spacing.x = 2.0;
                                 if ui.button("Set Key").clicked() {
                                     capture_idx = Some(i);
                                 }
