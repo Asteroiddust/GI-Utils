@@ -12,8 +12,9 @@
 > （lib 96 + GUI bin 5）+ 2 doctest 全过（另 1 个 doctest ignored）；`cargo fmt --check` 干净；
 > debug/release 产物与部署链接均未过期。
 > 注：健康数据采于 2026-10-23。同日完成 Phase 1/2、连点器统一、依赖升级与图标/按钮修复，
-> 协议层 P1 加固后发布 v1.7.7/v1.10.1/v1.10.5；**优化游戏三档合并为单功能 + tier 参数后
-> v1.11.0 发版**（release 13,186,048 B，SHA256 `49855999…4247`，构建源 `c6f9785`）。
+> 协议层 P1 加固后发布 v1.7.7/v1.10.1/v1.10.5；优化游戏单功能 + tier 参数发布 v1.11.0；
+> 绑定表控件间距收紧后 **v1.11.1 发版**（release 13,186,048 B，SHA256 `BBD4589D…F17E`，
+> 构建源 `8e19be2`）。
 > 版本 tag 与 `bench-getpixel-archive` 见 git。代码基线 `bb3f91b`。
 
 ## 0. 给 Agent 的硬性规则
@@ -307,10 +308,10 @@ gi-utils-dev.exe → E:\Projects\Rust\GI-Utils\target\debug\gi-utils-gui.exe    
 
 - 配置与用户数据（`profiles/`、`crash.log`、`thread_sample.txt`）都写在 **exe 旁**，即部署目录。
   部署目录里的 `verbose.exe`/`zzz-utils.exe`/`gi-utils-config.toml` 是历史遗留，不属仓库。
-- 2026-10-23 发布 **v1.11.0**：release 13,186,048 B（13.19MB，SHA256 `49855999…4247`）、
-  debug 18.88MB；含优化游戏单功能 + `tier` 参数（Advanced/Standard/Minimal，默认 Advanced）、
-  旧三档配置自动迁移，以及 v1.10.2–v1.10.5 的图标/按钮/协议层加固。部署符号链接自动指向新
-  release（前次 release 已被覆盖，可按对应 tag 重建）。开发后记得刷新 debug（见规则 3）。
+- 2026-10-24 发布 **v1.11.1**：release 13,186,048 B（13.19MB，SHA256 `BBD4589D…F17E`）、
+  debug 18.88MB；含 v1.11.0 的优化游戏单功能 + `tier` 参数/旧配置迁移，以及绑定表行内控件
+  间距收紧（列 2px、行 4px、Actions 按钮 2px）。部署符号链接自动指向新 release（前次 release
+  已被覆盖，可按对应 tag 重建）。开发后记得刷新 debug（见规则 3）。
 
 ## 8. 配置系统
 
@@ -569,3 +570,5 @@ Minimal，默认 Advanced）在 ⚙ 参数面板选择；旧配置名「优化�
 + tier 参数与旧配置自动迁移；部署符号链接随 release 产物更新。
 2026-10-24 v1.11.1：绑定表行内控件间距收紧——Grid `spacing(2,4)`、`min_col_width(0)`，
 Actions 三按钮 `item_spacing.x = 2`（原列间距 8px + 最小列宽 80px 留白过宽）。
+2026-10-24 发版 v1.11.1：release 13,186,048 B（SHA256 BBD4589D…F17E），含 v1.11.0 优化
+游戏单功能 + tier 与绑定表间距收紧；部署符号链接随 release 产物更新。
