@@ -1,6 +1,6 @@
 # GI-Utils — Agent 指令与项目权威文档
 
-> **版本 v1.11.0** · release 基线 `v1.7.7`（`dd519fd`）· 本文档 2026-10-23 全量重写
+> **版本 v1.11.1** · release 基线 `v1.7.7`（`dd519fd`）· 本文档 2026-10-23 全量重写
 >
 > 本文档是**唯一权威项目文档**。旧的 `CLAUDE.md` 已删除，请勿再创建或引用。
 > 用户向说明见 [README.md](README.md) / [README.zh-CN.md](README.zh-CN.md)；本文档面向接手开发的 agent。
@@ -214,6 +214,7 @@ stop_flag=true → join Engine → 有界等待托盘线程（最多 2s）→ ke
   （否则下一帧会把缓冲旧日志补回来）；`✕` 只隐藏面板。
 - 绑定表格 Actions 列行尾删除按钮为 **`✕`**（普通 `Button`，与 Set Key / ⚙ 同高；悬停提示「删除该绑定」；v1.10.3 改文本，v1.10.4 对齐高度）。
 - ⚙ 参数弹窗对 `ParamKind::Choice` 渲染 ComboBox（如「优化游戏」的 tier：Advanced/Standard/Minimal，默认 Advanced）。
+- 绑定表格布局（v1.11.1）：Grid 列/行间距收到 2px/4px，Actions 内部按钮间距 2px；取消 `min_col_width(80)`，短列不再留大片空白。
 - 窗口图标（任务栏/标题栏/Alt-Tab）在窗口**可见**时重试约 2s；隐藏态暂停计时，
   从托盘唤出时重置重试窗口（v1.10.2 修复 `--silent` 启动后图标回落默认的问题）。
 - 关闭窗口 = `ShowWindow(SW_HIDE)` 隐藏到托盘（不退出）；托盘菜单：显示窗口 / Profile 二级菜单
@@ -566,3 +567,5 @@ Minimal，默认 Advanced）在 ⚙ 参数面板选择；旧配置名「优化�
 「优化游戏」并注入对应 tier；功能数 13→11；测试 98→101（lib 96 + GUI bin 5）。
 2026-10-23 发版 v1.11.0：release 13,186,048 B（SHA256 49855999…4247），含优化游戏单功能
 + tier 参数与旧配置自动迁移；部署符号链接随 release 产物更新。
+2026-10-24 v1.11.1：绑定表行内控件间距收紧——Grid `spacing(2,4)`、`min_col_width(0)`，
+Actions 三按钮 `item_spacing.x = 2`（原列间距 8px + 最小列宽 80px 留白过宽）。
